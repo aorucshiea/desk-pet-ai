@@ -1,0 +1,17 @@
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+
+# Legacy third_party dir (removed; llama.cpp is now a top-level submodule)
+third_party/
+
+# Build outputs (PyInstaller intermediates + final binaries).
+build/build/
+build/dist/
+bin/
+
+# Local model cache (developer convenience).
+models/
+*.gguf

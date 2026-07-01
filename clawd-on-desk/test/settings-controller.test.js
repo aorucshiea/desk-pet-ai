@@ -1,0 +1,825 @@
+"use strict";
+
+const { describe, it, afterEach } = require("node:test");
+const assert = require("node:assert");
+const fs = require("fs");
+const path = require("path");
+const os = require("os");
+
+const prefs = require("../src/prefs");
+const { createSettingsController } = require("../src/settings-controller");
+
+const tempDirs = [];
+function makeTempPath() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-controller-"));
+  tempDirs.push(dir);
+  return path.join(dir, "clawd-prefs.json");
+}
+afterEach(() => {
+  while (tempDirs.length) {
+    fs.rmSync(tempDirs.pop(), { recursive: true, force: true });
+  }
+});
+
+describe("createSettingsController construction", () => {
+  it("requires prefsPath or loadResult", () => {
+    assert.throws(() => createSettingsController({}), /prefsPath or loadResult/);
+  });
+
+  it("loads defaults from missing file", () => {
+    const ctrl = createSettingsController({ prefsPath: makeTempPath() });
+    assert.strictEqual(ctrl.get("lang"), "system");
+    assert.strictEqual(ctrl.get("soundMuted"), false);
+    assert.strictEqual(ctrl.isLocked(), false);
+  });
+
+  it("respects locked state from future-version files", () => {
+    const p = makeTempPath();
+    fs.writeFileSync(p, JSON.stringify({ version: 999 }));
+    const originalWarn = console.warn;
+    console.warn = () => {};
+    try {
+      const ctrl = createSettingsController({ prefsPath: p });
+      assert.strictEqual(ctrl.isLocked(), true);
+    } finally {
+      console.warn = originalWarn;
+    }
+  });
+});
+
+describe("setTextScaleForDisplay end-to-end commit", () => {
+  it("commits the per-display map through the controller and persists it", async () => {
+    // Regression: the command's commit key must pass the controller's
+    // registry validation ("unknown settings key textScaleByDisplay").
+    const ctrl = createSettingsController({
+      prefsPath: makeTempPath(),
+      injectedDeps: { resolveTextScaleDisplayKey: () => "69992868" },
+    });
+    const r = await ctrl.applyCommand("setTextScaleForDisplay", { value: 1.35 });
+    assert.strictEqual(r.status, "ok");
+    assert.deepStrictEqual(ctrl.get("textScaleByDisplay"), { "69992868": 1.35 });
+
+    const again = await ctrl.applyCommand("setTextScaleForDisplay", { value: 1 });
+    assert.strictEqual(again.status, "ok");
+    assert.deepStrictEqual(ctrl.get("textScaleByDisplay"), { "69992868": 1 });
+  });
+
+  it("falls back to the legacy global key without display context", async () => {
+    const ctrl = createSettingsController({ prefsPath: makeTempPath() });
+    const r = await ctrl.applyCommand("setTextScaleForDisplay", { value: 1.25 });
+    assert.strictEqual(r.status, "ok");
+    assert.strictEqual(ctrl.get("textScale"), 1.25);
+  });
+});
+
+describe("applyUpdate sync invariant", () => {
+  it("sync action: returns a plain object, NOT a Promise, and the next sync read sees the new value", () => {
+    // This is the contract that lets `ctx.lang = "zh"` work in sync menu setters
+    // without microtask deferral. If applyUpdate were `async`, the commit
+    // would slip past the next read on the same tick.
+    const ctrl = createSettingsController({ prefsPath: makeTempPath() });
+    const r = ctrl.applyUpdate("lang", "zh");
+    assert.strictEqual(typeof r.then, "undefined", "sync action must return plain object");
+    assert.strictEqual(r.status, "ok");
+    assert.strictEqual(ctrl.get("lang"), "zh", "sync read after sync update sees new value");
+  });
+
+  it("async action: returns a Promise resolving to the same shape", async () => {
+    const ctrl = createSettingsController({
+      prefsPath: makeTempPath(),
+      updates: {
+        lazy: async (v) => {
+          await new Promise((resolve) => setTimeout(resolve, 1));
+          return typeof v === "string" ? { status: "ok" } : { status: "error", message: "bad" };
+        },
+      },
+    });
+    const ret = ctrl.applyUpdate("lazy", "hello");
+    assert.strictEqual(typeof ret.then, "function", "async action must return a Promise");
+    const r = await ret;
+    assert.strictEqual(r.status, "ok");
+  });
+
+  it("serializes concurrent async updates on the same key (no race)", async () => {
+    // Two rapid toggles on an async-effect key must run in order — otherwise
+    // the slow one resolves last and stomps the quick one's commit.
+    const order = [];
+    let tick = 0;
+    const ctrl = createSettingsController({
+      prefsPath: makeTempPath(),
+      updates: {
+        lang: requireEnumSync(),
+        size: {
+          validate: () => ({ status: "ok" }),
+          effect: async (v) => {
+            const mine = ++tick;
+            order.push(`start:${mine}:${v}`);
+            // First call takes longer, so without the lock it'd finish
+            // after the second and overwrite the store.
+            await new Promise((r) => setTimeout(r, mine === 1 ? 25 : 1));
+            order.push(`end:${mine}:${v}`);
+            return { status: "ok" };
+          },
+        },
+      },
+    });
+    const first = ctrl.applyUpdate("size", "S");
+    const second = ctrl.applyUpdate("size", "M");
+    await Promise.all([first, second]);
+    assert.deepStrictEqual(order, ["start:1:S", "end:1:S", "start:2:M", "end:2:M"]);
+    assert.strictEqual(ctrl.get("size"), "M");
+  });
+
+  it("manageClaudeHooksAutomatically uses the async effect path without changing controller semantics", async () => {
+    const ctrl = createSettingsController({
+      prefsPath: makeTempPath(),
+      loadResult: {
+        snapshot: { ...prefs.getDefaults(), manageClaudeHooksAutomatically: false },
+        locked: false,
+      },
+      injectedDeps: {
+        syncClaudeHooksNow: async () => {
+          await new Promise((resolve) => setTimeout(resolve, 1));
+        },
+        startClaudeSettingsWatcher: () => {},
+        stopClaudeSettingsWatcher: () => {},
+      },
+    });
+    const ret = ctrl.applyUpdate("manageClaudeHooksAutomatically", true);
+    assert.strictEqual(typeof ret.then, "function");
+    const result = await ret;
+    assert.strictEqual(result.status, "ok");
+    assert.strictEqual(ctrl.get("manageClaudeHooksAutomatically"), true);
+  });
+
+  it("serializes Claude hook update and command work on one shared lock", async () => {
+    const calls = [];
+    const ctrl = createSettingsController({
+      prefsPath: makeTempPath(),
+      loadResult: {
+        snapshot: { ...prefs.getDefaults(), manageClaudeHooksAutomatically: false },
+        locked: false,
+      },
+      injectedDeps: {
+        syncClaudeHooksNow: async () => {
+          calls.push("sync:start");
+          await new Promise((resolve) => setTimeout(resolve, 10));
+          calls.push("sync:end");
+        },
+        startClaudeSettingsWatcher: () => calls.push("watcher:start"),
+        stopClaudeSettingsWatcher: () => calls.push("watcher:stop"),
+        uninstallClaudeHooksNow: async () => {
+          calls.push("uninstall:start");
+          await new Promise((resolve) => setTimeout(resolve, 1));
+          calls.push("uninstall:end");
+        },
+      },
+    });
+
+    const enable = ctrl.applyUpdate("manageClaudeHooksAutomatically", true);
+    const disconnect = ctrl.applyCommand("uninstallHooks");
+    const results = await Promise.all([enable, disconnect]);
+
+    assert.strictEqual(results[0].status, "ok");
+    assert.strictEqual(results[1].status, "ok");
+    assert.deepStrictEqual(calls, [
+      "sync:start",
+      "sync:end",
+      "watcher:start",
+      "watcher:stop",
+      "uninstall:start",
+      "uninstall:end",
+    ]);
+    assert.strictEqual(ctrl.get("manageClaudeHooksAutomatically"), false);
+  });
+});
+
+// Tiny helper — must be sync because controller's applyUpdate stays sync
+// when the entry is a plain function.
+function requireEnumSync() {
+  return (v) => (typeof v === "string" ? { status: "ok" } : { status: "error" });
+}
+
+describe("applyUpdate", () => {
+  it("commits valid pure-data updates and persists to disk", async () => {
+    const p = makeTempPath();
+    const ctrl = createSettingsController({ prefsPath: p });
+    const r = await ctrl.applyUpdate("lang", "zh");
+    assert.strictEqual(r.status, "ok");
+    assert.strictEqual(ctrl.get("lang"), "zh");
+    // Persisted to disk
+    const onDisk = JSON.parse(fs.readFileSync(p, "utf8"));
+    assert.strictEqual(onDisk.lang, "zh");
+  });
+
+  it("rejects invalid values without touching the store", async () => {
+    const p = makeTempPath();
+    const ctrl = createSettingsController({ prefsPath: p });
+    const r = await ctrl.applyUpdate("lang", "klingon");
+    assert.strictEqual(r.status, "error");
+    assert.strictEqual(ctrl.get("lang"), "system");
+    // File should not exist (no commit, no persist)
+    assert.strictEqual(fs.existsSync(p), false);
+  });
+
+  it("returns noop:true when value is unchanged (no broadcast, no fsync)", async () => {
+    const p = makeTempPath();
+    const ctrl = createSettingsController({ prefsPath: p });
+    let broadcasts = 0;
+    ctrl.subscribe(() => broadcasts++);
+    await ctrl.applyUpdate("lang", "zh"); // changes
+    assert.strictEqual(broadcasts, 1);
+    const r = await ctrl.applyUpdate("lang", "zh"); // same value
+    assert.strictEqual(r.noop, true);
+    assert.strictEqual(broadcasts, 1, "no second broadcast");
+  });
+
+  it("rejects unknown keys", async () => {
+    const ctrl = createSettingsController({ prefsPath: makeTempPath() });
+    const r = await ctrl.applyUpdate("nonsense", true);
+    assert.strictEqual(r.status, "error");
+    assert.match(r.message, /unknown settings key/);
+  });
+
+  it("enforces cross-field constraints (showTray/showDock)", async () => {
+    const ctrl = createSettingsController({ prefsPath: makeTempPath() });
+    // Both default true; turning one off is allowed
+    const r1 = await ctrl.applyUpdate("showTray", false);
+    assert.strictEqual(r1.status, "ok");
+    // Now showTray=false, showDock=true. Turning showDock off should fail.
+    const r2 = await ctrl.applyUpdate("showDock", false);
+    assert.strictEqual(r2.status, "error");
+    assert.strictEqual(ctrl.get("showDock"), true);
+  });
+
+  it("propagates async action errors as { status: error }", async () => {
+    const ctrl = createSettingsController({
+      prefsPath: makeTempPath(),
+      updates: {
+        boom: async () => { throw new Error("kaboom"); },
+      },
+    });
+    const r = await ctrl.applyUpdate("boom", "anything");
+    assert.strictEqual(r.status, "error");
+    assert.match(r.message, /kaboom/);
+  });
+
+  it("does not commit autoStartWithClaude when management-disabled effect returns noop", async () => {
+    const ctrl = createSettingsController({
+      prefsPath: makeTempPath(),
+      loadResult: {
+        snapshot: { ...prefs.getDefaults(), manageClaudeHooksAutomatically: false, autoStartWithClaude: false },
+        locked: false,
+      },
+      injectedDeps: {
+        installAutoStart: () => { throw new Error("should not run"); },
+        uninstallAutoStart: () => { throw new Error("should not run"); },
+      },
+    });
+    const r = await ctrl.applyUpdate("autoStartWithClaude", true);
+    assert.strictEqual(r.status, "ok");
+    assert.strictEqual(r.noop, true);
+    assert.strictEqual(ctrl.get("autoStartWithClaude"), false);
+  });
+});
+
+describe("applyBulk", () => {
+  it("commits multiple fields atomically and broadcasts once", async () => {
+    const ctrl = createSettingsController({ prefsPath: makeTempPath() });
+    let broadcasts = 0;
+    let lastChanges = null;
+    ctrl.subscribe(({ changes }) => { broadcasts++; lastChanges = changes; });
+    const r = await ctrl.applyBulk({ x: 100, y: 200, lang: "zh" });
+    assert.strictEqual(r.status, "ok");
+    assert.strictEqual(broadcasts, 1);
+    assert.deepStrictEqual(lastChanges, { x: 100, y: 200, lang: "zh" });
+    assert.strictEqual(ctrl.get("x"), 100);
+    assert.strictEqual(ctrl.get("y"), 200);
+    assert.strictEqual(ctrl.get("lang"), "zh");
+  });
+
+  it("rejects the entire bulk if any field fails validation", async () => {
+    const ctrl = createSettingsController({ prefsPath: makeTempPath() });
+    const r = await ctrl.applyBulk({ x: 100, lang: "klingon" });
+    assert.strictEqual(r.status, "error");
+    // Neither field committed
+    assert.strictEqual(ctrl.get("x"), 0);
+    assert.strictEqual(ctrl.get("lang"), "system");
+  });
+
+  it("returns noop:true when nothing changed", async () => {
+    const ctrl = createSettingsController({ prefsPath: makeTempPath() });
+    const r = await ctrl.applyBulk({ lang: "system", soundMuted: false });
+    assert.strictEqual(r.noop, true);
+  });
+
+  it("rejects bulk that would violate cross-field constraints (showTray + showDock)", async () => {
+    const ctrl = createSettingsController({ prefsPath: makeTempPath() });
+    // Both start true. Trying to set both false in a single bulk should be
+    // caught by post-validation even though each individual validator only
+    // sees the pre-bulk snapshot.
+    const r = await ctrl.applyBulk({ showTray: false, showDock: false });
+    assert.strictEqual(r.status, "error");
+    // Neither field committed — store still has both true
+    assert.strictEqual(ctrl.get("showTray"), true);
+    assert.strictEqual(ctrl.get("showDock"), true);
+  });
+
+  it("allows bulk with only one of showTray/showDock set to false", async () => {
+    const ctrl = createSettingsController({ prefsPath: makeTempPath() });
+    const r = await ctrl.applyBulk({ showTray: false });
+    assert.strictEqual(r.status, "ok");
+    assert.strictEqual(ctrl.get("showTray"), false);
+    assert.strictEqual(ctrl.get("showDock"), true);
+  });
+
+  it("rejects effect-bearing keys to protect the no-rollback commit path", async () => {
+    // applyBulk interleaves validators with effects; if a later key fails,
+    // earlier effects have already executed. Callers should reach for
+    // applyUpdate for system-backed keys. Enforced at the boundary so a
+    // future bulk-window-bounds flush can't quietly sneak in a login item.
+    let effectRan = false;
+    const ctrl = createSettingsController({
+      prefsPath: makeTempPath(),
+      updates: {
+        x: (v) => (typeof v === "number" ? { status: "ok" } : { status: "error" }),
+        dangerous: {
+          validate: (v) => (typeof v === "boolean" ? { status: "ok" } : { status: "error" }),
+          effect: () => {
+            effectRan = true;
+            return { status: "ok" };
+          },
+        },
+      },
+    });
+    const r = await ctrl.applyBulk({ x: 100, dangerous: true });
+    assert.strictEqual(r.status, "error");
+    assert.ok(/applyBulk|applyUpdate/.test(r.message));
+    assert.strictEqual(effectRan, false, "effect must not run on rejected bulk");
+  });
+});
+
+describe("applyCommand", () => {
+  it("rejects unknown commands", async () => {
+    const ctrl = createSettingsController({ prefsPath: makeTempPath() });
+    const r = await ctrl.applyCommand("nope", {});
+    assert.strictEqual(r.status, "error");
+  });
+
+  it("commits side-effect commands that return a `commit` field", async () => {
+    const ctrl = createSettingsController({
+      prefsPath: makeTempPath(),
+      commands: {
+        myCmd: async (payload) => ({
+          status: "ok",
+          commit: { lang: payload.lang },
+        }),
+      },
+    });
+    const r = await ctrl.applyCommand("myCmd", { lang: "zh" });
+    assert.strictEqual(r.status, "ok");
+    assert.strictEqual(ctrl.get("lang"), "zh");
+  });
+
+  it("propagates command errors", async () => {
+    const ctrl = createSettingsController({
+      prefsPath: makeTempPath(),
+      commands: {
+        boom: () => ({ status: "error", message: "denied" }),
+      },
+    });
+    const r = await ctrl.applyCommand("boom", {});
+    assert.strictEqual(r.status, "error");
+    assert.strictEqual(r.message, "denied");
+  });
+
+  it("defensive-validates commit payloads against the updateRegistry", async () => {
+    // A buggy command could return an invalid commit; without the guard,
+    // that shape would land in the store and persist to disk.
+    const ctrl = createSettingsController({
+      prefsPath: makeTempPath(),
+      commands: {
+        naughty: () => ({ status: "ok", commit: { lang: "klingon" } }),
+      },
+    });
+    const r = await ctrl.applyCommand("naughty", {});
+    assert.strictEqual(r.status, "error");
+    assert.ok(/klingon|lang/.test(r.message));
+    // Store must remain at the default (unchanged)
+    assert.strictEqual(ctrl.get("lang"), "system");
+  });
+
+  it("rejects commit keys unknown to the updateRegistry", async () => {
+    const ctrl = createSettingsController({
+      prefsPath: makeTempPath(),
+      commands: {
+        writeJunk: () => ({ status: "ok", commit: { notARealKey: 42 } }),
+      },
+    });
+    const r = await ctrl.applyCommand("writeJunk", {});
+    assert.strictEqual(r.status, "error");
+    assert.ok(/notARealKey/.test(r.message));
+  });
+
+  it("serializes same-name commands so later calls see earlier effects", async () => {
+    // Without per-key locking, two async calls could race and the
+    // later-resolving effect would commit over the earlier one.
+    const order = [];
+    const ctrl = createSettingsController({
+      prefsPath: makeTempPath(),
+      commands: {
+        slow: async (payload) => {
+          order.push(`start:${payload.tag}`);
+          await new Promise((r) => setTimeout(r, payload.tag === "a" ? 20 : 1));
+          order.push(`end:${payload.tag}`);
+          return { status: "ok" };
+        },
+      },
+    });
+    const a = ctrl.applyCommand("slow", { tag: "a" });
+    const b = ctrl.applyCommand("slow", { tag: "b" });
+    await Promise.all([a, b]);
+    assert.deepStrictEqual(order, ["start:a", "end:a", "start:b", "end:b"]);
+  });
+
+  it("serializes commands sharing a domain lockKey (cross-command race fix)", async () => {
+    // Codex review #9 high finding: remoteSsh.update / .markDeployed /
+    // .delete all write the same prefs field. Without a shared lockKey
+    // they execute concurrently — markDeployed can compute its commit
+    // from a stale snapshot taken before update committed, and stomp
+    // the user's edit. Domain lockKey forces serialization.
+    const order = [];
+    const slowFast = async (payload) => {
+      order.push(`start:${payload.tag}`);
+      await new Promise((r) => setTimeout(r, payload.tag === "a" ? 20 : 1));
+      order.push(`end:${payload.tag}`);
+      return { status: "ok" };
+    };
+    const cmdA = (payload) => slowFast(payload);
+    const cmdB = (payload) => slowFast(payload);
+    cmdA.lockKey = "shared";
+    cmdB.lockKey = "shared";
+    const ctrl = createSettingsController({
+      prefsPath: makeTempPath(),
+      commands: { cmdA, cmdB },
+    });
+    const a = ctrl.applyCommand("cmdA", { tag: "a" });
+    const b = ctrl.applyCommand("cmdB", { tag: "b" });
+    await Promise.all([a, b]);
+    // Without shared lock they'd interleave start:a, start:b, end:b, end:a.
+    assert.deepStrictEqual(order, ["start:a", "end:a", "start:b", "end:b"],
+      "commands sharing a domain lockKey must serialize even across different names");
+  });
+
+  it("commands without shared lockKey can interleave (control: distinct lockKeys are independent)", async () => {
+    const order = [];
+    const slowFast = async (payload) => {
+      order.push(`start:${payload.tag}`);
+      await new Promise((r) => setTimeout(r, payload.tag === "a" ? 20 : 1));
+      order.push(`end:${payload.tag}`);
+      return { status: "ok" };
+    };
+    const cmdA = (payload) => slowFast(payload);
+    const cmdB = (payload) => slowFast(payload);
+    // No lockKey on either — controller defaults to per-name lock; different
+    // names → no cross-command serialization.
+    const ctrl = createSettingsController({
+      prefsPath: makeTempPath(),
+      commands: { cmdA, cmdB },
+    });
+    const a = ctrl.applyCommand("cmdA", { tag: "a" });
+    const b = ctrl.applyCommand("cmdB", { tag: "b" });
+    await Promise.all([a, b]);
+    // b finishes first (1ms vs 20ms) without serialization.
+    assert.deepStrictEqual(order, ["start:a", "start:b", "end:b", "end:a"]);
+  });
+
+  it("applies uninstallHooks commit without clearing latent autoStartWithClaude preference", async () => {
+    const ctrl = createSettingsController({
+      prefsPath: makeTempPath(),
+      loadResult: {
+        snapshot: { ...prefs.getDefaults(), manageClaudeHooksAutomatically: true, autoStartWithClaude: true },
+        locked: false,
+      },
+      commands: {
+        uninstallHooks: () => ({ status: "ok", commit: { manageClaudeHooksAutomatically: false } }),
+      },
+    });
+    const r = await ctrl.applyCommand("uninstallHooks", null);
+    assert.strictEqual(r.status, "ok");
+    assert.strictEqual(ctrl.get("manageClaudeHooksAutomatically"), false);
+    assert.strictEqual(ctrl.get("autoStartWithClaude"), true);
+  });
+
+  it("applies setSessionAlias through the default command registry and persists it", async () => {
+    const p = makeTempPath();
+    const ctrl = createSettingsController({
+      prefsPath: p,
+      injectedDeps: {
+        now: () => 1000,
+        getActiveSessionAliasKeys: () => new Set(["local|codex|s1"]),
+      },
+    });
+
+    const r = await ctrl.applyCommand("setSessionAlias", {
+      host: null,
+      agentId: "codex",
+      sessionId: "s1",
+      alias: "Codex main",
+    });
+
+    assert.strictEqual(r.status, "ok");
+    assert.deepStrictEqual(ctrl.get("sessionAliases"), {
+      "local|codex|s1": { title: "Codex main", updatedAt: 1000 },
+    });
+    const onDisk = JSON.parse(fs.readFileSync(p, "utf8"));
+    assert.deepStrictEqual(onDisk.sessionAliases, {
+      "local|codex|s1": { title: "Codex main", updatedAt: 1000 },
+    });
+  });
+});
+
+describe("subscribe / subscribeKey", () => {
+  it("subscribeKey only fires for matching key changes", async () => {
+    const ctrl = createSettingsController({ prefsPath: makeTempPath() });
+    let langCalls = 0;
+    let langValue = null;
+    ctrl.subscribeKey("lang", (val) => { langCalls++; langValue = val; });
+    await ctrl.applyUpdate("soundMuted", true); // unrelated
+    assert.strictEqual(langCalls, 0);
+    await ctrl.applyUpdate("lang", "zh");
+    assert.strictEqual(langCalls, 1);
+    assert.strictEqual(langValue, "zh");
+  });
+
+  it("multiple subscribers all fire on the same change", async () => {
+    const ctrl = createSettingsController({ prefsPath: makeTempPath() });
+    let a = 0, b = 0;
+    ctrl.subscribe(() => a++);
+    ctrl.subscribe(() => b++);
+    await ctrl.applyUpdate("lang", "zh");
+    assert.strictEqual(a, 1);
+    assert.strictEqual(b, 1);
+  });
+
+  it("does not death-loop when a subscriber re-reads the snapshot", async () => {
+    const ctrl = createSettingsController({ prefsPath: makeTempPath() });
+    let calls = 0;
+    ctrl.subscribe(() => {
+      calls++;
+      // Simulate a "re-save" that would cause a death loop in a naive store
+      ctrl.persist();
+    });
+    await ctrl.applyUpdate("lang", "zh");
+    assert.strictEqual(calls, 1);
+  });
+});
+
+describe("object-form entries (validate + effect pre-commit gate)", () => {
+  it("runs validate then effect; commits only after both succeed", async () => {
+    let effectCalls = 0;
+    let lastEffectValue = null;
+    const ctrl = createSettingsController({
+      prefsPath: makeTempPath(),
+      updates: {
+        gated: {
+          validate: (v) => typeof v === "boolean"
+            ? { status: "ok" }
+            : { status: "error", message: "must be boolean" },
+          effect: (v) => {
+            effectCalls++;
+            lastEffectValue = v;
+            return { status: "ok" };
+          },
+        },
+      },
+    });
+    const r = await ctrl.applyUpdate("gated", true);
+    assert.strictEqual(r.status, "ok");
+    assert.strictEqual(effectCalls, 1);
+    assert.strictEqual(lastEffectValue, true);
+    assert.strictEqual(ctrl.get("gated"), true);
+  });
+
+  it("does not run effect when validate fails", async () => {
+    let effectCalls = 0;
+    const ctrl = createSettingsController({
+      prefsPath: makeTempPath(),
+      updates: {
+        gated: {
+          validate: () => ({ status: "error", message: "nope" }),
+          effect: () => { effectCalls++; return { status: "ok" }; },
+        },
+      },
+    });
+    const r = await ctrl.applyUpdate("gated", true);
+    assert.strictEqual(r.status, "error");
+    assert.strictEqual(effectCalls, 0);
+    assert.strictEqual(ctrl.get("gated"), undefined);
+  });
+
+  it("does not commit when effect fails (store stays clean)", async () => {
+    const ctrl = createSettingsController({
+      prefsPath: makeTempPath(),
+      updates: {
+        gated: {
+          validate: () => ({ status: "ok" }),
+          effect: () => ({ status: "error", message: "system rejected" }),
+        },
+      },
+    });
+    let broadcasts = 0;
+    ctrl.subscribe(() => broadcasts++);
+    const r = await ctrl.applyUpdate("gated", true);
+    assert.strictEqual(r.status, "error");
+    assert.match(r.message, /system rejected/);
+    assert.strictEqual(ctrl.get("gated"), undefined);
+    assert.strictEqual(broadcasts, 0, "no broadcast on effect failure");
+  });
+
+  it("propagates effect throws as { status: error }", async () => {
+    const ctrl = createSettingsController({
+      prefsPath: makeTempPath(),
+      updates: {
+        gated: {
+          validate: () => ({ status: "ok" }),
+          effect: () => { throw new Error("kaboom"); },
+        },
+      },
+    });
+    const r = await ctrl.applyUpdate("gated", true);
+    assert.strictEqual(r.status, "error");
+    assert.match(r.message, /kaboom/);
+    assert.strictEqual(ctrl.get("gated"), undefined);
+  });
+
+  it("supports async effect", async () => {
+    let resolved = false;
+    const ctrl = createSettingsController({
+      prefsPath: makeTempPath(),
+      updates: {
+        gated: {
+          validate: () => ({ status: "ok" }),
+          effect: async () => {
+            await new Promise((r) => setTimeout(r, 1));
+            resolved = true;
+            return { status: "ok" };
+          },
+        },
+      },
+    });
+    const r = await ctrl.applyUpdate("gated", "anything");
+    assert.strictEqual(r.status, "ok");
+    assert.strictEqual(resolved, true);
+  });
+
+  it("noop short-circuits before validate or effect", async () => {
+    let validateCalls = 0;
+    let effectCalls = 0;
+    const ctrl = createSettingsController({
+      prefsPath: makeTempPath(),
+      updates: {
+        lang: {  // override built-in lang with a tracking gate
+          validate: () => { validateCalls++; return { status: "ok" }; },
+          effect: () => { effectCalls++; return { status: "ok" }; },
+        },
+      },
+    });
+    // Default lang is "system"; set to "system" again should noop.
+    const r = await ctrl.applyUpdate("lang", "system");
+    assert.strictEqual(r.noop, true);
+    assert.strictEqual(validateCalls, 0);
+    assert.strictEqual(effectCalls, 0);
+  });
+});
+
+describe("hydrate (system → prefs import, no effect)", () => {
+  it("runs validate but skips effect, then commits", async () => {
+    let effectCalls = 0;
+    const ctrl = createSettingsController({
+      prefsPath: makeTempPath(),
+      updates: {
+        sysBacked: {
+          validate: (v) => typeof v === "boolean"
+            ? { status: "ok" }
+            : { status: "error", message: "bad" },
+          effect: () => { effectCalls++; return { status: "ok" }; },
+        },
+      },
+    });
+    const r = await ctrl.hydrate({ sysBacked: true });
+    assert.strictEqual(r.status, "ok");
+    assert.strictEqual(effectCalls, 0, "effect must not run during hydrate");
+    assert.strictEqual(ctrl.get("sysBacked"), true);
+  });
+
+  it("rejects partial that fails validate without committing anything", async () => {
+    const ctrl = createSettingsController({
+      prefsPath: makeTempPath(),
+      updates: {
+        a: { validate: () => ({ status: "ok" }), effect: () => ({ status: "ok" }) },
+        b: { validate: () => ({ status: "error", message: "bad b" }) },
+      },
+    });
+    const r = await ctrl.hydrate({ a: 1, b: 2 });
+    assert.strictEqual(r.status, "error");
+    assert.strictEqual(ctrl.get("a"), undefined);
+    assert.strictEqual(ctrl.get("b"), undefined);
+  });
+
+  it("rejects non-object input", () => {
+    const ctrl = createSettingsController({ prefsPath: makeTempPath() });
+    const r = ctrl.hydrate(null);
+    assert.strictEqual(r.status, "error");
+  });
+
+  it("commits multiple keys atomically with a single broadcast", async () => {
+    const ctrl = createSettingsController({ prefsPath: makeTempPath() });
+    let broadcasts = 0;
+    let lastChanges = null;
+    ctrl.subscribe(({ changes }) => { broadcasts++; lastChanges = changes; });
+    // Use existing pure-data fields (function-form entries) — hydrate must
+    // work for both function-form and object-form entries.
+    const r = await ctrl.hydrate({ lang: "zh", soundMuted: true });
+    assert.strictEqual(r.status, "ok");
+    assert.strictEqual(broadcasts, 1);
+    assert.deepStrictEqual(lastChanges, { lang: "zh", soundMuted: true });
+  });
+
+  it("noop when value already matches", async () => {
+    const ctrl = createSettingsController({ prefsPath: makeTempPath() });
+    const r = await ctrl.hydrate({ lang: "system" }); // default
+    assert.strictEqual(r.noop, true);
+  });
+});
+
+describe("locked controller (future-version files)", () => {
+  it("applyUpdate still validates and updates store but does not persist", async () => {
+    const p = makeTempPath();
+    fs.writeFileSync(p, JSON.stringify({ version: 999, lang: "en" }));
+    const originalWarn = console.warn;
+    console.warn = () => {};
+    let ctrl;
+    try {
+      ctrl = createSettingsController({ prefsPath: p });
+    } finally {
+      console.warn = originalWarn;
+    }
+    const r = await ctrl.applyUpdate("lang", "zh");
+    assert.strictEqual(r.status, "ok");
+    assert.strictEqual(ctrl.get("lang"), "zh");
+    // On-disk file should still have version 999 (not overwritten)
+    const onDisk = JSON.parse(fs.readFileSync(p, "utf8"));
+    assert.strictEqual(onDisk.version, 999);
+    assert.strictEqual(onDisk.lang, "en");
+  });
+});
+
+describe("sessionCleanup.setTriple via applyCommand", () => {
+  // This is the regression for v4 — applyCommand must accept a triple that
+  // would have been rejected if each key were applied separately via
+  // applyUpdate, because lowering both knobs simultaneously would otherwise
+  // hit the single-key cross-field validator with the pre-change snapshot.
+  it("commits an atomic triple that drops both stale intervals together", async () => {
+    const ctrl = createSettingsController({
+      prefsPath: makeTempPath(),
+      loadResult: {
+        snapshot: {
+          ...prefs.getDefaults(),
+          sessionStaleMs: 600_000,
+          workingStaleMs: 300_000,
+          detachedIdleStaleMs: 30_000,
+        },
+        locked: false,
+      },
+    });
+    const result = await ctrl.applyCommand("sessionCleanup.setTriple", {
+      sessionStaleMs: 120_000,
+      workingStaleMs: 60_000,
+      detachedIdleStaleMs: 30_000,
+    });
+    assert.strictEqual(result.status, "ok");
+    assert.strictEqual(ctrl.get("sessionStaleMs"), 120_000);
+    assert.strictEqual(ctrl.get("workingStaleMs"), 60_000);
+    assert.strictEqual(ctrl.get("detachedIdleStaleMs"), 30_000);
+  });
+
+  it("rejects an inverted triple without partial commit", async () => {
+    const ctrl = createSettingsController({
+      prefsPath: makeTempPath(),
+      loadResult: {
+        snapshot: { ...prefs.getDefaults() },
+        locked: false,
+      },
+    });
+    const result = await ctrl.applyCommand("sessionCleanup.setTriple", {
+      sessionStaleMs: 120_000,
+      workingStaleMs: 300_000,
+      detachedIdleStaleMs: 30_000,
+    });
+    assert.strictEqual(result.status, "error");
+    // Original defaults intact.
+    assert.strictEqual(ctrl.get("sessionStaleMs"), 600_000);
+    assert.strictEqual(ctrl.get("workingStaleMs"), 300_000);
+  });
+});

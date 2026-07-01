@@ -1,0 +1,118 @@
+node_modules/
+dist/
+.env
+.env.apple-notarize.local
+__pycache__/
+*.pyc
+.DS_Store
+Thumbs.db
+
+# Claude Code local config
+.claude/
+# OpenCode local config
+.opencode/
+# Development plans & review notes
+PLAN.md
+PLAN-*.md
+codex-*.md
+CHANGELOG-draft.md
+docs/**
+!docs/guides/
+!docs/guides/copilot-setup.md
+!docs/guides/copilot-setup.zh-CN.md
+!docs/guides/guide-theme-creation.md
+!docs/guides/known-limitations.md
+!docs/guides/known-limitations.zh-CN.md
+!docs/guides/setup-guide.md
+!docs/guides/setup-guide.zh-CN.md
+!docs/guides/guide-remote-ssh.md
+!docs/guides/guide-remote-ssh.zh-CN.md
+!docs/guides/state-mapping.md
+!docs/guides/state-mapping.zh-CN.md
+!docs/guides/telegram-approval.md
+!docs/guides/codex-wsl-clarification.md
+!docs/guides/codex-wsl-clarification.zh-CN.md
+!docs/guides/codex-wsl-clarification.ko-KR.md
+!docs/investigations/
+!docs/investigations/permission-hook-fail-deny-investigation.md
+!docs/investigations/codex-subagent-session-meta.md
+!docs/project/
+!docs/project/agent-runtime-architecture.md
+!docs/project/release-process.md
+!docs/project/theme-state-ui.md
+!docs/cloudling/
+!docs/cloudling/specs/
+!docs/cloudling/specs/core-states.md
+!docs/cloudling/specs/special-states.md
+!docs/releases/
+!docs/releases/release-v0.5.5.md
+!docs/releases/release-v0.6.0.md
+!docs/releases/release-v0.6.1.md
+!docs/releases/release-v0.6.2.md
+!docs/releases/release-v0.6.3.md
+!docs/releases/release-v0.7.1.md
+!docs/releases/release-v0.8.0.md
+!docs/releases/release-v0.8.1.md
+!docs/releases/release-v0.9.0.md
+!docs/releases/release-v0.10.0.md
+
+# Temp files from testing
+.tmp_*
+.tmp-*
+*.tmp
+
+# Root-level scratch files (tmp-*.md / tmp-*.json / tmp-*.sh etc.)
+# Matches files like tmp-pr301-comment.md, tmp-issues.json at repo root only.
+/tmp-*
+
+# Local manual test / tuning scratch docs (root-level dotfile md)
+.*-test-*.md
+.*-tune-*.md
+.*-tune.md
+
+
+# Calico animation studio (WIP pipeline, not for distribution)
+calico-studio/
+
+# WIP artwork (unpublished, All Rights Reserved)
+tools/calico-*
+!tools/calico-final.svg
+
+# Internal pipeline tools (not for distribution)
+tools/chroma_key.py
+tools/fix_gray_bleed.py
+tools/rebuild_apng.py
+tools/check_dark.py
+!tools/calico-test.html
+
+# Debug logs
+logs/
+
+# Telegram approval sidecar build artifacts
+bin/cc-connect-clawd/*/cc-connect-clawd
+bin/cc-connect-clawd/*/cc-connect-clawd.exe
+!bin/cc-connect-clawd/
+!bin/cc-connect-clawd/README.md
+
+# VC++ Redistributable (downloaded in CI only)
+build/vc_redist.arm64.exe
+
+# GIF recording tools (not part of main project)
+scripts/*
+!scripts/remote-deploy.sh
+!scripts/run-clawdbot-stress.sh
+!scripts/monitor-clawd-resources.sh
+!scripts/monitor-clawd-power.ps1
+!scripts/validate-theme.js
+!scripts/create-theme.js
+!scripts/export-agent-icons.js
+!scripts/verify-sidecar-binaries.js
+!scripts/fetch-sidecar-binaries.js
+!scripts/fetch-adapters.js
+!scripts/verify-adapters.js
+
+# oh-my-cursor state
+.omc/
+
+# Cursor local config (MCP, rules from omc setup)
+.cursor/

@@ -1,0 +1,60 @@
+# Heavy / generated artifacts
+node_modules/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+*.log
+
+# Build / dist outputs
+dist/
+
+# Sidecar build artifacts. Spec / scripts under minicpm-sidecar/ stay
+# committed via that directory's own .gitignore.
+minicpm-sidecar/bin/
+minicpm-sidecar/build/build/
+minicpm-sidecar/build/dist/
+
+# llama.cpp submodule build outputs (the submodule itself is tracked)
+llama.cpp/build/
+
+# Model weights — too big to ship, friends/colleagues download separately
+models/
+
+# LoRA adapter weights (.gguf) — fetched from Hugging Face at build time
+# by clawd-on-desk/scripts/fetch-adapters.js, never committed (the PEFT
+# .safetensors source stays in Git LFS via .gitattributes).
+adapters/**/*.gguf
+
+# Editor / OS junk
+.vscode/
+.idea/
+*.swp
+*~
+
+# Local scratch dir for one-off assets/exports
+temp/
+
+# Planning / agent working files
+task_plan.md
+findings.md
+progress.md
+.planning/
+CLAUDE.md
+
+# Local env / secrets
+.env
+.env.local
+.env.apple-notarize.local
+!.env.apple-notarize.local.example
+
+# Bridge runtime files
+*.pid
+runtime-port.json
+
+# Adapter manifest is rebuilt at runtime with machine-local absolute paths
+adapters/.manifest.json
+
+# uv lock — keep
+# (don't ignore uv.lock; it's needed for reproducible installs)

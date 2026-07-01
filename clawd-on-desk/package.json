@@ -1,0 +1,227 @@
+{
+  "name": "minicpm-desk-pet",
+  "version": "0.10.0",
+  "description": "MiniCPM Desk Pet — local-first desktop pet powered by MiniCPM5-0.9B. Forked from clawd-on-desk.",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "node launch.js",
+    "build": "electron-builder --win",
+    "build:win:x64": "electron-builder --win nsis:x64",
+    "build:win:arm64": "electron-builder --win nsis:arm64",
+    "build:win:all": "electron-builder --win nsis:x64 nsis:arm64",
+    "build:mac": "electron-builder --mac",
+    "build:mac:mvp": "bash ../minicpm-sidecar/scripts/build-all.sh && electron-builder --mac --arm64 -c.mac.target=dmg",
+    "build:mac:repack": "electron-builder --mac --arm64 -c.mac.target=dmg",
+    "build:mac:notarize": "bash scripts/build-dmg-notarize.sh",
+    "build:mac:mvp:notarize": "bash ../minicpm-sidecar/scripts/build-all.sh && bash scripts/build-dmg-notarize.sh",
+    "build:linux": "electron-builder --linux",
+    "build:all": "electron-builder --win --mac --linux",
+    "fetch:sidecars": "node scripts/fetch-sidecar-binaries.js",
+    "verify:sidecars": "node scripts/verify-sidecar-binaries.js",
+    "fetch:adapters": "node scripts/fetch-adapters.js",
+    "verify:adapters": "node scripts/verify-adapters.js",
+    "prebuild": "node scripts/verify-sidecar-binaries.js && node scripts/fetch-adapters.js && node scripts/verify-adapters.js",
+    "prebuild:win:x64": "node scripts/verify-sidecar-binaries.js && node scripts/fetch-adapters.js && node scripts/verify-adapters.js",
+    "prebuild:win:arm64": "node scripts/verify-sidecar-binaries.js && node scripts/fetch-adapters.js && node scripts/verify-adapters.js",
+    "prebuild:win:all": "node scripts/verify-sidecar-binaries.js && node scripts/fetch-adapters.js && node scripts/verify-adapters.js",
+    "prebuild:mac": "node scripts/verify-sidecar-binaries.js && node scripts/fetch-adapters.js && node scripts/verify-adapters.js",
+    "prebuild:linux": "node scripts/verify-sidecar-binaries.js && node scripts/fetch-adapters.js && node scripts/verify-adapters.js",
+    "prebuild:all": "node scripts/verify-sidecar-binaries.js && node scripts/fetch-adapters.js && node scripts/verify-adapters.js",
+    "test": "node test/run-tests.js",
+    "create-theme": "node scripts/create-theme.js",
+    "export-agent-icons": "node scripts/export-agent-icons.js",
+    "install:claude-hooks": "node hooks/install.js",
+    "uninstall:claude-hooks": "node hooks/uninstall.js",
+    "install:gemini-hooks": "node hooks/gemini-install.js",
+    "install:antigravity-hooks": "node hooks/antigravity-install.js",
+    "install:cursor-hooks": "node hooks/cursor-install.js",
+    "install:kiro-hooks": "node hooks/kiro-install.js",
+    "install:kimi-hooks": "node hooks/kimi-install.js",
+    "install:qwen-hooks": "node hooks/qwen-code-install.js",
+    "install:codewhale-hooks": "node hooks/codewhale-install.js",
+    "uninstall:codewhale-hooks": "node hooks/codewhale-install.js --uninstall",
+    "install:pi-extension": "node hooks/pi-install.js",
+    "uninstall:pi-extension": "node hooks/pi-install.js --uninstall",
+    "install:openclaw-plugin": "node hooks/openclaw-install.js",
+    "uninstall:openclaw-plugin": "node hooks/openclaw-install.js --uninstall",
+    "install:codex-hooks": "node hooks/codex-install.js",
+    "uninstall:codex-hooks": "node hooks/codex-install.js --uninstall",
+    "install:codex-debug-hooks": "node hooks/codex-debug-install.js",
+    "uninstall:codex-debug-hooks": "node hooks/codex-debug-install.js --uninstall",
+    "install:hermes-plugin": "node hooks/hermes-install.js",
+    "uninstall:hermes-plugin": "node hooks/hermes-install.js --uninstall",
+    "install:qoder-hooks": "node hooks/qoder-install.js",
+    "uninstall:qoder-hooks": "node hooks/qoder-install.js --uninstall",
+    "install:reasonix-hooks": "node hooks/reasonix-install.js",
+    "uninstall:reasonix-hooks": "node hooks/reasonix-install.js --uninstall",
+    "cleanup:integrations": "node hooks/cleanup-integrations.js --apply",
+    "register-protocol:dev": "node launch.js --register-protocol"
+  },
+  "keywords": [
+    "clawd",
+    "desktop-pet",
+    "electron",
+    "claude-code"
+  ],
+  "author": "OpenBMB",
+  "license": "AGPL-3.0-only",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/OpenBMB/MiniCPM-Desk-Pet.git"
+  },
+  "homepage": "https://github.com/OpenBMB/MiniCPM-Desk-Pet",
+  "upstreamRepository": "https://github.com/rullerzhou-afk/clawd-on-desk",
+  "type": "commonjs",
+  "build": {
+    "appId": "com.openbmb.minicpm-desk-pet",
+    "productName": "MiniCPM Desk Pet",
+    "copyright": "Copyright © 2026 OpenBMB. Based on clawd-on-desk by rullerzhou-afk (AGPL-3.0-only).",
+    "protocols": [
+      {
+        "name": "Clawd Import Protocol",
+        "schemes": [
+          "clawd"
+        ]
+      }
+    ],
+    "mac": {
+      "icon": "assets/icon.icns",
+      "artifactName": "MiniCPM-Desk-Pet-${version}-${arch}.${ext}",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
+      "category": "public.app-category.entertainment",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.inherit.plist",
+      "extendInfo": {
+        "LSUIElement": true
+      }
+    },
+    "win": {
+      "icon": "assets/icon.ico",
+      "artifactName": "MiniCPM-Desk-Pet-Setup-${version}-${arch}.${ext}",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ]
+    },
+    "linux": {
+      "maintainer": "OpenBMB <opensource@openbmb.org>",
+      "icon": "assets/icons",
+      "category": "Utility",
+      "artifactName": "MiniCPM-Desk-Pet-${version}-${arch}.${ext}",
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "deb",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "buildUniversalInstaller": false,
+      "installerIcon": "assets/icon.ico",
+      "uninstallerIcon": "assets/icon.ico",
+      "installerHeaderIcon": "assets/icon.ico",
+      "include": "build/installer.nsh"
+    },
+    "afterSign": "scripts/notarize.js",
+    "files": [
+      "NOTICE.md",
+      "src/**/*",
+      "assets/icon.ico",
+      "assets/icons/**/*",
+      "assets/icons/agents/**/*",
+      "assets/svg/**/*",
+      "assets/sounds/**/*",
+      "assets/dock-icon.png",
+      "assets/tray-icon*.png",
+      "hooks/**/*",
+      "extensions/**/*",
+      "agents/**/*",
+      "themes/**/*",
+      "pwa/**/*"
+    ],
+    "asarUnpack": [
+      "assets/svg/**/*",
+      "hooks/**/*",
+      "extensions/**/*",
+      "agents/**/*",
+      "themes/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "assets/icon.ico",
+        "to": "icon.ico"
+      },
+      {
+        "from": "bin/cc-connect-clawd",
+        "to": "sidecars/cc-connect-clawd"
+      },
+      {
+        "from": "../minicpm-sidecar/bin/${os}-${arch}",
+        "to": "sidecar-bin"
+      },
+      {
+        "from": "../minicpm-sidecar",
+        "to": "minicpm-sidecar",
+        "filter": [
+          "gateway/**/*.py",
+          "pyproject.toml",
+          ".python-version",
+          "README.md"
+        ]
+      },
+      {
+        "from": "../adapters",
+        "to": "adapters",
+        "filter": [
+          "**/*.gguf",
+          "**/README.md",
+          "**/USAGE.md",
+          "**/adapter_config.json"
+        ]
+      }
+    ],
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "OpenBMB",
+        "repo": "MiniCPM-Desk-Pet"
+      }
+    ]
+  },
+  "devDependencies": {
+    "@electron/notarize": "^3.1.1",
+    "electron": "^41.0.2",
+    "electron-builder": "^26.8.1"
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.3",
+    "htmlparser2": "^12.0.0",
+    "koffi": "^2.15.2",
+    "ws": "^8.21.0"
+  }
+}

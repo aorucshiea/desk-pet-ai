@@ -1,0 +1,329 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src http://127.0.0.1:18765 http://localhost:18765; img-src 'self' data:;">
+<title>MiniCPM</title>
+<style>
+  :root {
+    --bg: rgba(22, 26, 34, 0.92);
+    --text: #e6e8ee;
+    --muted: #9aa3b6;
+    --accent: #6A70E5;
+    --border: rgba(255, 255, 255, 0.06);
+    --inner-edge: rgba(255, 255, 255, 0.04);
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: rgba(255, 255, 255, 0.94);
+      --text: #1c1c20;
+      --muted: #6c7180;
+      --accent: #373ED8;
+      --border: rgba(0, 0, 0, 0.05);
+      --inner-edge: rgba(255, 255, 255, 0.6);
+    }
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    height: 100%; background: transparent; color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", Arial, sans-serif;
+    font-size: 13px; line-height: 1.5; overflow: hidden;
+    user-select: none;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Shell hugs the window edges; small inset only on sides where the tail
+     pokes out. The bubble fills the rest exactly so there is no visible
+     halo / shadow plate behind it. */
+  .shell {
+    position: fixed; inset: 7px;
+    display: grid; place-items: center;
+  }
+
+  .bubble {
+    position: relative;
+    width: 100%; max-width: 100%;
+    background: var(--bg);
+    backdrop-filter: blur(28px) saturate(150%);
+    -webkit-backdrop-filter: blur(28px) saturate(150%);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 7px 12px;
+    /* A faint inner highlight gives the edge a glassy fade rather than a
+       hard 1-pixel line — looks softer at any size. */
+    box-shadow: inset 0 1px 0 var(--inner-edge);
+    opacity: 0; transform: translateY(2px) scale(0.99);
+    transition: opacity 160ms ease, transform 160ms ease;
+    pointer-events: none;
+    overflow: hidden;
+  }
+  .bubble.show { opacity: 1; transform: translateY(0) scale(1); pointer-events: auto; }
+  .bubble.fading { opacity: 0; transform: translateY(2px) scale(0.99); }
+
+  /* Bubble tail (small triangle pointing toward the pet). Position adjusts
+     based on which side of the pet we're rendered. */
+  .tail {
+    position: absolute;
+    width: 11px; height: 11px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    transform: rotate(45deg);
+    border-radius: 3px;
+    backdrop-filter: blur(28px) saturate(150%);
+    -webkit-backdrop-filter: blur(28px) saturate(150%);
+  }
+  .bubble[data-side="right"] .tail { left: -6px; top: 50%; margin-top: -6px;
+    border-right: none; border-top: none; }
+  .bubble[data-side="left"] .tail { right: -6px; top: 50%; margin-top: -6px;
+    border-left: none; border-bottom: none; }
+  .bubble[data-side="below"] .tail { top: -6px; left: 50%; margin-left: -6px;
+    border-right: none; border-bottom: none; }
+  .bubble[data-side="above"] .tail { bottom: -6px; left: 50%; margin-left: -6px;
+    border-left: none; border-top: none; }
+
+  /* — Drag-to-position edit mode (toggled by Settings) — */
+  body.edit-mode { -webkit-app-region: drag; cursor: grab; }
+  body.edit-mode .bubble {
+    cursor: grab;
+    outline: 2px dashed rgba(107, 86, 255, 0.55);
+    outline-offset: 4px;
+    animation: editPulse 1.4s ease-in-out infinite;
+  }
+  body.edit-mode:active, body.edit-mode .bubble:active { cursor: grabbing; }
+  @keyframes editPulse {
+    0%, 100% { outline-color: rgba(107, 86, 255, 0.55); }
+    50%      { outline-color: rgba(107, 86, 255, 0.20); }
+  }
+
+  /* — STATE: ask (input prompt) — */
+  textarea {
+    width: 100%;
+    border: none; outline: none; resize: none;
+    background: transparent; color: var(--text);
+    font: inherit; font-size: 13px;
+    max-height: 120px; min-height: 18px;
+    user-select: text;
+    -webkit-app-region: no-drag;
+    display: block;
+  }
+  textarea::placeholder { color: var(--muted); }
+
+  /* — Continuous-chat layout (size follows content; bubble grows smoothly) — */
+  .chat-pane {
+    display: flex; flex-direction: column;
+    gap: 4px;
+  }
+  /* Top region: previous reply, max ~120px then internal scroll. */
+  .last-reply-region {
+    flex: 0 1 auto;
+    max-height: 120px;
+    overflow-y: auto;
+    font-size: 12.5px;
+    color: var(--muted);
+    line-height: 1.45;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    user-select: text;
+    -webkit-app-region: no-drag;
+    padding-right: 2px;
+    padding-bottom: 3px;
+    border-bottom: 1px solid var(--border);
+  }
+  .last-reply-region::-webkit-scrollbar { width: 4px; }
+  .last-reply-region::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+  /* Bottom: input grows with typing up to 200px then internally scrolls. */
+  .ask-input-wrap {
+    flex: 0 0 auto;
+  }
+  .ask-input-wrap textarea {
+    max-height: 200px;
+    line-height: 1.5;
+  }
+  .ask-input-wrap textarea::-webkit-scrollbar { width: 4px; }
+  .ask-input-wrap textarea::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+  /* — STATE: speak (assistant reply) — */
+  .speak {
+    user-select: text; -webkit-user-select: text;
+    white-space: pre-wrap; word-wrap: break-word;
+    max-height: 320px; overflow-y: auto;
+    -webkit-app-region: no-drag;
+  }
+  .speak::-webkit-scrollbar { width: 5px; }
+  .speak::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+  .speak.streaming::after {
+    content: "▍"; color: var(--accent); margin-left: 2px;
+    animation: blink 1s steps(1) infinite;
+  }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  /* — Rendered Markdown — applies after streaming completes (.rendered)
+     and to the pinned previous reply in continuous-chat mode. Keep the
+     vertical rhythm tight so multi-paragraph replies still fit. */
+  .speak.rendered, .last-reply-region.rendered {
+    white-space: normal;
+  }
+  .speak.rendered p,
+  .last-reply-region.rendered p { margin: 0 0 0.55em; }
+  .speak.rendered p:last-child,
+  .last-reply-region.rendered p:last-child { margin-bottom: 0; }
+  .speak.rendered h1, .last-reply-region.rendered h1 { font-size: 1.18em; font-weight: 700; margin: 0.45em 0 0.28em; line-height: 1.35; }
+  .speak.rendered h2, .last-reply-region.rendered h2 { font-size: 1.10em; font-weight: 700; margin: 0.40em 0 0.25em; line-height: 1.35; }
+  .speak.rendered h3, .last-reply-region.rendered h3 { font-size: 1.04em; font-weight: 700; margin: 0.40em 0 0.20em; line-height: 1.35; }
+  .speak.rendered h1:first-child, .speak.rendered h2:first-child, .speak.rendered h3:first-child,
+  .last-reply-region.rendered h1:first-child, .last-reply-region.rendered h2:first-child, .last-reply-region.rendered h3:first-child {
+    margin-top: 0;
+  }
+  .speak.rendered strong, .last-reply-region.rendered strong { font-weight: 600; }
+  .speak.rendered em, .last-reply-region.rendered em { font-style: italic; }
+  .speak.rendered ul, .speak.rendered ol,
+  .last-reply-region.rendered ul, .last-reply-region.rendered ol {
+    margin: 0 0 0.55em; padding-left: 1.4em;
+  }
+  .speak.rendered li, .last-reply-region.rendered li { margin: 0.12em 0; }
+  .speak.rendered hr, .last-reply-region.rendered hr {
+    border: none; border-top: 1px solid var(--border);
+    margin: 0.55em 0;
+  }
+  .speak.rendered code, .last-reply-region.rendered code {
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 0.88em;
+    background: rgba(127, 127, 127, 0.12);
+    padding: 1px 5px;
+    border-radius: 4px;
+  }
+  .speak.rendered pre, .last-reply-region.rendered pre {
+    background: rgba(127, 127, 127, 0.10);
+    padding: 8px 10px;
+    border-radius: 6px;
+    overflow-x: auto;
+    margin: 0 0 0.55em;
+    white-space: pre;
+  }
+  .speak.rendered pre code, .last-reply-region.rendered pre code {
+    background: transparent;
+    padding: 0;
+    font-size: 0.86em;
+  }
+
+  /* Whispered thought stream — soft gray text with a left border that
+     stands in for "this is a quoted side-channel". No italic (Chinese
+     fonts get visually skewed) and no emoji. */
+  .think-stream {
+    color: var(--muted);
+    font-size: 12.5px;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    user-select: text;
+    border-left: 2px solid var(--accent);
+    padding-left: 12px;
+    max-height: 280px;
+    overflow-y: auto;
+    overflow-x: hidden;
+    -webkit-app-region: no-drag;
+    opacity: 0.92;
+  }
+  .think-stream::-webkit-scrollbar { width: 4px; }
+  .think-stream::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+  .think-stream::after {
+    content: " ●";
+    color: var(--accent);
+    margin-left: 4px;
+    font-size: 7px;
+    vertical-align: 2px;
+    animation: thinkBlink 1.4s ease-in-out infinite;
+  }
+  @keyframes thinkBlink {
+    0%, 100% { opacity: 0.25; }
+    50%      { opacity: 0.9; }
+  }
+
+  /* — STATE: thinking (transient hint while sidecar is starting / first chunk delay) — */
+  .thinking-row {
+    display: flex; align-items: center; gap: 8px;
+    color: var(--muted); font-size: 12px;
+  }
+  .spinner {
+    display: inline-block; width: 11px; height: 11px;
+    border: 2px solid var(--border); border-top-color: var(--accent);
+    border-radius: 50%; animation: spin .8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* Tiny "● new revision available" pill that sits in the corner of the
+     bubble. Click to apply the update. */
+  .upd-pill {
+    position: absolute;
+    top: 6px; right: 8px;
+    z-index: 10;
+    font-size: 10px;
+    color: var(--accent);
+    background: rgba(155,140,255,0.10);
+    border: 1px solid rgba(155,140,255,0.35);
+    padding: 2px 7px;
+    border-radius: 999px;
+    cursor: pointer;
+    user-select: none;
+    -webkit-app-region: no-drag;
+    display: none;
+    align-items: center;
+    gap: 5px;
+    line-height: 1.2;
+  }
+  .upd-pill::before {
+    content: "●";
+    color: var(--accent);
+    font-size: 8px;
+    animation: thinkBlink 1.4s ease-in-out infinite;
+  }
+  .upd-pill:hover { background: rgba(155,140,255,0.18); }
+  /* Inline progress shown inside the bubble while updating. */
+  .upd-progress {
+    font-size: 12px;
+    color: var(--muted);
+    text-align: center;
+    padding: 6px 4px;
+  }
+  .upd-progress .bar {
+    margin-top: 7px;
+    height: 4px;
+    background: rgba(155,140,255,0.15);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+  .upd-progress .bar > i {
+    display: block;
+    height: 100%;
+    background: var(--accent);
+    width: 0%;
+    transition: width 200ms ease;
+    border-radius: 2px;
+  }
+
+  .err-text { color: var(--danger, #ff6b6b); font-size: 11px; }
+  .err-text pre {
+    margin-top: 6px; padding: 6px; background: rgba(255,255,255,0.04);
+    color: var(--muted); border-radius: 4px; font-size: 10px;
+    white-space: pre-wrap; max-height: 140px; overflow: auto; user-select: text;
+  }
+  @media (prefers-color-scheme: light) {
+    .err-text pre { background: rgba(0,0,0,0.04); }
+  }
+</style>
+</head>
+<body>
+<div class="shell">
+  <div class="bubble" id="bubble" data-side="right">
+    <div class="tail"></div>
+    <div class="upd-pill" id="updPill"></div>
+    <div id="content"></div>
+  </div>
+</div>
+
+<script src="minicpm-i18n.js"></script>
+<script src="minicpm-chat-context.js"></script>
+<script src="minicpm-chat-renderer.js"></script>
+</body>
+</html>

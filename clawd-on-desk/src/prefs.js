@@ -1,0 +1,931 @@
+"use strict";
+
+// ── Preferences (pure data layer) ──
+//
+// This module is the canonical schema definition + load/save/migrate/validate
+// for `clawd-prefs.json`. It has zero dependencies on Electron, the store, the
+// controller, or anything stateful — it deals in plain snapshots.
+//
+// `load(prefsPath)`  — read file, migrate to current version, validate, return snapshot
+// `save(prefsPath, snapshot)` — validate (lightly) + write JSON
+// `getDefaults()` — fresh defaults snapshot (every call returns a new object — never share refs)
+// `validate(snapshot)` — coerces an arbitrary object into a valid snapshot, dropping bad fields
+// `migrate(raw)` — applies version-to-version migrations, returns the upgraded raw snapshot
+//
+// Bad-file handling: read failure → backup as `clawd-prefs.json.bak` → return defaults.
+// Future-version handling: read succeeds but version > current → warn + refuse to overwrite
+//   (caller still gets a valid snapshot, but `save()` becomes a no-op via the locked flag).
+
+const fs = require("fs");
+const path = require("path");
+const { isPlainObject } = require("./theme-loader");
+const { normalizeShortcuts, getDefaultShortcuts } = require("./shortcut-actions");
+const { isValidDisplaySnapshot } = require("./work-area");
+const { normalizeRemoteSsh, getDefaults: getRemoteSshDefaults } = require("./remote-ssh-profile");
+const {
+  cloneDefaultTelegramApproval,
+  normalizeTelegramApproval,
+} = require("./telegram-approval-settings");
+const {
+  DEFAULT_HARDWARE_BUDDY_SETTINGS,
+  normalizeHardwareBuddySettings,
+} = require("./hardware-buddy-settings");
+const {
+  NOTIFICATION_DEFAULT_SECONDS,
+  UPDATE_DEFAULT_SECONDS,
+  PERMISSION_DEFAULT_SECONDS,
+  MAX_AUTO_CLOSE_SECONDS,
+} = require("./bubble-policy");
+const { normalizeSessionAliases } = require("./session-alias");
+const {
+  TEXT_SCALE_MIN,
+  TEXT_SCALE_MAX,
+  TEXT_SCALE_DEFAULT,
+  normalizeTextScaleByDisplay,
+} = require("./text-scale");
+const { DEFAULT_THEME_ID } = require("./default-theme");
+
+const CURRENT_VERSION = 11;
+const DEFAULT_INTEGRATION_INSTALLED_IDS = Object.freeze(["claude-code", "codex"]);
+const DEFAULT_INTEGRATION_INSTALLED_SET = new Set(DEFAULT_INTEGRATION_INSTALLED_IDS);
+
+function isDefaultIntegrationInstalled(agentId) {
+  return DEFAULT_INTEGRATION_INSTALLED_SET.has(agentId);
+}
+
+// ── Schema ──
+// Each field has: type, default OR defaultFactory, optional enum/normalize/validate.
+// `defaultFactory` is required for object/array fields so callers never share references.
+const SCHEMA = {
+  version: {
+    type: "number",
+    default: CURRENT_VERSION,
+  },
+  // Window state
+  x: { type: "number", default: 0, validate: (v) => Number.isFinite(v) },
+  y: { type: "number", default: 0, validate: (v) => Number.isFinite(v) },
+  positionSaved: { type: "boolean", default: false },
+  positionThemeId: { type: "string", default: "" },
+  positionVariantId: { type: "string", default: "" },
+  // Snapshot of the display the pet sat on at save time. Used on next launch
+  // to distinguish "monitor got unplugged" (saved position is now stranded on
+  // a phantom screen) from "monitor still here" (saved position is still
+  // safe, even if a generic clamp would nudge it). `null` when no snapshot
+  // was captured (legacy prefs, headless CI, startup race).
+  positionDisplay: {
+    type: "object",
+    defaultFactory: () => null,
+    normalize: normalizePositionDisplay,
+  },
+  // Last realized pixel bounds. Used to restore proportional mode exactly
+  // when keepSizeAcrossDisplays is enabled.
+  savedPixelWidth: { type: "number", default: 0, validate: (v) => Number.isFinite(v) && v >= 0 },
+  savedPixelHeight: { type: "number", default: 0, validate: (v) => Number.isFinite(v) && v >= 0 },
+  size: {
+    type: "string",
+    default: "P:9",
+    // Accept "S"/"M"/"L" (legacy) or "P:<num>" — full migration happens elsewhere.
+    validate: (v) =>
+      typeof v === "string" &&
+      (v === "S" || v === "M" || v === "L" || /^P:\d+(?:\.\d+)?$/.test(v)),
+  },
+  // Mini mode runtime state (persisted so Mini Mode survives restart)
+  miniMode: { type: "boolean", default: false },
+  miniEdge: { type: "string", default: "right", enum: ["left", "right"] },
+  preMiniX: { type: "number", default: 0, validate: (v) => Number.isFinite(v) },
+  preMiniY: { type: "number", default: 0, validate: (v) => Number.isFinite(v) },
+  // Pure data prefs
+  // "system" means follow the OS locale; main/settings renderers resolve it
+  // to a concrete supported language at runtime.
+  lang: { type: "string", default: "system", enum: ["system", "en", "zh", "zh-TW", "ko", "ja"] },
+  showTray: { type: "boolean", default: true },
+  showDock: { type: "boolean", default: true },
+  manageClaudeHooksAutomatically: { type: "boolean", default: true },
+  autoStartWithClaude: { type: "boolean", default: false },
+  // System-backed: actual truth lives in OS login items / autostart files.
+  // `openAtLoginHydrated` starts false; main.js's startup hydrate helper imports
+  // the current system value into prefs on first run, then flips this flag.
+  // Without hydration, an upgrading user with login-startup already enabled
+  // would see prefs report `false` and have it written back to the system.
+  openAtLogin: { type: "boolean", default: false },
+  openAtLoginHydrated: { type: "boolean", default: false },
+  bubbleFollowPet: { type: "boolean", default: false },
+  sessionHudEnabled: { type: "boolean", default: true },
+  sessionHudShowStateLabels: { type: "boolean", default: true },
+  sessionHudShowElapsed: { type: "boolean", default: false },
+  sessionHudShowContextUsage: { type: "boolean", default: true },
+  sessionHudCleanupDetached: { type: "boolean", default: true },
+  sessionHudPinned: { type: "boolean", default: false },
+  // Stale-cleanup intervals (ms). Defaults match the historical constants in
+  // state-stale-cleanup.js so upgrading users see no behavioral change.
+  // sessionStaleMs = 0 means "never drop a session by idle age".
+  sessionStaleMs: {
+    type: "number",
+    default: 600000,
+    validate: (v) =>
+      Number.isInteger(v) && (v === 0 || (v >= 60_000 && v <= 86_400_000)),
+  },
+  workingStaleMs: {
+    type: "number",
+    default: 300000,
+    validate: (v) => Number.isInteger(v) && v >= 30_000 && v <= 86_400_000,
+  },
+  detachedIdleStaleMs: {
+    type: "number",
+    default: 30000,
+    validate: (v) => Number.isInteger(v) && v >= 5_000 && v <= 300_000,
+  },
+  hideBubbles: { type: "boolean", default: false },
+  permissionBubblesEnabled: { type: "boolean", default: true },
+  // DANGER: "auto-pilot". When true, every agent permission request is
+  // auto-approved without showing a bubble or asking the user. Default false;
+  // the only way to flip it on is the explicit, confirmation-gated toggle in
+  // Settings. DND and per-agent permissionsEnabled gates still win — they are
+  // checked before showPermissionBubble, which is where auto-approve hooks in.
+  // Headless sessions are also stopped before that chokepoint, but their
+  // downstream fallback is agent-specific: Claude/CodeBuddy auto-deny, while
+  // Codex/Qwen/Copilot/Hermes return no-decision and opencode silently falls
+  // back to its TUI prompt. Codex subagent permission payloads are treated as
+  // headless even if no prior session-state event has populated the runtime map.
+  //
+  // `ephemeral: true` — this field is runtime-only. It is NOT written to disk
+  // by save(), and load()/validate() force it back to the default. So enabling
+  // auto-pilot lasts only for the current app session: quit and relaunch and
+  // it's off again, requiring a fresh confirmation. A dangerous "approve
+  // everything" mode must never silently persist across restarts.
+  autoApproveAllPermissions: { type: "boolean", default: false, ephemeral: true },
+  notificationBubbleAutoCloseSeconds: {
+    type: "number",
+    default: NOTIFICATION_DEFAULT_SECONDS,
+    validate: (v) => Number.isInteger(v) && v >= 0 && v <= MAX_AUTO_CLOSE_SECONDS,
+  },
+  permissionBubbleAutoCloseSeconds: {
+    type: "number",
+    default: PERMISSION_DEFAULT_SECONDS,
+    validate: (v) => Number.isInteger(v) && v >= 0 && v <= MAX_AUTO_CLOSE_SECONDS,
+  },
+  updateBubbleAutoCloseSeconds: {
+    type: "number",
+    default: UPDATE_DEFAULT_SECONDS,
+    validate: (v) => Number.isInteger(v) && v >= 0 && v <= MAX_AUTO_CLOSE_SECONDS,
+  },
+  soundMuted: { type: "boolean", default: false },
+  soundVolume: {
+    type: "number",
+    default: 1,
+    validate: (v) => Number.isFinite(v) && v >= 0 && v <= 1,
+  },
+  flashTaskbarOnComplete: { type: "boolean", default: true },
+  flashIntervalMs: {
+    type: "number",
+    default: 500,
+    validate: (v) => Number.isInteger(v) && v >= 200 && v <= 2000,
+  },
+  flashDurationMs: {
+    type: "number",
+    default: 5000,
+    validate: (v) => Number.isInteger(v) && v >= 0 && v <= 60000,
+  },
+  lowPowerIdleMode: { type: "boolean", default: false },
+  mobilePreviewEnabled: { type: "boolean", default: false },
+  // When true, prevent the OS from sleeping while any agent task is in
+  // progress (working/thinking/etc.); allow sleep again once tasks finish.
+  keepAwakeWhileWorking: { type: "boolean", default: false },
+  allowEdgePinning: { type: "boolean", default: false },
+  disableMiniMode: { type: "boolean", default: false },
+  // When true, moving the pet between displays does not trigger a
+  // proportional pixel-size recomputation. The pet keeps its current
+  // window size; the size slider still works (per-display proportional).
+  keepSizeAcrossDisplays: { type: "boolean", default: false },
+  // Free roam: when enabled and the pet is idle, it will wander around the screen
+  freeRoam: { type: "boolean", default: false },
+  // Text-window zoom (bubbles, HUD, dashboard, settings, resume input). The
+  // pet itself scales via `size` and is never zoomed. `textScale` is the
+  // global default; `textScaleByDisplay` overrides it per display id (the
+  // slider writes the entry for the display the settings window sits on, via
+  // the setTextScaleForDisplay command).
+  textScale: {
+    type: "number",
+    default: TEXT_SCALE_DEFAULT,
+    validate: (v) => Number.isFinite(v) && v >= TEXT_SCALE_MIN && v <= TEXT_SCALE_MAX,
+  },
+  textScaleByDisplay: {
+    type: "object",
+    defaultFactory: () => ({}),
+    normalize: normalizeTextScaleByDisplay,
+  },
+  shortcuts: {
+    type: "object",
+    defaultFactory: () => getDefaultShortcuts(),
+    normalize: normalizeShortcuts,
+  },
+  // Theme
+  theme: { type: "string", default: DEFAULT_THEME_ID },
+  // Phase 2/3 placeholders — schema reserves the keys so future migrations don't need v2.
+  agents: {
+    type: "object",
+    defaultFactory: () => ({
+      // subagentPermissionsEnabled (#451): bubbles for PermissionRequests
+      // fired inside a Task subagent. Only claude-code carries the flag —
+      // normalizeAgents drops it for agents whose default entry lacks it.
+      "claude-code": { integrationInstalled: true, enabled: true, permissionsEnabled: true, subagentPermissionsEnabled: true, notificationHookEnabled: true },
+      "codex": { integrationInstalled: true, enabled: true, permissionsEnabled: true, notificationHookEnabled: true, permissionMode: "intercept", nativeNotificationSoundEnabled: false },
+      "copilot-cli": { integrationInstalled: false, enabled: false, permissionsEnabled: true, notificationHookEnabled: true },
+      "cursor-agent": { integrationInstalled: false, enabled: false, permissionsEnabled: true, notificationHookEnabled: true },
+      "gemini-cli": { integrationInstalled: false, enabled: false, permissionsEnabled: true, notificationHookEnabled: true },
+      // Antigravity is state-only post-D2 — Clawd never surfaces a permission
+      // bubble for agy regardless of this flag (see server-route-permission.js
+      // antigravity branch). Default kept as false so legacy reads don't see a
+      // stale "true" implying bubbles are enabled.
+      "antigravity-cli": { integrationInstalled: false, enabled: false, permissionsEnabled: false },
+      "codebuddy": { integrationInstalled: false, enabled: false, permissionsEnabled: true, notificationHookEnabled: true },
+      "kiro-cli": { integrationInstalled: false, enabled: false, permissionsEnabled: true, notificationHookEnabled: true },
+      "kimi-cli": { integrationInstalled: false, enabled: false, permissionsEnabled: true, notificationHookEnabled: true },
+      "qwen-code": { integrationInstalled: false, enabled: false, permissionsEnabled: true, notificationHookEnabled: true },
+      "codewhale": { integrationInstalled: false, enabled: false, permissionsEnabled: false, notificationHookEnabled: true },
+      "opencode": { integrationInstalled: false, enabled: false, permissionsEnabled: true, notificationHookEnabled: true },
+      "pi": { integrationInstalled: false, enabled: false, permissionsEnabled: false, notificationHookEnabled: true },
+      "openclaw": { integrationInstalled: false, enabled: false, permissionsEnabled: false, notificationHookEnabled: true },
+      "hermes": { integrationInstalled: false, enabled: false, permissionsEnabled: true, notificationHookEnabled: true },
+      // Qoder is state-only (Phase 1) — permission bubbles default off.
+      "qoder": { integrationInstalled: false, enabled: false, permissionsEnabled: false, notificationHookEnabled: true },
+      "reasonix": { integrationInstalled: false, enabled: false, permissionsEnabled: false, notificationHookEnabled: true },
+    }),
+    normalize: normalizeAgents,
+  },
+  dismissedAgentInstallHints: {
+    type: "object",
+    defaultFactory: () => ({}),
+    normalize: normalizeDismissedAgentHintMap,
+  },
+  dismissedAgentCleanupHints: {
+    type: "object",
+    defaultFactory: () => ({}),
+    normalize: normalizeDismissedAgentHintMap,
+  },
+  themeOverrides: {
+    type: "object",
+    defaultFactory: () => ({}),
+    normalize: normalizeThemeOverrides,
+  },
+  // Phase 3b-swap: per-theme variant selection (e.g. {clawd: "chill", calico: "default"}).
+  // Missing key for a theme = use that theme's `default` variant. Unknown variantIds
+  // get lenient-fallback to default at load time (see theme-loader._resolveVariant).
+  themeVariant: {
+    type: "object",
+    defaultFactory: () => ({}),
+    normalize: normalizeThemeVariant,
+  },
+  sessionAliases: {
+    type: "object",
+    defaultFactory: () => ({}),
+    normalize: normalizeSessionAliases,
+  },
+  // Remote SSH (Phase 2 plan-remote-ssh-one-click v7). Stores user-defined
+  // SSH tunnel profiles. The runtime is owned by `remote-ssh-runtime.js` —
+  // this field is data only.
+  remoteSsh: {
+    type: "object",
+    defaultFactory: () => getRemoteSshDefaults(),
+    normalize: normalizeRemoteSsh,
+  },
+  tgApproval: {
+    type: "object",
+    defaultFactory: () => cloneDefaultTelegramApproval(),
+    normalize: normalizeTelegramApproval,
+  },
+  // v0.9.0 migration state. transport defaults to null (undecided) so v0.8.x
+  // users upgrading without this key fall onto the "detect legacy artefacts"
+  // path inside the migration reducer.
+  tgMigration: {
+    type: "object",
+    defaultFactory: () => ({
+      transport: null,
+      nativeVerifiedAt: null,
+      legacyEnabled: null,
+      migration: { importedAt: null, importError: null },
+    }),
+    normalize: (value) => {
+      if (!value || typeof value !== "object") {
+        return { transport: null, nativeVerifiedAt: null, legacyEnabled: null, migration: { importedAt: null, importError: null } };
+      }
+      return {
+        transport: ["legacy", "native", "off"].includes(value.transport) ? value.transport : null,
+        nativeVerifiedAt: typeof value.nativeVerifiedAt === "number" ? value.nativeVerifiedAt : null,
+        legacyEnabled: typeof value.legacyEnabled === "boolean" ? value.legacyEnabled : null,
+        migration: value.migration && typeof value.migration === "object"
+          ? {
+              importedAt: typeof value.migration.importedAt === "number" ? value.migration.importedAt : null,
+              importError: typeof value.migration.importError === "string" ? value.migration.importError : null,
+            }
+          : { importedAt: null, importError: null },
+      };
+    },
+  },
+  hardwareBuddy: {
+    type: "object",
+    defaultFactory: () => ({ ...DEFAULT_HARDWARE_BUDDY_SETTINGS }),
+    normalize: normalizeHardwareBuddySettings,
+  },
+  // Background update-check toggle. When true, the scheduler in updater.js
+  // runs a quiet GitHub discovery on a 12-hour cycle (packaged builds only).
+  // Default on per #329.
+  autoUpdateCheck: { type: "boolean", default: true },
+  // Last version the scheduler discovered that is newer than the running
+  // app. Empty string = none pending. Surfaced in the tray label and the
+  // About version-row hint. Cleared on install or by
+  // reconcilePendingOnStartup() when app.getVersion() catches up.
+  pendingUpdateVersion: { type: "string", default: "" },
+  // Versions the user explicitly dismissed (clicked Later on the scheduler
+  // bubble after actually seeing it). Object map of `{ "v0.9.0": true }`
+  // because prefs.js does not support `type: "array"` (see isValidValue).
+  dismissedUpdateVersions: {
+    type: "object",
+    defaultFactory: () => ({}),
+    normalize: normalizeDismissedUpdateVersions,
+  },
+};
+
+const SCHEMA_KEYS = Object.freeze(Object.keys(SCHEMA));
+
+function defaultFor(field) {
+  if (typeof field.defaultFactory === "function") return field.defaultFactory();
+  return field.default;
+}
+
+// Build a fresh defaults snapshot. Each call returns a brand-new object so
+// callers can never accidentally mutate a shared default.
+function getDefaults() {
+  const out = {};
+  for (const key of SCHEMA_KEYS) {
+    out[key] = defaultFor(SCHEMA[key]);
+  }
+  return out;
+}
+
+function isValidValue(field, value) {
+  if (value === undefined || value === null) return false;
+  if (field.type === "object") {
+    return typeof value === "object" && !Array.isArray(value);
+  }
+  if (typeof value !== field.type) return false;
+  if (field.enum && !field.enum.includes(value)) return false;
+  if (typeof field.validate === "function" && !field.validate(value)) return false;
+  return true;
+}
+
+// Coerce an arbitrary object into a valid snapshot — drop bad fields, fill
+// missing fields from defaults, run normalize() on objects.
+function validate(raw) {
+  const out = getDefaults();
+  if (!raw || typeof raw !== "object") return out;
+  for (const key of SCHEMA_KEYS) {
+    if (!(key in raw)) continue;
+    const field = SCHEMA[key];
+    // Ephemeral (runtime-only) fields are never restored from a snapshot —
+    // they always reset to their default on load. This is how auto-pilot stays
+    // off across restarts even if a value somehow landed on disk.
+    if (field.ephemeral) continue;
+    let value = raw[key];
+    if (field.type === "object" && typeof field.normalize === "function") {
+      value = field.normalize(value, out[key]);
+    }
+    if (isValidValue(field, value)) {
+      out[key] = value;
+    }
+    // else: keep default already in `out`
+  }
+  normalizeStaleTriple(out);
+  return out;
+}
+
+// Hand-edited-file fallback: if a user manually inverted the pair in
+// clawd-prefs.json, clamp workingStaleMs down to sessionStaleMs at load time
+// so the live mirror is consistent. Primary enforcement lives in the
+// per-key validators in settings-actions.js and the
+// commandRegistry["sessionCleanup.setTriple"] command — this function is
+// only the boot-time safety net for files that bypass the controller.
+function normalizeStaleTriple(out) {
+  if (
+    Number.isFinite(out.sessionStaleMs) &&
+    out.sessionStaleMs > 0 &&
+    Number.isFinite(out.workingStaleMs) &&
+    out.workingStaleMs > out.sessionStaleMs
+  ) {
+    out.workingStaleMs = out.sessionStaleMs;
+  }
+  return out;
+}
+
+// Apply version-to-version migrations on raw input. Returns the upgraded raw
+// object (still needs to be passed through validate()).
+//
+// v0 → v1: add `version`, `agents`, `themeOverrides` fields. Existing fields
+//   stay as-is and get re-validated downstream. Pre-existing prefs files have
+//   no `version` key — that's the v0 marker.
+// v1 → v2: historical Pi permission-subgate backfill. Version 2 is also the
+//   first schema version that includes Hermes in the built-in agent defaults.
+// v2 → v3: raise passive notification bubble default from 3s to 6s. Users
+//   who explicitly chose 3s in v2 are indistinguishable from defaulted-3 and
+//   are migrated too; other non-default values are preserved.
+// v3 → v4: Pi returns to a state-only integration. Clawd no longer inserts a
+//   permission prompt into Pi's default YOLO flow, so the Pi permission subgate
+//   is reset off.
+function migrate(raw) {
+  if (!raw || typeof raw !== "object") return raw;
+  const originalAgentIds = raw.agents && typeof raw.agents === "object" && !Array.isArray(raw.agents)
+    ? new Set(Object.keys(raw.agents))
+    : new Set();
+  const out = { ...raw };
+  if (out.version === undefined || out.version === null) {
+    out.version = 1;
+    if (out.agents === undefined) {
+      out.agents = SCHEMA.agents.defaultFactory();
+    }
+    if (out.themeOverrides === undefined) {
+      out.themeOverrides = SCHEMA.themeOverrides.defaultFactory();
+    }
+  }
+  // v1 backfill: positionSaved didn't exist before this field was added.
+  // Existing users who have non-default x/y clearly had a saved position.
+  if (out.positionSaved === undefined) {
+    out.positionSaved =
+      (typeof out.x === "number" && out.x !== 0) ||
+      (typeof out.y === "number" && out.y !== 0);
+  }
+  // Backfill the split bubble settings from the old aggregate switch. This is
+  // intentionally field-level so users who already have the new keys keep them.
+  if (typeof out.hideBubbles === "boolean") {
+    if (out.permissionBubblesEnabled === undefined) {
+      out.permissionBubblesEnabled = !out.hideBubbles;
+    }
+    if (out.notificationBubbleAutoCloseSeconds === undefined) {
+      out.notificationBubbleAutoCloseSeconds = out.hideBubbles ? 0 : NOTIFICATION_DEFAULT_SECONDS;
+    }
+    if (out.updateBubbleAutoCloseSeconds === undefined) {
+      out.updateBubbleAutoCloseSeconds = out.hideBubbles ? 0 : UPDATE_DEFAULT_SECONDS;
+    }
+  }
+  // v1 -> v2 historical backfill for the short-lived Pi permission subgate.
+  // v4 below resets it off again because Pi is state-only.
+  if (out.version < 2) {
+    if (!out.agents || typeof out.agents !== "object") out.agents = {};
+    const currentPi = out.agents.pi && typeof out.agents.pi === "object" ? out.agents.pi : {};
+    out.agents.pi = {
+      ...currentPi,
+      enabled: typeof currentPi.enabled === "boolean" ? currentPi.enabled : true,
+      permissionsEnabled: typeof currentPi.permissionsEnabled === "boolean"
+        ? currentPi.permissionsEnabled
+        : true,
+      notificationHookEnabled: typeof currentPi.notificationHookEnabled === "boolean"
+        ? currentPi.notificationHookEnabled
+        : true,
+    };
+    out.version = 2;
+  }
+  if (out.version < 3) {
+    if (out.notificationBubbleAutoCloseSeconds === 3) {
+      out.notificationBubbleAutoCloseSeconds = NOTIFICATION_DEFAULT_SECONDS;
+    }
+    out.version = 3;
+  }
+  if (out.version < 4) {
+    if (!out.agents || typeof out.agents !== "object") out.agents = {};
+    const currentPi = out.agents.pi && typeof out.agents.pi === "object" ? out.agents.pi : {};
+    out.agents.pi = {
+      ...currentPi,
+      enabled: typeof currentPi.enabled === "boolean" ? currentPi.enabled : true,
+      permissionsEnabled: false,
+      notificationHookEnabled: typeof currentPi.notificationHookEnabled === "boolean"
+        ? currentPi.notificationHookEnabled
+        : true,
+    };
+    out.version = 4;
+  }
+  // v4 → v5: Session HUD hover/auto-hide mode removed in favor of explicit
+  // click-to-reveal. Users who explicitly opted out of auto-hide (
+  // `sessionHudAutoHide === false`, meaning "always show") get auto-pinned so
+  // their visual behavior is preserved. The deprecated field is dropped.
+  if (out.version < 5) {
+    if (out.sessionHudAutoHide === false && out.sessionHudPinned !== true) {
+      out.sessionHudPinned = true;
+    }
+    delete out.sessionHudAutoHide;
+    out.version = 5;
+  }
+  // v5 → v6: introduce autoUpdateCheck / pendingUpdateVersion /
+  // dismissedUpdateVersions for the #329 scheduler. No data conversion
+  // needed — new keys fill in from schema defaults via validate(); the
+  // version bump just records that the schema grew.
+  if (out.version < 6) {
+    out.version = 6;
+  }
+  // v6 → v7: Codex Native permission prompt sound now defaults off. Early
+  // builds may have written the old default true into prefs, so reset that
+  // default-like value during migration; users can turn the switch back on.
+  if (out.version < 7) {
+    if (out.agents && typeof out.agents === "object") {
+      const codex = out.agents.codex;
+      if (codex && typeof codex === "object") {
+        codex.nativeNotificationSoundEnabled = false;
+      }
+    }
+    out.version = 7;
+  }
+  // v7 -> v8: bare Telegram completion pings now default off. There was no
+  // UI for this flag, so a persisted true is overwhelmingly the old default
+  // rather than an explicit user opt-in.
+  if (out.version < 8) {
+    if (out.tgApproval && typeof out.tgApproval === "object") {
+      out.tgApproval.notifyOnComplete = false;
+    }
+    out.version = 8;
+  }
+  // v8 -> v9: introduce autoApproveAllPermissions ("auto-pilot"). Force the
+  // value OFF on upgrade — a v8 prefs file could not have legitimately set this
+  // key (it didn't exist yet), so any pre-existing value is stale or planted.
+  // Clearing it guarantees an upgrading user never silently inherits
+  // auto-approval; the only way to turn it on is the confirmation-gated path.
+  if (out.version < 9) {
+    out.autoApproveAllPermissions = false;
+    out.version = 9;
+  }
+  // v9 -> v10: sessionHudShowElapsed / sessionHudCleanupDetached flipped their
+  // schema defaults for FRESH INSTALLS ONLY (compact HUD by default). Existing
+  // files normally carry both keys explicitly (save() bakes the full
+  // snapshot), but a file written by a pre-HUD-toggle build or hand-trimmed
+  // by the user lacks them — without this backfill validate() would hand
+  // those users the new defaults and visibly change their HUD. Pin the old
+  // defaults for every pre-v10 file; fresh installs never run migrate().
+  if (out.version < 10) {
+    if (!("sessionHudShowElapsed" in out)) out.sessionHudShowElapsed = true;
+    if (!("sessionHudCleanupDetached" in out)) out.sessionHudCleanupDetached = false;
+    out.version = 10;
+  }
+  // v10 -> v11: agent integrations are installed on demand. Older MiniCPM
+  // prefs may contain default-populated entries for many agents, but that does
+  // not mean the user explicitly installed those integrations. Keep only the
+  // default managed agents (Claude Code / Codex) installed; any other agent can
+  // still preserve visible state flags, but must be explicitly installed from
+  // Settings before Clawd manages its hooks/plugins again.
+  if (out.version < 11) {
+    out.version = 11;
+  }
+  if ((typeof out.version === "number" ? out.version : 0) < CURRENT_VERSION) {
+    out.version = CURRENT_VERSION;
+  }
+  // Future migrations slot in here as `if (out.version < N) { ... out.version = N }`.
+  return out;
+}
+
+const AGENT_FLAGS = [
+  "integrationInstalled",
+  "enabled",
+  "permissionsEnabled",
+  "subagentPermissionsEnabled",
+  "notificationHookEnabled",
+  "nativeNotificationSoundEnabled",
+];
+const CODEX_PERMISSION_MODES = ["native", "intercept"];
+
+function normalizeDismissedUpdateVersions(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const out = {};
+  for (const key of Object.keys(value)) {
+    if (typeof key === "string" && key && value[key] === true) out[key] = true;
+  }
+  return out;
+}
+
+function normalizeDismissedAgentHintMap(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const out = {};
+  for (const key of Object.keys(value)) {
+    if (typeof key === "string" && key && value[key] === true) out[key] = true;
+  }
+  return out;
+}
+
+function normalizePositionDisplay(value) {
+  if (!isValidDisplaySnapshot(value)) return null;
+  const b = value.bounds;
+  const out = {
+    bounds: { x: b.x, y: b.y, width: b.width, height: b.height },
+  };
+  const wa = value.workArea;
+  if (wa && typeof wa === "object"
+    && Number.isFinite(wa.x) && Number.isFinite(wa.y)
+    && Number.isFinite(wa.width) && Number.isFinite(wa.height)) {
+    out.workArea = { x: wa.x, y: wa.y, width: wa.width, height: wa.height };
+  }
+  if (typeof value.id === "number" && Number.isFinite(value.id)) out.id = value.id;
+  if (typeof value.scaleFactor === "number" && Number.isFinite(value.scaleFactor)) {
+    out.scaleFactor = value.scaleFactor;
+  }
+  return out;
+}
+
+function normalizeAgents(value, defaultsValue) {
+  if (!value || typeof value !== "object") return defaultsValue;
+  const out = { ...defaultsValue };
+  for (const id of Object.keys(value)) {
+    const entry = value[id];
+    if (!entry || typeof entry !== "object") continue;
+    const base = (defaultsValue && defaultsValue[id])
+      || {
+        integrationInstalled: isDefaultIntegrationInstalled(id),
+        enabled: true,
+        permissionsEnabled: true,
+        notificationHookEnabled: true,
+      };
+    const merged = { ...base };
+    let touched = false;
+    const allowedFlags = AGENT_FLAGS.filter((flag) => Object.prototype.hasOwnProperty.call(base, flag));
+    for (const flag of allowedFlags) {
+      if (typeof entry[flag] === "boolean") {
+        merged[flag] = entry[flag];
+        touched = true;
+      }
+    }
+    if (id === "codex" && CODEX_PERMISSION_MODES.includes(entry.permissionMode)) {
+      merged.permissionMode = entry.permissionMode;
+      touched = true;
+    }
+    if (touched) out[id] = merged;
+  }
+  return out;
+}
+
+function normalizeTransitionOverride(value) {
+  if (!isPlainObject(value)) return null;
+  const out = {};
+  if (typeof value.in === "number" && Number.isFinite(value.in)) out.in = value.in;
+  if (typeof value.out === "number" && Number.isFinite(value.out)) out.out = value.out;
+  return Object.keys(out).length > 0 ? out : null;
+}
+
+function normalizeSlotOverride(entry, { allowDisabled = true } = {}) {
+  if (!isPlainObject(entry)) return null;
+  const out = {};
+  if (allowDisabled && entry.disabled === true) out.disabled = true;
+  if (typeof entry.file === "string" && entry.file) out.file = entry.file;
+  if (typeof entry.sourceThemeId === "string" && entry.sourceThemeId) out.sourceThemeId = entry.sourceThemeId;
+  if (typeof entry.durationMs === "number" && Number.isFinite(entry.durationMs)) out.durationMs = entry.durationMs;
+  const transition = normalizeTransitionOverride(entry.transition);
+  if (transition) out.transition = transition;
+  return Object.keys(out).length > 0 ? out : null;
+}
+
+const REACTION_KEYS = new Set(["drag", "clickLeft", "clickRight", "annoyed", "double"]);
+
+// Per-file hitbox override: { file.svg: boolean }.
+// true  = force the file INTO the wide-hitbox set (even if the theme author didn't list it)
+// false = force the file OUT of the wide-hitbox set (even if the theme author did list it)
+// absent = follow whatever the theme declares
+function normalizeHitboxOverrides(value) {
+  if (!isPlainObject(value)) return null;
+  const out = {};
+  if (isPlainObject(value.wide)) {
+    const wide = {};
+    for (const [file, enabled] of Object.entries(value.wide)) {
+      if (typeof file !== "string" || !file) continue;
+      if (typeof enabled !== "boolean") continue;
+      wide[file] = enabled;
+    }
+    if (Object.keys(wide).length > 0) out.wide = wide;
+  }
+  return Object.keys(out).length > 0 ? out : null;
+}
+
+function normalizeReactionOverridesMap(value) {
+  if (!isPlainObject(value)) return null;
+  const out = {};
+  for (const [reactionKey, entry] of Object.entries(value)) {
+    if (!REACTION_KEYS.has(reactionKey)) continue;
+    const cleanEntry = normalizeSlotOverride(entry, { allowDisabled: false });
+    if (!cleanEntry) continue;
+    // drag has no duration semantically (it plays until pointer-up), so strip
+    // any durationMs written by a wayward import.
+    if (reactionKey === "drag" && Object.prototype.hasOwnProperty.call(cleanEntry, "durationMs")) {
+      delete cleanEntry.durationMs;
+    }
+    if (Object.keys(cleanEntry).length > 0) out[reactionKey] = cleanEntry;
+  }
+  return Object.keys(out).length > 0 ? out : null;
+}
+
+function normalizeStateOverridesMap(value) {
+  if (!isPlainObject(value)) return null;
+  const out = {};
+  for (const [stateKey, entry] of Object.entries(value)) {
+    if (typeof stateKey !== "string" || !stateKey) continue;
+    const cleanEntry = normalizeSlotOverride(entry, { allowDisabled: true });
+    if (cleanEntry) out[stateKey] = cleanEntry;
+  }
+  return Object.keys(out).length > 0 ? out : null;
+}
+
+// Sound overrides are per-sound-name (complete / confirm / theme-author-defined).
+// Structurally simpler than state overrides: only `file` matters (no transition,
+// duration, disabled, or sourceThemeId). We reuse normalizeSlotOverride to
+// strip the animation-only fields, then enforce path-segment safety on both
+// the key (used as filename stem when copying) and the file (joined into the
+// overrides dir at load time) — defence in depth against malicious themes or
+// hand-edited pref files.
+// Strips any path segments and rejects traversal-only names. Returns null if
+// the result isn't a usable basename, otherwise the (optionally capped) name.
+function _safeBasename(raw, { maxLen } = {}) {
+  if (typeof raw !== "string" || !raw) return null;
+  let name = raw.replace(/^.*[\/\\]/, "");
+  if (maxLen && name.length > maxLen) name = name.slice(0, maxLen);
+  if (!name || name === "." || name === "..") return null;
+  return name;
+}
+
+function normalizeSoundOverridesMap(value) {
+  if (!isPlainObject(value)) return null;
+  const out = {};
+  for (const [soundName, entry] of Object.entries(value)) {
+    if (typeof soundName !== "string" || !soundName) continue;
+    if (!/^[a-zA-Z0-9_-]+$/.test(soundName)) continue;
+    const cleanEntry = normalizeSlotOverride(entry, { allowDisabled: false });
+    if (!cleanEntry) continue;
+    const safeFile = _safeBasename(cleanEntry.file);
+    if (!safeFile) continue;
+    const soundEntry = { file: safeFile };
+    // Preserves the user-picked filename; on-disk dest is renamed to
+    // `${soundName}${ext}`, so without this a same-ext replacement would
+    // render identically to the theme default in the UI.
+    if (isPlainObject(entry)) {
+      const safeOriginal = _safeBasename(entry.originalName, { maxLen: 256 });
+      if (safeOriginal) soundEntry.originalName = safeOriginal;
+    }
+    out[soundName] = soundEntry;
+  }
+  return Object.keys(out).length > 0 ? out : null;
+}
+
+function normalizeFileKeyedOverrideMap(value) {
+  if (!isPlainObject(value)) return null;
+  const out = {};
+  for (const [originalFile, entry] of Object.entries(value)) {
+    if (typeof originalFile !== "string" || !originalFile) continue;
+    const cleanEntry = normalizeSlotOverride(entry, { allowDisabled: false });
+    if (cleanEntry) out[originalFile] = cleanEntry;
+  }
+  return Object.keys(out).length > 0 ? out : null;
+}
+
+function normalizeAutoReturnOverrides(value) {
+  if (!isPlainObject(value)) return null;
+  const out = {};
+  for (const [stateKey, duration] of Object.entries(value)) {
+    if (typeof stateKey !== "string" || !stateKey) continue;
+    if (typeof duration !== "number" || !Number.isFinite(duration)) continue;
+    out[stateKey] = duration;
+  }
+  return Object.keys(out).length > 0 ? out : null;
+}
+
+function normalizeThemeOverrides(value, defaultsValue) {
+  if (!isPlainObject(value)) return defaultsValue;
+  const out = {};
+  for (const themeId of Object.keys(value)) {
+    const themeMap = value[themeId];
+    if (!isPlainObject(themeMap)) continue;
+    const cleanThemeMap = {};
+
+    // Back-compat: older prefs wrote state entries directly under themeId.
+    const legacyStates = {};
+    for (const [key, entry] of Object.entries(themeMap)) {
+      if (key === "states" || key === "tiers" || key === "timings" || key === "idleAnimations" || key === "reactions" || key === "hitbox" || key === "sounds") continue;
+      const cleanEntry = normalizeSlotOverride(entry, { allowDisabled: true });
+      if (cleanEntry) legacyStates[key] = cleanEntry;
+    }
+
+    const explicitStates = normalizeStateOverridesMap(themeMap.states);
+    const states = explicitStates ? { ...legacyStates, ...explicitStates } : legacyStates;
+    if (Object.keys(states).length > 0) cleanThemeMap.states = states;
+
+    const tierGroups = isPlainObject(themeMap.tiers) ? themeMap.tiers : null;
+    const cleanTiers = {};
+    if (tierGroups) {
+      const working = normalizeFileKeyedOverrideMap(tierGroups.workingTiers);
+      const juggling = normalizeFileKeyedOverrideMap(tierGroups.jugglingTiers);
+      if (working) cleanTiers.workingTiers = working;
+      if (juggling) cleanTiers.jugglingTiers = juggling;
+    }
+    if (Object.keys(cleanTiers).length > 0) cleanThemeMap.tiers = cleanTiers;
+
+    const timings = isPlainObject(themeMap.timings) ? themeMap.timings : null;
+    if (timings) {
+      const cleanAutoReturn = normalizeAutoReturnOverrides(timings.autoReturn);
+      if (cleanAutoReturn) {
+        cleanThemeMap.timings = { autoReturn: cleanAutoReturn };
+      }
+    }
+
+    const idleAnimations = normalizeFileKeyedOverrideMap(themeMap.idleAnimations);
+    if (idleAnimations) cleanThemeMap.idleAnimations = idleAnimations;
+
+    const reactions = normalizeReactionOverridesMap(themeMap.reactions);
+    if (reactions) cleanThemeMap.reactions = reactions;
+
+    const hitbox = normalizeHitboxOverrides(themeMap.hitbox);
+    if (hitbox) cleanThemeMap.hitbox = hitbox;
+
+    const sounds = normalizeSoundOverridesMap(themeMap.sounds);
+    if (sounds) cleanThemeMap.sounds = sounds;
+
+    if (Object.keys(cleanThemeMap).length > 0) {
+      out[themeId] = cleanThemeMap;
+    }
+  }
+  return out;
+}
+
+function normalizeThemeVariant(value, defaultsValue) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return defaultsValue;
+  const out = {};
+  for (const themeId of Object.keys(value)) {
+    const variantId = value[themeId];
+    if (typeof themeId !== "string" || !themeId) continue;
+    if (typeof variantId !== "string" || !variantId) continue;
+    out[themeId] = variantId;
+  }
+  return out;
+}
+
+// ── Disk I/O ──
+
+// Read prefs from disk. Returns `{ snapshot, locked }`:
+//   - snapshot: a valid prefs object (always — falls back to defaults on any error)
+//   - locked: true if the file came from a future version; save() should be a no-op
+//             to avoid clobbering it.
+function load(prefsPath) {
+  let raw;
+  try {
+    const text = fs.readFileSync(prefsPath, "utf8");
+    raw = JSON.parse(text);
+  } catch (err) {
+    // Missing file is normal on first run — return defaults silently.
+    if (err && err.code === "ENOENT") {
+      return { snapshot: getDefaults(), locked: false };
+    }
+    // Any other error (parse fail, permission, etc.) → backup + defaults
+    try {
+      const bak = prefsPath + ".bak";
+      fs.copyFileSync(prefsPath, bak);
+      console.warn(`Clawd: prefs file unreadable, backed up to ${bak}:`, err.message);
+    } catch (bakErr) {
+      console.warn("Clawd: prefs file unreadable and backup failed:", err.message, bakErr.message);
+    }
+    return { snapshot: getDefaults(), locked: false };
+  }
+  if (!raw || typeof raw !== "object") {
+    return { snapshot: getDefaults(), locked: false };
+  }
+  // Future-version guard: refuse to overwrite a prefs file written by a newer version.
+  const incomingVersion = typeof raw.version === "number" ? raw.version : 0;
+  if (incomingVersion > CURRENT_VERSION) {
+    console.warn(
+      `Clawd: prefs file version ${incomingVersion} is newer than supported (${CURRENT_VERSION}). ` +
+      `Settings will be readable but not saved to avoid data loss.`
+    );
+    return { snapshot: validate(raw), locked: true };
+  }
+  const migrated = migrate(raw);
+  return { snapshot: validate(migrated), locked: false };
+}
+
+function save(prefsPath, snapshot) {
+  const validated = validate(snapshot);
+  // Ephemeral (runtime-only) fields never touch disk — drop them so a
+  // dangerous mode like auto-pilot can't persist across restarts, and so the
+  // prefs file never contains a scary `autoApproveAllPermissions: true`.
+  for (const key of SCHEMA_KEYS) {
+    if (SCHEMA[key].ephemeral) delete validated[key];
+  }
+  // Ensure parent directory exists (Electron userData is normally created by the
+  // framework, but we can't assume it for tests).
+  try {
+    fs.mkdirSync(path.dirname(prefsPath), { recursive: true });
+  } catch {}
+  fs.writeFileSync(prefsPath, JSON.stringify(validated, null, 2));
+}
+
+module.exports = {
+  CURRENT_VERSION,
+  SCHEMA,
+  SCHEMA_KEYS,
+  AGENT_FLAGS,
+  CODEX_PERMISSION_MODES,
+  DEFAULT_INTEGRATION_INSTALLED_IDS,
+  getDefaults,
+  validate,
+  migrate,
+  load,
+  save,
+  normalizeThemeOverrides,
+  normalizeShortcuts,
+};

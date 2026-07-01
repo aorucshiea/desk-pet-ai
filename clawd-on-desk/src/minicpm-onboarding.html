@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self' 'unsafe-inline'; script-src 'self'">
+<title>MiniCPM Desk Pet</title>
+<link rel="stylesheet" href="minicpm-onboarding.css">
+</head>
+<body>
+<main class="wizard">
+  <header class="steps" id="steps">
+    <div class="step active" data-step="env-check"><span class="dot"><span class="num">1</span></span><span class="label" data-i18n="onboardingStepEnvCheck"></span></div>
+    <div class="step" data-step="model"><span class="dot"><span class="num">2</span></span><span class="label" data-i18n="onboardingStepModel"></span></div>
+    <div class="step" data-step="ready"><span class="dot"><span class="num">3</span></span><span class="label" data-i18n="onboardingStepReady"></span></div>
+  </header>
+
+  <section class="content">
+    <!-- Step 1: env-check -->
+    <div class="panel" data-panel="env-check">
+      <h1 data-i18n="onboardingEnvWelcome"></h1>
+      <ul class="checks">
+        <li id="check-disk">
+          <span class="check-label" data-i18n="onboardingEnvCheckDisk"></span>
+          <span class="check-detail" id="check-disk-detail" data-i18n="onboardingDetecting"></span>
+        </li>
+        <li id="check-platform">
+          <span class="check-label" data-i18n="onboardingEnvCheckChip"></span>
+          <span class="check-detail" id="check-platform-detail" data-i18n="onboardingDetecting"></span>
+        </li>
+      </ul>
+      <div class="bottom">
+        <button class="btn primary" id="env-next" data-i18n="onboardingNext"></button>
+      </div>
+    </div>
+
+    <!-- Step 2: model -->
+    <div class="panel hidden" data-panel="model">
+      <h1 data-i18n="onboardingModelTitle"></h1>
+      <p class="lede" data-i18n="onboardingModelLede"></p>
+
+      <div class="model-cards">
+        <!-- Card A: online download -->
+        <div class="model-card" id="model-card-download">
+          <div class="model-card-head">
+            <span class="model-card-title" data-i18n="onboardingDownloadCardTitle"></span>
+            <span class="badge-check" aria-hidden="true">✓</span>
+          </div>
+          <div class="model-card-body">
+            <p class="model-card-desc" data-i18n="onboardingDownloadCardDesc"></p>
+            <div class="progress-card hidden" id="model-progress-card">
+              <div class="progress-track"><div class="progress-fill" id="progress-fill"></div></div>
+              <div class="progress-text">
+                <span id="progress-percent">0%</span>
+                <span class="dim" id="progress-detail" data-i18n="onboardingDownloadProgressInit"></span>
+              </div>
+            </div>
+            <div class="model-card-status hidden" id="model-download-status">
+              <span class="model-status-text" id="model-download-status-text"></span>
+            </div>
+          </div>
+          <div class="model-card-foot">
+            <button class="btn primary" id="model-download-btn" data-i18n="onboardingDownloadStart"></button>
+          </div>
+        </div>
+
+        <!-- Card B: local file -->
+        <div class="model-card" id="model-card-local">
+          <div class="model-card-head">
+            <span class="model-card-title" data-i18n="onboardingLocalCardTitle"></span>
+            <span class="badge-check" aria-hidden="true">✓</span>
+          </div>
+          <div class="model-card-body">
+            <p class="model-card-desc" data-i18n="onboardingLocalCardDesc"></p>
+            <div class="model-card-status hidden" id="model-local-status">
+              <span class="model-status-text" id="model-local-status-text"></span>
+            </div>
+          </div>
+          <div class="model-card-foot">
+            <button class="btn ghost" id="model-pick-local" data-i18n="onboardingLocalPickFile"></button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Warmup status row (shows once model is ready) -->
+      <div class="warmup-row hidden" id="warmup-row">
+        <div class="spinner" id="warmup-spinner"></div>
+        <span class="badge-check warmup-check" aria-hidden="true">✓</span>
+        <span id="warmup-status" data-i18n="onboardingWarmupRunning"></span>
+        <button class="btn ghost warmup-retry hidden" id="warmup-retry" data-i18n="onboardingWarmupRetry"></button>
+      </div>
+
+      <div class="error hidden" id="model-error"></div>
+
+      <div class="bottom">
+        <button class="btn ghost" data-back="env-check" data-i18n="onboardingBack"></button>
+        <button class="btn primary" id="model-next" disabled data-i18n="onboardingNext"></button>
+      </div>
+    </div>
+
+    <!-- Step 3: ready -->
+    <div class="panel hidden" data-panel="ready">
+      <h1 data-i18n="onboardingReadyTitle"></h1>
+      <p class="lede" data-i18n="onboardingReadyLede"></p>
+      <ul class="hotkeys">
+        <li><kbd>⌘</kbd><kbd>⇧</kbd><kbd>M</kbd><span data-i18n="onboardingHotkeyToggleChat"></span></li>
+        <li><kbd>⌘</kbd><kbd>⇧</kbd><kbd>T</kbd><span data-i18n="onboardingHotkeyToggleThinking"></span></li>
+        <li><kbd>Esc</kbd><span data-i18n="onboardingHotkeyEscClose"></span></li>
+      </ul>
+      <p class="dim" data-i18n="onboardingMoreHint"></p>
+      <div class="bottom">
+        <button class="btn primary" id="ready-finish" data-i18n="onboardingFinish"></button>
+      </div>
+    </div>
+  </section>
+</main>
+<script src="minicpm-i18n.js"></script>
+<script src="minicpm-onboarding-renderer.js"></script>
+</body>
+</html>

@@ -1,0 +1,160 @@
+name: Build installer (Linux + Windows)
+
+# Build Linux / Windows installers without compiling llama.cpp in CI.
+# Each job downloads the official ggml-org/llama.cpp release binary,
+# builds only our thin Python gateway, then runs electron-builder.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "clawd-on-desk/**"
+      - "minicpm-sidecar/**"
+      - "adapters/**"
+      - "NOTICE.md"
+      - ".github/workflows/build-installer.yml"
+
+defaults:
+  run:
+    shell: bash
+
+permissions:
+  contents: read
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-22.04
+    name: linux-x64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Fetch official llama.cpp release
+        working-directory: minicpm-sidecar
+        env:
+          TARGET_TRIPLE: linux-x64
+          LLAMA_BACKEND: cpu
+        run: bash ./scripts/fetch-llama-release.sh
+
+      - name: Build gateway
+        working-directory: minicpm-sidecar
+        run: ./scripts/build-gateway.sh
+
+      - name: Verify sidecar binaries
+        working-directory: minicpm-sidecar/bin/linux-x64
+        run: |
+          ls -la
+          chmod +x llama-server minicpm-sidecar
+          ./llama-server --version
+          ./minicpm-sidecar --help >/dev/null
+
+      - name: npm install
+        working-directory: clawd-on-desk
+        run: npm install --no-audit --no-fund
+
+      - name: Fetch LoRA adapters
+        working-directory: clawd-on-desk
+        run: node scripts/fetch-adapters.js
+
+      - name: electron-builder (AppImage + deb)
+        working-directory: clawd-on-desk
+        run: npx electron-builder --linux --publish never
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-installer
+          path: |
+            clawd-on-desk/dist/*.AppImage
+            clawd-on-desk/dist/*.deb
+            clawd-on-desk/dist/latest-linux.yml
+          if-no-files-found: error
+          retention-days: 7
+
+  build-windows:
+    runs-on: windows-2022
+    name: windows
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        run: |
+          irm https://astral.sh/uv/install.ps1 | iex
+          Add-Content $env:GITHUB_PATH "$env:USERPROFILE\.local\bin"
+
+      - name: Fetch official llama.cpp release
+        working-directory: minicpm-sidecar
+        run: |
+          .\scripts\fetch-llama-release.ps1 -Backend cpu -Target win-x64
+          .\scripts\fetch-llama-release.ps1 -Backend vulkan -Target win-x64
+          .\scripts\fetch-llama-release.ps1 -Backend cpu -Target win-arm64
+
+      - name: Build gateway
+        working-directory: minicpm-sidecar
+        run: |
+          .\scripts\build-gateway.ps1 -Target win-x64
+          Copy-Item -Force bin\win-x64\minicpm-sidecar.exe bin\win-arm64\minicpm-sidecar.exe
+
+      - name: Verify sidecar binaries
+        working-directory: minicpm-sidecar
+        run: |
+          Get-ChildItem -Recurse bin\win-x64 | Select-Object FullName,Length
+          .\bin\win-x64\llama-server.exe --version
+          .\bin\win-x64\backends\vulkan\llama-server.exe --version
+          .\bin\win-x64\minicpm-sidecar.exe --help | Out-Null
+          Write-Host "==> Verify win-arm64 files exist" -ForegroundColor Cyan
+          Get-ChildItem -Recurse bin\win-arm64 | Select-Object FullName,Length
+          if (-not (Test-Path bin\win-arm64\llama-server.exe)) { throw "win-arm64 llama-server missing" }
+          if (-not (Test-Path bin\win-arm64\minicpm-sidecar.exe)) { throw "win-arm64 gateway missing" }
+
+      - name: Download ARM64 VC++ Redistributable
+        run: |
+          Invoke-WebRequest -Uri "https://aka.ms/vs/17/release/vc_redist.arm64.exe" `
+            -OutFile "clawd-on-desk\build\vc_redist.arm64.exe"
+
+      - name: npm install
+        working-directory: clawd-on-desk
+        shell: cmd
+        run: npm install --no-audit --no-fund
+
+      - name: Fetch LoRA adapters
+        working-directory: clawd-on-desk
+        run: node scripts/fetch-adapters.js
+
+      - name: electron-builder (nsis)
+        working-directory: clawd-on-desk
+        shell: cmd
+        run: npx electron-builder --win --x64 --arm64 --publish never
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: |
+            clawd-on-desk/dist/*.exe
+            clawd-on-desk/dist/*.exe.blockmap
+            clawd-on-desk/dist/latest.yml
+          if-no-files-found: error
+          retention-days: 7
