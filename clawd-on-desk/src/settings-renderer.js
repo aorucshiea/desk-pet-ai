@@ -9,8 +9,16 @@ const SIDEBAR_TABS = [
   { id: "theme", labelKey: "sidebarTheme", available: true },
   { id: "animMap", labelKey: "sidebarAnimMap", available: true },
   { id: "animOverrides", labelKey: "sidebarAnimOverrides", available: true },
+  { id: "emotion", labelKey: "sidebarEmotion", available: true },
+  { id: "proactive", labelKey: "sidebarProactive", available: true },
   { id: "shortcuts", labelKey: "sidebarShortcuts", available: true },
   { id: "remote-ssh", labelKey: "sidebarRemoteSsh", available: true },
+  { id: "skills", labelKey: "sidebarSkills", available: true },
+  { id: "screenclick", labelKey: "sidebarScreenClick", available: true },
+  { id: "context", labelKey: "sidebarContext", available: true },
+  { id: "providers", labelKey: "sidebarProviders", available: true },
+  { id: "mcp", labelKey: "sidebarMcp", available: true },
+  { id: "evolve", labelKey: "sidebarEvolve", available: true },
   { id: "telegram-approval", labelKey: "sidebarTelegramApproval", available: true },
   { id: "mobile", labelKey: "sidebarMobile", available: true },
   { id: "about", labelKey: "sidebarAbout", available: true },
@@ -84,12 +92,20 @@ globalThis.ClawdSettingsTabAgents.init(core);
 globalThis.ClawdSettingsTabTheme.init(core);
 globalThis.ClawdSettingsTabAnimMap.init(core);
 globalThis.ClawdSettingsTabAnimOverrides.init(core);
+globalThis.ClawdSettingsTabEmotion.init(core);
+if (globalThis.ClawdSettingsTabProactive) globalThis.ClawdSettingsTabProactive.init(core);
 globalThis.ClawdSettingsTabShortcuts.init(core);
 if (globalThis.ClawdSettingsTabTelegramApproval) globalThis.ClawdSettingsTabTelegramApproval.init(core);
 globalThis.ClawdSettingsTabAbout.init(core);
 if (globalThis.ClawdSettingsTabRemoteSsh) globalThis.ClawdSettingsTabRemoteSsh.init(core);
 if (globalThis.ClawdSettingsTabMobile) globalThis.ClawdSettingsTabMobile.init(core);
 if (globalThis.ClawdSettingsTabMinicpm) globalThis.ClawdSettingsTabMinicpm.init(core);
+if (globalThis.ClawdSettingsTabScreenClick) globalThis.ClawdSettingsTabScreenClick.init(core);
+if (globalThis.ClawdSettingsTabSkills) globalThis.ClawdSettingsTabSkills.init(core);
+if (globalThis.ClawdSettingsTabContext) globalThis.ClawdSettingsTabContext.init(core);
+if (globalThis.ClawdSettingsTabProviders) globalThis.ClawdSettingsTabProviders.init(core);
+if (globalThis.ClawdSettingsTabMcp) globalThis.ClawdSettingsTabMcp.init(core);
+if (globalThis.ClawdSettingsTabEvolve) globalThis.ClawdSettingsTabEvolve.init(core);
 
 if (window.settingsAPI && typeof window.settingsAPI.onChanged === "function") {
   window.settingsAPI.onChanged((payload) => core.ops.applyChanges(payload));

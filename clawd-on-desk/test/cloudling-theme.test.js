@@ -74,7 +74,14 @@ describe("built-in Cloudling theme", () => {
     assert.deepStrictEqual(theme.states.thinking, ["cloudling-thinking.svg"]);
     assert.deepStrictEqual(theme.states.working, ["cloudling-typing.svg"]);
     assert.deepStrictEqual(theme.states.juggling, ["cloudling-juggling.svg"]);
-    assert.deepStrictEqual(theme.states.attention, ["cloudling-attention.svg"]);
+    assert.deepStrictEqual(theme.states.attention, [
+      "cloudling-attention.svg",
+      { file: "cloudling-attention.svg", emotion: "happy" },
+      { file: "cloudling-thinking.svg", emotion: "curious" },
+      { file: "cloudling-error.svg", emotion: "sad" },
+      { file: "cloudling-conducting.svg", emotion: "excited" },
+      { file: "cloudling-react-drag.svg", emotion: "mad" },
+    ]);
     assert.deepStrictEqual(theme.states.notification, ["cloudling-notification.svg"]);
     assert.deepStrictEqual(theme.states.error, ["cloudling-error.svg"]);
     assert.deepStrictEqual(theme.states.sweeping, ["cloudling-sweeping.svg"]);

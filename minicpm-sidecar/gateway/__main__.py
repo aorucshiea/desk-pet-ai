@@ -39,7 +39,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--update-source",
         default=os.environ.get("MINICPM_UPDATE_SOURCE", DEFAULT_SOURCE),
     )
-    p.add_argument("--ctx-size", type=int, default=int(os.environ.get("MINICPM_CTX", "4096")))
+    p.add_argument("--ctx-size", type=int, default=int(os.environ.get("MINICPM_CTX", "16384")))
     p.add_argument("--gpu-layers", type=int, default=int(os.environ.get("MINICPM_GPU_LAYERS", "-1")))
     p.add_argument(
         "--threads",

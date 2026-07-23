@@ -241,6 +241,10 @@
     chatThinkingOff: "Thinking mode: off",
     chatEditModeHint: "Drag me where you want me, then hit Save in Settings.",
     chatEditModeHintShort: "Drag me where you want me",
+    chatSkillLoaded: "Loaded skill「{name}」with instructions.\n\n{body}",
+    chatSkillLoadedReply: "Loaded skill「{name}」",
+    chatSkillNotFound: "Skill「{name}」not found. Use /skills or \"list skills\" to see available skills.",
+    chatSkillNotFoundReply: "Skill「{name}」not found",
   };
   const EN_PATTERNS = {
     status: /\b(what|which|current|now)\b.{0,30}\b(model|persona|adapter|lora)\b/i,
@@ -396,6 +400,10 @@
     chatThinkingOff: "思考已关闭",
     chatEditModeHint: "把我拖到喜欢的位置 🐾\n然后回到设置点「保存」",
     chatEditModeHintShort: "把我拖到喜欢的位置 🐾",
+    chatSkillLoaded: "已加载技能「{name}」的详细说明。\n\n{body}",
+    chatSkillLoadedReply: "已加载技能「{name}」",
+    chatSkillNotFound: "未找到技能「{name}」。使用 /skills 或「列出技能」查看可用技能。",
+    chatSkillNotFoundReply: "未找到技能「{name}」",
   };
   const ZH_PATTERNS = {
     status: /(你现在|当前|目前|现在).{0,4}(是什么|是啥|用的什么|用啥|什么模型|什么人格|哪个模型|哪个人格|是哪个)/,
@@ -550,6 +558,10 @@
     chatThinkingOff: "思考已關閉",
     chatEditModeHint: "把我拖到喜歡的位置 🐾\n然後回到設定點「儲存」",
     chatEditModeHintShort: "把我拖到喜歡的位置 🐾",
+    chatSkillLoaded: "已載入技能「{name}」的詳細說明。\n\n{body}",
+    chatSkillLoadedReply: "已載入技能「{name}」",
+    chatSkillNotFound: "找不到技能「{name}」。使用 /skills 或「列出技能」查看可用技能。",
+    chatSkillNotFoundReply: "找不到技能「{name}」",
   };
   const ZH_TW_PATTERNS = {
     status: /(你現在|目前|現在).{0,4}(是什麼|是啥|用的什麼|什麼模型|什麼人格|哪個模型|哪個人格|是哪個)/,
@@ -704,6 +716,10 @@
     chatThinkingOff: "생각 모드: 끔",
     chatEditModeHint: "원하는 곳으로 드래그해 주세요 🐾\n다 되면 설정에서 \"저장\"을 눌러 주세요",
     chatEditModeHintShort: "원하는 곳으로 드래그해 주세요 🐾",
+    chatSkillLoaded: "스킬「{name}」설명을 로드했습니다.\n\n{body}",
+    chatSkillLoadedReply: "스킬「{name}」로드 완료",
+    chatSkillNotFound: "스킬「{name}」을(를) 찾을 수 없습니다. /skills 또는 \"list skills\"로 사용 가능한 스킬을 확인하세요.",
+    chatSkillNotFoundReply: "스킬「{name}」을(를) 찾을 수 없습니다",
   };
   const KO_PATTERNS = {
     status: /(지금|현재|어떤).{0,12}(모델|페르소나|어댑터|lora)/i,
@@ -858,6 +874,10 @@
     chatThinkingOff: "思考モード：オフ",
     chatEditModeHint: "好きな場所までドラッグしてね 🐾\n終わったら設定で「保存」を押してね",
     chatEditModeHintShort: "好きな場所までドラッグしてね 🐾",
+    chatSkillLoaded: "スキル「{name}」の説明を読み込みました。\n\n{body}",
+    chatSkillLoadedReply: "スキル「{name}」を読み込みました",
+    chatSkillNotFound: "スキル「{name}」が見つかりません。/skills または「list skills」で利用可能なスキルを確認してください。",
+    chatSkillNotFoundReply: "スキル「{name}」が見つかりません",
   };
   const JA_PATTERNS = {
     status: /(今|現在|どの).{0,12}(モデル|人格|アダプタ|lora)/i,

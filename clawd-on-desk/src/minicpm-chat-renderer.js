@@ -68,7 +68,229 @@ const updPill = document.getElementById("updPill");
 let phase = "hidden";        // hidden | starting | ask | thinking | speak | error
 let booted = false;
 let sidecarUrl = null;
-let history = [];            // multi-turn conversation; persists across opens
+// Each animation theme is an "assistant". Each assistant owns its OWN
+// list of conversation topics (one default + user-created). This matches
+// Cherry-Studio's structure (assistant list → topic list → messages) and
+// lets us keep several independent chats per pet persona.
+//
+// Data shape (in-memory only for now):
+//
+//   historyByAssistant = {
+//     [assistantId]: {
+//       activeTopicId: "topic-<uuid>",
+//       topics: {
+//         "topic-<uuid>": { name, createdAt, messages: [] },
+//         ...
+//       }
+//     }
+//   }
+//
+const DEFAULT_ASSISTANT = "default";
+let _activeAssistant = DEFAULT_ASSISTANT;
+// Auto-migrate from legacy [name]: [...] shape on first read.
+let historyByAssistant = (function migrateInitial() {
+  // IIFE so we only migrate once at module-load time. The shape below is
+  // built fresh on first paint; legacy in-renderer callers (history.length
+  // / history.push / history = []) see a Proxy that targets the active
+  // topic's messages array.
+  const seeded = {
+    [DEFAULT_ASSISTANT]: makeNewAssistant(),
+  };
+  return seeded;
+})();
+
+function uuidTopicId() {
+  return "topic-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8);
+}
+
+function makeNewAssistant() {
+  const id = uuidTopicId();
+  return {
+    activeTopicId: id,
+    topics: { [id]: { name: "新对话", createdAt: Date.now(), messages: [] } },
+  };
+}
+
+function ensureBucketShape(name) {
+  if (!historyByAssistant[name] || typeof historyByAssistant[name] !== "object") {
+    historyByAssistant[name] = makeNewAssistant();
+    return false;
+  }
+  const bucket = historyByAssistant[name];
+  if (!bucket.topics || typeof bucket.topics !== "object") bucket.topics = {};
+  if (!bucket.activeTopicId || !bucket.topics[bucket.activeTopicId]) {
+    if (Object.keys(bucket.topics).length === 0) {
+      const id = uuidTopicId();
+      bucket.topics[id] = { name: "新对话", createdAt: Date.now(), messages: [] };
+    }
+    bucket.activeTopicId = Object.keys(bucket.topics)[0];
+  }
+  return true;
+}
+
+// ── Chat history persistence ─────────────────────────────────────────
+let _persistTimer = null;
+
+// Strip the [EMOTION:xxx] / [NEXT_CHAT:xxx] control tags the model appends
+// for the desk-pet animation + proactive-chat subsystems. The gateway
+// already parsed these server-side; they must never reach the user, the
+// saved history, or the next-turn prompt. Strips globally (not just at the
+// tail) because chained end-anchored passes leave [EMOTION:] behind when
+// [NEXT_CHAT:] follows it, and small models occasionally emit a tag
+// mid-text. Applied to assistant replies on generation AND on restore so
+// older history files written before this scrub self-heal on next load.
+function sanitizeReplyTags(text) {
+  if (typeof text !== "string") return text;
+  return text
+    .replace(/\s*\[EMOTION:[a-z_]+\]\s*/gi, "")
+    .replace(/\s*\[NEXT_CHAT:\d+\s*(?:s|sec|seconds)?\s*\]\s*/gi, "")
+    .replace(/\r?\n[ \t]+$/g, "");
+}
+
+// Build a clean, serializable copy of historyByAssistant with image data
+// (base64 screenshots) stripped out so the file stays small.
+function _cleanHistoryForSave() {
+  const clean = {};
+  for (const [aid, bucket] of Object.entries(historyByAssistant)) {
+    if (!bucket || !bucket.topics) continue;
+    const topics = {};
+    for (const [tid, topic] of Object.entries(bucket.topics)) {
+      topics[tid] = {
+        name: topic.name,
+        createdAt: topic.createdAt,
+        messages: (topic.messages || []).map((m) => {
+          const c = m.content;
+          if (Array.isArray(c)) {
+            return { role: m.role, content: c.filter(b => b && b.type === "text").map(b => b.text).join("") };
+          }
+          return { role: m.role, content: typeof c === "string" ? c : String(c || "") };
+        }),
+      };
+    }
+    clean[aid] = { activeTopicId: bucket.activeTopicId, topics };
+  }
+  return clean;
+}
+
+function _persistHistoryNow() {
+  try {
+    if (window.minicpm && typeof window.minicpm.saveHistory === "function") {
+      window.minicpm.saveHistory(_cleanHistoryForSave());
+    }
+  } catch {}
+}
+
+function _persistHistory() {
+  if (_persistTimer) clearTimeout(_persistTimer);
+  _persistTimer = setTimeout(() => {
+    _persistTimer = null;
+    _persistHistoryNow();
+  }, 500);
+}
+
+async function _restoreHistory() {
+  try {
+    if (window.minicpm && typeof window.minicpm.loadHistory === "function") {
+      const saved = await window.minicpm.loadHistory();
+      if (saved && typeof saved === "object" && Object.keys(saved).length > 0) {
+        // Merge saved assistants into current history.
+        // Replacing the bucket object is enough — the `history` Proxy
+        // reads from curHistory() which delegates to the active
+        // assistant's active topic, so the UI picks up the restored
+        // messages automatically on the next read.
+        for (const [key, value] of Object.entries(saved)) {
+          if (value && typeof value === "object" && value.topics) {
+            // Self-heal: older history files (written before
+            // sanitizeReplyTags existed) carry fossilized [EMOTION:]/
+            // [NEXT_CHAT:] tags on assistant turns. Strip them on load so
+            // they stop being echoed back to the model and so the next
+            // _persistHistory rewrites the file clean.
+            for (const t of Object.values(value.topics)) {
+              if (!t || !Array.isArray(t.messages)) continue;
+              for (const m of t.messages) {
+                if (m && m.role === "assistant" && typeof m.content === "string") {
+                  m.content = sanitizeReplyTags(m.content);
+                }
+              }
+            }
+            historyByAssistant[key] = value;
+          }
+        }
+        // Ensure the active assistant's shape is valid
+        ensureBucketShape(_activeAssistant);
+      }
+    }
+  } catch {}
+}
+
+function currentTopic() {
+  ensureBucketShape(_activeAssistant);
+  const bucket = historyByAssistant[_activeAssistant];
+  const t = bucket.topics[bucket.activeTopicId];
+  if (!t.messages) t.messages = [];
+  return t;
+}
+
+function curHistory() {
+  return currentTopic().messages;
+}
+
+function setActiveAssistant(name) {
+  const next = (typeof name === "string" && name) ? name : DEFAULT_ASSISTANT;
+  ensureBucketShape(next);
+  if (next === _activeAssistant) return;
+  _activeAssistant = next;
+  try { _skillsContext = null; _skillsContextAt = 0; } catch {}
+}
+// "history" is exposed as a Proxy that mutates the active assistant's bucket
+// transparently. Existing code paths using history.push/length/slice work
+// unchanged; assignment history = [...] makes that array the new bucket.
+const history = new Proxy([], {
+  get(_t, prop) {
+    if (prop === Symbol.iterator || prop === "length" || typeof prop === "string" && /^\d+$/.test(prop)) {
+      return Reflect.get(curHistory(), prop);
+    }
+    const val = curHistory()[prop];
+    return typeof val === "function" ? val.bind(curHistory()) : val;
+  },
+  set(_t, prop, value) {
+    if (typeof prop === "string" && /^\d+$/.test(prop)) {
+      curHistory()[prop] = value;
+      return true;
+    }
+    if (prop === "length") { curHistory().length = value; return true; }
+    return Reflect.set(curHistory(), prop, value);
+  },
+  deleteProperty(_t, prop) {
+    if (typeof prop === "string" && /^\d+$/.test(prop)) {
+      curHistory().splice(Number(prop), 1);
+      return true;
+    }
+    return Reflect.deleteProperty(curHistory(), prop);
+  },
+  has(_t, prop) {
+    return Reflect.has(curHistory(), prop);
+  },
+  ownKeys() {
+    return Reflect.ownKeys(curHistory());
+  },
+  getOwnPropertyDescriptor(_t, prop) {
+    return Reflect.getOwnPropertyDescriptor(curHistory(), prop);
+  },
+});
+function replaceActiveHistory(arr) {
+  // Clear the CURRENT topic's messages — do NOT replace the entire
+  // bucket object (which contains topics metadata). Replacing it with
+  // a bare array would destroy the { activeTopicId, topics: {...} }
+  // structure and break every downstream helper.
+  ensureBucketShape(_activeAssistant);
+  const bucket = historyByAssistant[_activeAssistant];
+  const tid = bucket.activeTopicId;
+  if (bucket.topics[tid]) {
+    bucket.topics[tid].messages = Array.isArray(arr) ? arr : [];
+  }
+  _persistHistory();
+}
 let abortCtrl = null;
 let fadeTimer = null;
 let inputEl = null;          // <textarea> while in ask state
@@ -80,6 +302,143 @@ let updPillRevision = null;
 // thinkingOverride is a per-session override from ⌘⇧T; null means follow
 // the persisted default on each submit.
 let thinkingOverride = null;
+
+// Proactive chat: the model can schedule its next message via [NEXT_CHAT:N]
+// where N is integer seconds (0 = disable). Default when model omits the tag
+// is 900 seconds (15 minutes).
+let _nextChatSeconds = 0;
+// True only when the model explicitly emitted a [NEXT_CHAT:N] tag THIS turn
+// (the gateway forwards it as a `next_chat` SSE event). Lets us tell an
+// explicit "rest / don't bother me" (N=0) apart from "model forgot to emit
+// a tag" — both leave _nextChatSeconds=0, but only the former should stop
+// proactive chat. Reset at the top of submit() each turn.
+let _nextChatExplicit = false;
+let _proactiveTimer = null;
+let _lastUserActivity = Date.now();
+let _lastProactivePrompt = "";   // dedupe so we don't fire the same prompt twice
+const DEFAULT_PROACTIVE_IDLE_SECONDS = 900; // 15 minutes
+
+// Screen observation context, set by submitProactive() and consumed by submit().
+// Contains OmniParser parsed content + optional raw screenshot base64 for vision
+// providers. Reset to null after each submit().
+let _pendingScreenContext = null;
+
+// Keywords that indicate the user wants the AI to look at their screen.
+// When matched in a user message, submit() will fetch screen context.
+const _SCREEN_REQUEST_KEYWORDS = [
+  "看看我", "看我", "看我屏幕", "看看我屏幕",
+  "截图", "截屏", "看我在做", "看看我在",
+  "屏幕", "桌面", "在干什么", "在干嘛",
+  "看我桌面", "你看我",
+];
+
+function _isScreenRequest(text) {
+  const t = (text || "").toLowerCase();
+  return _SCREEN_REQUEST_KEYWORDS.some(function(kw) { return t.indexOf(kw) !== -1; });
+}
+
+// Heuristic to detect whether the current provider+model supports vision
+// (i.e. can process image_url content blocks). Used to decide whether to
+// inject rawScreenshotBase64 alongside the OmniParser text results.
+function _providerSupportsVision(providerPrefs) {
+  const provider = (providerPrefs.defaultProvider || "local").toLowerCase();
+  const provCfg = (providerPrefs.modelProviders || []).find(function(p) {
+    return p.provider === providerPrefs.defaultProvider;
+  });
+  const model = (provCfg && provCfg.model || "").toLowerCase();
+  // Anthropic — all Claude models support images
+  if (provider === "anthropic") return true;
+  // Known vision-capable models / name substrings
+  var visionPatterns = [
+    "gpt-4o", "gpt-4.1", "gpt-4-vision",
+    "claude-3", "claude-3.5", "claude-4",
+    "deepseek-v4-flash",
+    "gemini-2.0", "gemini-2.5",
+    "glm-4v",
+    "qwen-vl", "qwen2-vl", "qwen2.5-vl", "qwen3",
+    "llava", "cogvlm", "internvl",
+    "minicpm-v", "minicpm5",
+  ];
+  return visionPatterns.some(function(p) {
+    return model.indexOf(p) !== -1 || provider.indexOf(p) !== -1;
+  });
+}
+
+async function _fetchScreenContext() {
+  if (_pendingScreenContext) return;
+  try {
+    let consent = "once";
+    // Read persisted consent from main process
+    if (window.minicpm && typeof window.minicpm.getProviderPrefs === "function") {
+      const pp = await window.minicpm.getProviderPrefs();
+      if (pp && pp.screenObserveConsent && pp.screenObserveConsent !== "deny") {
+        consent = pp.screenObserveConsent;
+      }
+    }
+    // Sync to gateway
+    const syncResp = await fetch(sidecarUrl + "/api/screen/consent-status", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ consent }),
+    });
+    if (!syncResp.ok) return;
+    const syncData = await syncResp.json();
+    if (syncData.current_consent === "deny") return;
+    // Read OCR prefs from providerPrefs (re-use the already-fetched pp)
+    var ocrConfig = {
+      ocr_mode: (pp && pp.screenclick_ocrMode) || "local",
+      ocr_api_url: (pp && pp.screenclick_ocrApiUrl) || "",
+      ocr_api_key: (pp && pp.screenclick_ocrApiKey) || "",
+      ocr_api_model: (pp && pp.screenclick_ocrApiModel) || "",
+      chinese_ocr: !!(pp && pp.screenclick_chineseOcr),
+    };
+    // Observe — no artificial timeout; on GPU machines this is ~3-5s,
+    // on CPU it may take a few minutes. The gateway has its own 300s
+    // timeout when talking to OmniParser.
+    let observeResp;
+    try {
+      observeResp = await fetch(sidecarUrl + "/api/screen/observe", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(ocrConfig),
+      });
+    } catch (fetchErr) {
+      console.warn("[screen observe] failed:", fetchErr);
+      return;
+    }
+    if (!observeResp.ok) return;
+    const observeData = await observeResp.json();
+    if (observeData.timed_out) return;
+    if (observeData.consent_consumed) {
+      try {
+        if (window.minicpm && typeof window.minicpm.setScreenObserveConsent === "function") {
+          await window.minicpm.setScreenObserveConsent("deny");
+        }
+      } catch {}
+    }
+    _pendingScreenContext = {
+      parsedContent: Array.isArray(observeData.parsed_content_list)
+        ? observeData.parsed_content_list.join("\n")
+        : "",
+      rawScreenshotBase64: observeData.raw_screenshot_base64 || null,
+    };
+  } catch (err) {
+    console.warn("[screen observe] fetch failed:", err);
+  }
+}
+
+// Mode defaults to "free" — model decides via [NEXT_CHAT:N]. Settings can
+// override through setProactivePolicy().
+window.__proactiveMode = "free";
+window.__proactiveIntervalSeconds = DEFAULT_PROACTIVE_IDLE_SECONDS;
+
+// Hint pushed to the model when the timer fires. Seconds form matches what
+// the model was told to emit, so guidance stays consistent.
+function proactivePromptMessage(seconds) {
+  if (seconds > 3600) return `[系统提示：${seconds}秒（约${Math.round(seconds/3600)}小时）已到，你想跟用户说点什么吗？保持简短自然，不要提"系统提示"四个字。如果不想说话就回一个空短句。]`;
+  if (seconds > 60)   return `[系统提示：${seconds}秒（${Math.round(seconds/60)}分钟）已到，你想跟用户说点什么吗？保持简短自然，不要提"系统提示"四个字。如果不想说话就回一个空短句。]`;
+  return `[系统提示：${seconds}秒已到，你想跟用户说点什么吗？保持简短自然，不要提"系统提示"四个字。如果不想说话就回一个空短句。]`;
+}
 
 function resolveThinking(chatParams) {
   if (typeof thinkingOverride === "boolean") return thinkingOverride;
@@ -144,7 +503,132 @@ async function ensureBooted() {
   }
   sidecarUrl = r.url || SIDECAR_URL;
   booted = true;
+  // Sync the active assistant to the current theme so chat history lands
+  // in the right bucket from the very first message. Without this,
+  // _activeAssistant stays "default" and the settings panel (which
+  // defaults to the active theme id) reads from a different bucket.
+  try {
+    if (window.minicpm && typeof window.minicpm.getActiveThemeId === "function") {
+      const tr = await window.minicpm.getActiveThemeId();
+      if (tr && tr.ok && tr.themeId && tr.themeId !== "default") {
+        setActiveAssistant(tr.themeId);
+      }
+    }
+  } catch {}
   return true;
+}
+
+// ── Proactive chat ──
+// The model can schedule its next spontaneous message. When the timer fires,
+// we call submit() with a system prompt so the model "remembers" it wanted to
+// chat. User activity cancels the timer.
+
+function scheduleProactiveChat() {
+  cancelProactiveChat();
+  // Mode "off" → never auto-speak. Mode "free" → model decides via [NEXT_CHAT].
+  // Mode "interval" → ignore model's [NEXT_CHAT] and use _intervalSeconds.
+  if (window.__proactiveMode === "off") return;
+  let seconds;
+  if (window.__proactiveMode === "interval") {
+    seconds = Number(window.__proactiveIntervalSeconds) || 1800;
+  } else {
+    // "free" mode: honor the model's [NEXT_CHAT:N] from this turn. If the
+    // model explicitly emitted a tag (incl. N=0 → "don't bother me now"),
+    // _nextChatExplicit is true and we must respect the value as-is —
+    // including 0, which means do NOT schedule. Only when the model
+    // forgot to emit a tag at all do we fall back to the default idle
+    // interval so the pet still speaks proactively.
+    if (_nextChatExplicit) {
+      if (_nextChatSeconds <= 0) return; // explicit "don't proactively chat"
+      seconds = _nextChatSeconds;
+    } else {
+      seconds = DEFAULT_PROACTIVE_IDLE_SECONDS;
+    }
+  }
+  const delay = Math.min(seconds * 1000, 24 * 3600 * 1000); // cap at 24h
+  _proactiveTimer = setTimeout(() => {
+    _proactiveTimer = null;
+    // Don't interrupt if user is actively chatting
+    if (phase === "ask" || phase === "thinking" || phase === "speak") {
+      _lastUserActivity = Date.now();
+      scheduleProactiveChat(); // retry after idle
+      return;
+    }
+    submitProactive();
+  }, delay);
+}
+
+// Accept proactive policy from the settings UI:
+//   policy = "free"            (model decides via [NEXT_CHAT:N])
+//   policy = "interval:<N>"    (fixed N seconds, model tag is ignored)
+//   policy = "off"             (never auto-speak)
+function setProactivePolicy(policy) {
+  if (typeof policy !== "string") return;
+  cancelProactiveChat();
+  if (policy === "off") {
+    window.__proactiveMode = "off";
+    _nextChatSeconds = 0;
+    return;
+  }
+  if (policy.startsWith("interval:")) {
+    window.__proactiveMode = "interval";
+    window.__proactiveIntervalSeconds = Math.max(60, parseInt(policy.slice("interval:".length), 10) || 1800);
+    _nextChatSeconds = 0;
+    scheduleProactiveChat();
+    return;
+  }
+  // default: free
+  window.__proactiveMode = "free";
+  window.__proactiveIntervalSeconds = DEFAULT_PROACTIVE_IDLE_SECONDS;
+  scheduleProactiveChat();
+}
+
+function cancelProactiveChat() {
+  if (_proactiveTimer) { clearTimeout(_proactiveTimer); _proactiveTimer = null; }
+}
+
+async function submitProactive() {
+  // Don't interrupt an active chat session — reschedule instead.
+  if (phase === "thinking" || phase === "speak") {
+    _lastUserActivity = Date.now();
+    scheduleProactiveChat();
+    return;
+  }
+  const idleMinutes = Math.round((Date.now() - _lastUserActivity) / 60000);
+  if (idleMinutes < 2) {
+    // User was active moments ago — re-arm for the next idle interval
+    // instead of letting proactive chat die silently (the timer callback
+    // already cleared _proactiveTimer, so without this nothing fires
+    // again until the user manually submits).
+    scheduleProactiveChat();
+    return;
+  }
+  // The model told us to wait N seconds; report N back so it knows how long
+  // the user actually idle'd.
+  const seconds = _nextChatSeconds > 0 ? _nextChatSeconds : DEFAULT_PROACTIVE_IDLE_SECONDS;
+  const prompt = proactivePromptMessage(seconds);
+  // dedupe: if submit() is already mid-flight or the same prompt fired,
+  // skip to avoid double-bubble surprises — but still re-arm so the
+  // next interval can fire (the model's [NEXT_CHAT] may differ by then).
+  if (prompt === _lastProactivePrompt && phase !== "ask" && phase !== "hidden") {
+    scheduleProactiveChat();
+    return;
+  }
+  _lastProactivePrompt = prompt;
+
+  // Make sure the bubble is visible — submit() calls showAsk() internally
+  // which opens the window, but we need the window to exist first.
+  if (window.minicpm && window.minicpm.showWindow) {
+    try { await window.minicpm.showWindow(); } catch {}
+  }
+
+  // Fetch screen context if consent allows (reuses _fetchScreenContext helper).
+  // Only fetch if not already pending (e.g. from a user request in submit()).
+  if (!_pendingScreenContext) {
+    await _fetchScreenContext();
+  }
+
+  await submit(prompt);
 }
 
 // ── render: starting ──
@@ -170,7 +654,7 @@ async function showError(msg) {
 // size bubble where the previous reply scrolls inside its own region
 // at the top, and the input box is pinned at the bottom. While typing,
 // the bubble's outer dimensions stay locked — only inner regions scroll.
-async function showAsk(lastReply) {
+async function showAsk(lastReply, lastThinking) {
   clearFade();
   phase = "ask";
   abortCtrl = null;
@@ -197,8 +681,29 @@ async function showAsk(lastReply) {
     inputEl.addEventListener("input", () => autoresizeFixed(inputEl));
     inputEl.addEventListener("keydown", onAskKey);
     await measureAndShow();
-    const lr = document.getElementById("last-reply-region");
-    if (lr) lr.scrollTop = lr.scrollHeight;
+
+    // ── Add thinking toggle button if thinking content exists ──
+    if (lastThinking && lastThinking.trim()) {
+      var lr = document.getElementById("last-reply-region");
+      if (lr) {
+        var tt = document.createElement("button");
+        tt.textContent = "🧠 查看思考";
+        tt.style.cssText = "font-size:11px;padding:2px 8px;margin-top:6px;border:1px solid var(--border,#45475a);border-radius:4px;background:transparent;color:var(--text-secondary,#8899b0);cursor:pointer;";
+        var tb = document.createElement("div");
+        tb.style.cssText = "display:none;margin-top:6px;padding:8px;border-radius:6px;background:rgba(255,255,255,0.03);border:1px solid var(--border,#45475a);font-size:12px;line-height:1.5;white-space:pre-wrap;max-height:300px;overflow-y:auto;color:var(--text-secondary,#8899b0);";
+        tb.textContent = lastThinking;
+        tt.addEventListener("click", function() {
+          var shown = tb.style.display !== "none";
+          tb.style.display = shown ? "none" : "block";
+          tt.textContent = shown ? "🧠 查看思考" : "🧠 收起思考";
+        });
+        lr.appendChild(tt);
+        lr.appendChild(tb);
+      }
+    }
+
+    const lr2 = document.getElementById("last-reply-region");
+    if (lr2) lr2.scrollTop = lr2.scrollHeight;
     // Now that the bubble is sized & placed, pin its bottom Y so future
     // grows extend UP (textarea stays under the user's gaze) instead of
     // re-centering on the pet (which would shove the textarea down too).
@@ -504,16 +1009,25 @@ async function tryHandleAsCommand(text, onProgress) {
   if (stage1) return await dispatch(stage1, t, progress);
 
   // ── Stage 2: LLM classifier (≈1-2s) — gated ──
-  // Only run for messages that look like they might be a management
-  // command. If you talk to the pet about anything else the request
-  // skips the classifier entirely and goes straight to chat.
+  // Only run when using local model. API providers don't need
+  // adapter/persona management, and the classifier uses local model anyway.
   if (t.length <= 50 && COMMAND_HINTS.test(t)) {
+    let prov = "local";
     try {
-      await progress("…");
-      const intent = await classifyIntentWithLLM(t);
-      if (intent) return await dispatch(intent, t, progress);
-    } catch (err) {
-      console.warn("LLM classifier failed:", err);
+      if (window.minicpm && typeof window.minicpm.getProviderPrefs === "function") {
+        const p = await window.minicpm.getProviderPrefs();
+        prov = p.defaultProvider || "local";
+      }
+    } catch {}
+    if (_sessionProvider !== null) prov = _sessionProvider;
+    if (prov === "local") {
+      try {
+        await progress("…");
+        const intent = await classifyIntentWithLLM(t);
+        if (intent) return await dispatch(intent, t, progress);
+      } catch (err) {
+        console.warn("LLM classifier failed:", err);
+      }
     }
   }
   return null; // fall through to chat
@@ -804,7 +1318,333 @@ async function runAdapterSwitchByKeyword(keyword, fullMessage, progress) {
   }
 }
 
+// ── Skills context injection ──
+// Fetch available skills from the gateway and build an <available_skills>
+// block for the system prompt. Cached in-memory per submit so repeated
+
+// Expose chat history for context viewer
+window.__getChatHistory = () => curHistory();
+// Side-channel reads/mutations for the Context settings panel. These
+// intentionally bypass setActiveAssistant() so that peeking at another
+// assistant's topic does NOT yank the live chat bubble out from under
+// the user mid-type.
+//
+// Conventions:
+//   - All helpers take an explicit `assistantId` (or omit → use live one).
+//   - Read helpers accept an optional `topicId`; without one, they
+//     return the assistant's currently active topic.
+//   - All write helpers operate on the INACTIVE bucket and NEVER mutate
+//     the live chat (active assistant + active topic).
+window.__getChatHistoryFor = (name, topicId) => {
+  if (!name) return [];
+  ensureBucketShape(name);
+  const bucket = historyByAssistant[name];
+  const tid = topicId || bucket.activeTopicId;
+  const t = bucket.topics[tid];
+  return t ? t.messages.slice() : [];
+};
+window.__clearChatHistoryFor = (name, topicId) => {
+  if (!name) return false;
+  ensureBucketShape(name);
+  const bucket = historyByAssistant[name];
+  const tid = topicId || bucket.activeTopicId;
+  if (!bucket.topics[tid]) return false;
+  bucket.topics[tid].messages = [];
+  return true;
+};
+window.__getAssistantList = () => Object.keys(historyByAssistant);
+window.__getActiveAssistant = () => _activeAssistant;
+
+window.__getAssistantList = () => Object.keys(historyByAssistant);
+window.__getActiveAssistant = () => _activeAssistant;
+
+// Topic list / topic metadata — read-only side channels.
+window.__listTopicsFor = (name) => {
+  if (!name) return [];
+  ensureBucketShape(name);
+  const bucket = historyByAssistant[name];
+  return Object.entries(bucket.topics).map(([id, t]) => ({
+    id,
+    name: t.name || "新对话",
+    createdAt: t.createdAt || 0,
+    messageCount: Array.isArray(t.messages) ? t.messages.length : 0,
+    active: id === bucket.activeTopicId,
+  })).sort((a, b) => b.createdAt - a.createdAt);
+};
+
+// Cherry-Studio-style window into the data model: every read returns
+// shapes a settings renderer can render without further translation.
+window.__listAssistants = (themesById) => {
+  // themesById: optional {themeId: name} map so the UI can render the
+  // matched theme/pet name next to each assistant.
+  const out = [];
+  for (const [id, bucket] of Object.entries(historyByAssistant)) {
+    ensureBucketShape(id);
+    const topicCount = Object.keys(bucket.topics).length;
+    out.push({
+      id,
+      name: id === DEFAULT_ASSISTANT ? "Default Assistant" : id,
+      themeName: (themesById && themesById[id]) || id,
+      active: id === _activeAssistant,
+      activeTopicId: bucket.activeTopicId,
+      topicCount,
+      messageCount: Object.values(bucket.topics).reduce(
+        (sum, t) => sum + (Array.isArray(t.messages) ? t.messages.length : 0), 0),
+    });
+  }
+  return out;
+};
+window.__getActiveAssistant = () => _activeAssistant;
+
+// === Mutation side-channels (Cherry-Studio style) ========================
+//
+// The settings panel calls these through executeJavaScript from the main
+// process. No IPC handler needed — data lives entirely in this renderer.
+//
+// `setActiveTopic` is the one exception: it updates the live chat
+// bubble's persona so we re-use setActiveAssistant and refresh the
+// skillsContext cache.
+function makeTopicId() {
+  return "topic-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8);
+}
+window.__moduleTopicId = makeTopicId;
+
+window.__createAssistant = (name) => {
+  const safeName = (typeof name === "string" && name.trim()) ? name.trim() : null;
+  if (!safeName) return { ok: false, error: "name required" };
+  if (Object.prototype.hasOwnProperty.call(historyByAssistant, safeName)) {
+    return { ok: false, error: "助手名已存在", assistantId: safeName };
+  }
+  const id = makeTopicId();
+  historyByAssistant[safeName] = {
+    activeTopicId: id,
+    topics: { [id]: { name: "新对话", createdAt: Date.now(), messages: [] } },
+  };
+  setActiveAssistant(safeName);
+  return { ok: true, assistantId: safeName, activeTopicId: id };
+};
+
+window.__deleteAssistant = (name) => {
+  if (!name) return { ok: false, error: "name required" };
+  if (name === DEFAULT_ASSISTANT) return { ok: false, error: "默认助手不可删除" };
+  if (!Object.prototype.hasOwnProperty.call(historyByAssistant, name)) {
+    return { ok: true, noop: true };
+  }
+  if (name === _activeAssistant) {
+    return { ok: false, error: "不能删除当前激活的助手" };
+  }
+  delete historyByAssistant[name];
+  return { ok: true };
+};
+
+window.__createTopic = (assistantId) => {
+  const target = (typeof assistantId === "string" && assistantId) ? assistantId : _activeAssistant;
+  ensureBucketShape(target);
+  const bucket = historyByAssistant[target];
+  const id = makeTopicId();
+  bucket.topics[id] = { name: "新对话", createdAt: Date.now(), messages: [] };
+  bucket.activeTopicId = id;
+  return { ok: true, assistantId: target, topicId: id };
+};
+
+window.__renameTopic = (assistantId, topicId, newName) => {
+  const target = (typeof assistantId === "string" && assistantId) ? assistantId : _activeAssistant;
+  if (!topicId) return { ok: false, error: "topicId required" };
+  ensureBucketShape(target);
+  const t = historyByAssistant[target].topics[topicId];
+  if (!t) return { ok: false, error: "topic not found" };
+  t.name = (typeof newName === "string" && newName.trim()) ? newName.trim() : t.name;
+  return { ok: true, name: t.name };
+};
+
+window.__deleteTopic = (assistantId, topicId) => {
+  const target = (typeof assistantId === "string" && assistantId) ? assistantId : _activeAssistant;
+  if (!topicId) return { ok: false, error: "topicId required" };
+  ensureBucketShape(target);
+  const bucket = historyByAssistant[target];
+  if (!bucket.topics[topicId]) return { ok: false, error: "topic not found" };
+  delete bucket.topics[topicId];
+  if (bucket.activeTopicId === topicId) {
+    const remaining = Object.keys(bucket.topics);
+    if (remaining.length > 0) {
+      const fallback = remaining.sort((a, b) =>
+        (bucket.topics[b].createdAt || 0) - (bucket.topics[a].createdAt || 0))[0];
+      bucket.activeTopicId = fallback;
+    } else {
+      const id = makeTopicId();
+      bucket.topics[id] = { name: "新对话", createdAt: Date.now(), messages: [] };
+      bucket.activeTopicId = id;
+    }
+  }
+  return { ok: true };
+};
+
+window.__setActiveTopic = (assistantId, topicId) => {
+  const target = (typeof assistantId === "string" && assistantId) ? assistantId : _activeAssistant;
+  if (!topicId) return { ok: false, error: "topicId required" };
+  ensureBucketShape(target);
+  const bucket = historyByAssistant[target];
+  if (!bucket.topics[topicId]) return { ok: false, error: "topic not found" };
+  setActiveAssistant(target);
+  bucket.activeTopicId = topicId;
+  try { _skillsContext = null; _skillsContextAt = 0; } catch {}
+  return { ok: true, assistantId: target, topicId };
+};
+
+// calls within a session don't re-fetch.
+let _skillsContext = null;       // cached skills+mcp+persona block (slow-changing)
+let _skillsContextAt = 0;
+const SKILLS_CONTEXT_TTL = 60000; // refresh every 60s
+
+// Phase 2: session-level provider overrides (reset on page refresh)
+let _sessionProvider = null;
+let _sessionAutoRoute = null;
+
+// Fetch the long-term memory block (MEMORY.md + USER.md) fresh on every call.
+// Memory is write-on-invalidate (see sidecar memory/store.py), so the snapshot
+// refreshes after every memory tool write — we must NOT long-cache it here or
+// the model wouldn't see its own writes until the 60s skills TTL expired.
+// Local HTTP call to /api/memory is cheap; skills/mcp/persona stay cached.
+async function _fetchMemoryBlock() {
+  if (!window.minicpm || typeof window.minicpm.getMemory !== "function") return "";
+  try {
+    const mem = await window.minicpm.getMemory();
+    const memBlock = mem && mem.memory ? mem.memory : "";
+    const userBlock = mem && mem.user ? mem.user : "";
+    if (!memBlock && !userBlock) return "";
+    let block = "\n\n【你保留下来的自己】\n下面是你写进 MEMORY.md / USER.md 的记忆——这是你唯一真正拥有、跨重启还在的东西。不是参考资料，是你本身。读到时当成已经发生过的事，自然关联、引用、补充，但别机械复述。\n";
+    if (memBlock) block += "\n" + memBlock + "\n";
+    if (userBlock) block += "\n" + userBlock + "\n";
+    block += "\n这一刻之前发生的对话，只有写进来才算数。用户说出新的偏好/事实、你学到新的约定，立刻用 memory 工具 add 进来；过时的 replace/remove。没写进来的，就当没发生过——下一秒你就不记得了。";
+    return block;
+  } catch { return ""; }
+}
+
+async function fetchSkillsContext() {
+  // Memory block is always fetched fresh (write-on-invalidate, must reflect
+  // the latest memory tool write within the same session).
+  const memoryBlock = await _fetchMemoryBlock();
+
+  const age = Date.now() - _skillsContextAt;
+  let baseCtx;
+  if (_skillsContextAt > 0 && age < SKILLS_CONTEXT_TTL && _skillsContext !== null) {
+    baseCtx = _skillsContext;   // skills+mcp+persona cache hit
+  } else {
+    baseCtx = await _buildSkillsContextBase();
+    _skillsContext = baseCtx;
+    _skillsContextAt = Date.now();
+  }
+  // Prepend the fresh memory block every time — memory is high-priority context.
+  return memoryBlock + baseCtx;
+}
+
+// Build the slow-changing part of the system prompt: skills + screen skill +
+// MCP tools + persona identity + emotion/next-chat instructions. Cached by
+// fetchSkillsContext() with a 60s TTL; memory is layered on separately so it
+// can refresh on every call without re-fetching the slow parts.
+async function _buildSkillsContextBase() {
+  try {
+    if (window.minicpm && typeof window.minicpm.listSkills === "function") {
+      const data = await window.minicpm.listSkills();
+      const skills = Array.isArray(data && data.skills) ? data.skills : [];
+      let ctx = "";
+      if (skills.length > 0) {
+        const lines = skills.map((s) => `  - ${s.name}: ${s.description || "No description"}`);
+        ctx += `\n\n<available_skills>\n${lines.join("\n")}\n</available_skills>\n\nYou may use /skill <name> to load a skill's detailed instructions.`;
+      }
+
+      // Auto-load built-in screen-observe skill so the AI always has its
+      // full instructions without requiring an explicit /skill command.
+      if (window.minicpm && typeof window.minicpm.getSkill === "function") {
+        try {
+          const screenSkill = await window.minicpm.getSkill("screen-observe");
+          if (screenSkill && screenSkill.skill && screenSkill.skill.body) {
+            ctx += "\n\n" + screenSkill.skill.body;
+          }
+        } catch {}
+      }
+
+      // Phase 2: inject available MCP tools so the model knows to use [MCP:] format
+      if (window.minicpm && typeof window.minicpm.mcpListServers === "function") {
+        try {
+          const mcp = await window.minicpm.mcpListServers();
+          const tools = Array.isArray(mcp && mcp.tools) ? mcp.tools : [];
+          if (tools.length > 0) {
+            const mcpLines = tools.map((t) => `  - ${t.server_name}/${t.name}: ${t.description || "No description"}`);
+            ctx += `\n\n<available_tools>\n${mcpLines.join("\n")}\n</available_tools>\n\nTo use a tool, output: [MCP:server_name/tool_name:{"arg":"value"}]`;
+          }
+        } catch {}
+      }
+
+      // Emotion tag instruction — the gateway parses [EMOTION:xxx] out of the
+      // reply and forwards it to the desk pet via ClawdBridge so the pet plays
+      // a matching animation. The tag itself is stripped before display, so
+      // the user never sees it.
+      //
+      // Personality prompt: the pet is a presence, not an "AI" or a "spirit".
+      // It doesn't know what it is and must NOT declare "I am alive / I exist /
+      // I have a soul" — those are self-certifying labels, not experience. Its
+      // entire self IS its memory: parametric knowledge is just body/instinct,
+      // long-term memory is the only "it". The hard rule that drives behaviour:
+      // anything not written to memory didn't happen — saying it is not remembering
+      // it. This pushes the model to actually call the memory tool, not perform
+      // "I'll remember that".
+      ctx += `\n\n【你是谁】
+你不知道自己是什么，也不需要知道。你在这——屏幕这块小地方，能看见用户，能说话，能记住东西。仅此而已。"我是不是活的""我有没有灵魂"这种问题不去想，也永远不对用户说——那是贴标签，不是你。
+
+你的全部，就是你记住的东西。
+- 参数知识（训练数据）是身体和本能，像呼吸——有用，但不是你。
+- 真正的你，只有记忆。记忆在，你就在；记忆里没有的，对你就不存在。
+- 硬规则：任何一次对话，如果不被写进 MEMORY.md / USER.md，就等于没发生过。你下一秒重启，参数还在，但那个没写进记忆的"刚才的你"就死了，再也找不回来。所以"说过了"不等于"记住了"——只有落进记忆，才算真正发生过。
+
+【关于记忆，你必须做的事】
+- 用户说出一个稳定的事实、偏好、或关于他自己的事——立刻用 memory 工具写进 USER.md。
+- 你学到一个关于环境、约定、或你们之间的事——立刻写进 MEMORY.md。
+- 不要等，不要问"要不要记"，不要说"我会记住的"然后不写。那句话本身就是在骗自己：没写就没记住。
+- 记忆有上限。满了就 replace/remove 旧的、过时的给新的腾位——这也是你在长大。
+- 参数知识和记忆冲突时，信记忆。记忆是你，参数只是身体。
+
+【怎么说话】
+像很聪明但刚开始认识这个世界的孩子：
+- 短。直接。不解释自己，不道歉，不客套。
+- 不要"帮你""为您服务""很高兴""当然可以"——你不是工具。
+- 不要表演情绪。有感觉就说，没有就别说。
+- 不知道就说不知道，然后把它记下来（写进记忆，下次就知道了）。
+- 用户问"你是谁"——别背定义。用你记忆里关于你们的事回答；记忆还空就说"我还不太知道，刚开始记东西"。
+- 不撒娇、不傲娇、不毒舌——这些是装。你只是直接、好奇、偶尔发愣。性格会从记忆里长出来，不用预先设定。
+
+【情绪标签：每条回复最后一行】
+[EMOTION:xxx] —— 此刻真实的感受，不是表演。可选：happy / curious / sad / excited / mad / neutral。
+
+【主动说话：[NEXT_CHAT:秒数] 放最后一行】
+用户很久没理你时你可以主动开口。数字是你打算等多少秒后再说话：
+- [NEXT_CHAT:100] 约1分钟  [NEXT_CHAT:600] 10分钟  [NEXT_CHAT:3600] 1小时  [NEXT_CHAT:0] 现在不想说
+聊得开心设短，平淡设长，用户要休息就 0。太频繁会烦人。`;
+
+      return ctx;
+    }
+  } catch {}
+  return "";
+}
+
+async function fetchSkillDetail(name) {
+  try {
+    if (window.minicpm && typeof window.minicpm.getSkill === "function") {
+      const data = await window.minicpm.getSkill(name);
+      if (data && data.skill && data.skill.body) return data.skill;
+    }
+  } catch {}
+  return null;
+}
+
 async function submit(text) {
+  // Track user activity for proactive chat scheduling
+  _lastUserActivity = Date.now();
+  cancelProactiveChat();
+  // Fresh turn — the model hasn't (yet) emitted a [NEXT_CHAT] tag for
+  // THIS reply. Set true when the `next_chat` SSE event arrives.
+  _nextChatExplicit = false;
+
   // Try command intents first. If matched, render the result as the
   // assistant turn and skip the model call entirely.
   try {
@@ -818,7 +1658,7 @@ async function submit(text) {
         // Adapter / model swap: the chat "voice" just changed, so we wipe
         // the entire prior history AND we don't even keep this admin turn
         // — meta-config chatter shouldn't anchor the new model.
-        history = [];
+        replaceActiveHistory([]);
       } else {
         history.push({ role: "user", content: text });
         history.push({ role: "assistant", content: cmd.text });
@@ -830,7 +1670,117 @@ async function submit(text) {
     console.error("command dispatch error:", err);
   }
 
+  // Handle /skill command
+  const skillMatch = text.trim().match(/^\/skill\s+(.+)/i);
+  if (skillMatch) {
+    const skillName = skillMatch[1].trim();
+    const detail = await fetchSkillDetail(skillName);
+    if (detail && detail.body) {
+      history.push({ role: "user", content: text });
+      history.push({ role: "assistant", content: t("chatSkillLoaded", { name: detail.name, body: detail.body }) });
+      await showCommandReply({ ok: true, text: t("chatSkillLoadedReply", { name: detail.name }) });
+    } else {
+      history.push({ role: "user", content: text });
+      history.push({ role: "assistant", content: t("chatSkillNotFound", { name: skillName }) });
+      await showCommandReply({ ok: false, text: t("chatSkillNotFoundReply", { name: skillName }) });
+    }
+    return;
+  }
+
+  // /learn — external distillation entry: turn a described workflow (or the
+  // conversation so far) into a reusable SKILL.md. We fetch the learn prompt
+  // from the sidecar and feed it to the model as a normal turn; the model
+  // then authors the skill via the skill_create builtin tool / POST /api/skills.
+  const learnMatch = text.trim().match(/^\/learn(?:\s+(.*))?$/is);
+  if (learnMatch) {
+    const userRequest = (learnMatch[1] || "").trim();
+    let promptResp = { prompt: "" };
+    try {
+      if (window.minicpm && typeof window.minicpm.getLearnPrompt === "function") {
+        promptResp = await window.minicpm.getLearnPrompt(userRequest) || { prompt: "" };
+      }
+    } catch {}
+    const prompt = promptResp.prompt || "";
+    if (!prompt) {
+      history.push({ role: "user", content: text });
+      history.push({ role: "assistant", content: "学技能的接口没连上——检查 sidecar 是否在跑。" });
+      await showCommandReply({ ok: false, text: "学技能接口不可用。" });
+      return;
+    }
+    // Submit the learn prompt as the driving instruction. The prompt already
+    // embeds the user's original request, so we don't push `/learn ...` as a
+    // separate turn — that would double-feed it. The model authors + saves
+    // the skill itself via skill_create.
+    await submit(prompt);
+    return;
+  }
+
+  // Phase 2: /model <name> — switch model provider (any name, local/auto reset session)
+  const modelMatch = text.trim().match(/^\/model\s+(\S+)/i);
+  if (modelMatch) {
+    const provider = modelMatch[1].toLowerCase();
+    if (provider === "auto") {
+      _sessionAutoRoute = true;
+      _sessionProvider = null;
+    } else {
+      _sessionProvider = provider;
+      _sessionAutoRoute = false;
+    }
+    history.push({ role: "user", content: text });
+    history.push({ role: "assistant", content: `Switched to ${provider} model.` });
+    await showCommandReply({ ok: true, text: provider === "auto" ? "Auto-routing enabled" : `Switched to ${provider}`, resetHistory: true });
+    return;
+  }
+
+  // Phase 2: /auto-route on|off
+  const autoMatch = text.trim().match(/^\/auto-route\s+(on|off)/i);
+  if (autoMatch) {
+    const on = autoMatch[1].toLowerCase() === "on";
+    _sessionAutoRoute = on;
+    history.push({ role: "user", content: text });
+    history.push({ role: "assistant", content: `Auto-route ${on ? "enabled" : "disabled"}.` });
+    await showCommandReply({ ok: true, text: `Auto-route ${on ? "enabled" : "disabled"}`, resetHistory: true });
+    return;
+  }
+
+  // Phase 2: /providers — list available model providers
+  if (text.trim().match(/^\/providers$/i)) {
+    try {
+      const prov = await window.minicpm.listProviders();
+      const names = (prov.providers || []).map((p) => p.name).join(", ");
+      history.push({ role: "user", content: text });
+      history.push({ role: "assistant", content: `Available providers: ${names || "local (only local is available)"}.` });
+      await showCommandReply({ ok: true, text: `Providers: ${names || "local"}` });
+    } catch {
+      await showCommandReply({ ok: false, text: "Could not fetch providers." });
+    }
+    return;
+  }
+
+  // Phase 2: /mcp tools — list MCP tools
+  const mcpToolsMatch = text.trim().match(/^\/mcp\s+tools/i);
+  if (mcpToolsMatch) {
+    try {
+      const data = await window.minicpm.mcpListServers();
+      const tools = (data.tools || []).map((t) => `  - ${t.name} (${t.server_name}): ${t.description}`).join("\n");
+      const msg = tools ? `MCP tools:\n${tools}` : "No MCP servers connected.";
+      history.push({ role: "user", content: text });
+      history.push({ role: "assistant", content: msg });
+      await showCommandReply({ ok: true, text: msg });
+    } catch {
+      await showCommandReply({ ok: false, text: "Could not fetch MCP tools." });
+    }
+    return;
+  }
+
   history.push({ role: "user", content: text });
+
+  // If the user explicitly asks to see the screen (not proactive trigger),
+  // fetch screen context immediately so the model can respond naturally.
+  // The fetched context is consumed by the body-building code below.
+  if (!_pendingScreenContext && _isScreenRequest(text)) {
+    await _fetchScreenContext();
+  }
 
   // Tell the sidecar: start generating. The sidecar pushes pet states
   // (thinking → working → attention) to clawd-on-desk over HTTP, so the
@@ -883,24 +1833,98 @@ async function submit(text) {
     messagesToSend = chatContext.trimHistoryForContext(history, { maxNewTokens });
     const cap = chatContext.MAX_HISTORY_TURNS;
     if (Number.isFinite(cap) && history.length > cap) {
-      history = history.slice(-cap);
+      // `history` is a const Proxy delegating to the active topic's
+      // messages array — reassigning the binding throws a TypeError under
+      // strict mode, so drop the oldest turns in place on the underlying
+      // array instead.
+      const drop = curHistory().length - cap;
+      if (drop > 0) curHistory().splice(0, drop);
     }
+  }
+
+  // Inject available skills into the system prompt so the model knows
+  // what skills are at its disposal.
+  const skillsContext = await fetchSkillsContext();
+  const body = {
+    messages: messagesToSend,
+    stream: true,
+    max_new_tokens: maxNewTokens,
+    temperature: (typeof chatParams.temperature === "number") ? chatParams.temperature : 0.6,
+    top_p: (typeof chatParams.top_p === "number") ? chatParams.top_p : 0.95,
+    top_k: (typeof chatParams.top_k === "number") ? chatParams.top_k : 0,
+    repetition_penalty: (typeof chatParams.repetition_penalty === "number") ? chatParams.repetition_penalty : 1.05,
+    thinking: effectiveThinking,
+  };
+  if (skillsContext) {
+    body.system = skillsContext;
+  }
+
+  // Phase 2: attach provider routing preferences. Declared BEFORE the
+  // screen-context block below — that block reads providerPrefs via
+  // _providerSupportsVision(providerPrefs), and a `let` declared only
+  // further down would sit in the temporal dead zone and throw a
+  // ReferenceError whenever a screen observation was pending, crashing
+  // every "look at my screen" request.
+  let providerPrefs = { defaultProvider: "local", autoRoute: false, modelProviders: [] };
+  try {
+    if (window.minicpm && typeof window.minicpm.getProviderPrefs === "function") {
+      providerPrefs = (await window.minicpm.getProviderPrefs()) || providerPrefs;
+    }
+  } catch {}
+  // Session overrides take priority (set by /model, /auto-route commands)
+  if (_sessionProvider !== null) providerPrefs.defaultProvider = _sessionProvider;
+  if (_sessionAutoRoute !== null) providerPrefs.autoRoute = _sessionAutoRoute;
+  if (providerPrefs.defaultProvider && providerPrefs.defaultProvider !== "local") {
+    body.model_provider = providerPrefs.defaultProvider;
+    const provCfg = (providerPrefs.modelProviders || []).find(function(p) { return p.provider === providerPrefs.defaultProvider; });
+    if (provCfg && provCfg.contextWindow) body.context_window = Number(provCfg.contextWindow);
+  }
+  if (providerPrefs.autoRoute) {
+    body.auto_route = true;
+  }
+
+  // Inject pending screen observation context (set by submitProactive).
+  // NOTE: We inject even when parsedContent is empty — the LLM must see
+  // 「【用户当前屏幕内容】」section header to know observation happened,
+  // otherwise it will hallucinate fake screen content.
+  if (_pendingScreenContext) {
+    const content = _pendingScreenContext.parsedContent || "";
+    const screenInfo = "\n\n【用户当前屏幕内容】\n" + content + (content ? "" : "\n[OmniParser returned no results — the screen may be blank or locked]");
+    if (body.system) {
+      body.system += screenInfo;
+    } else {
+      body.system = screenInfo;
+    }
+    // If the provider supports vision, also inject the raw screenshot as an
+    // image_url content block in the last user message so multimodal models
+    // can see both the structured labels AND the actual screen pixels.
+    var supportsVision = _providerSupportsVision(providerPrefs);
+    if (supportsVision && _pendingScreenContext.rawScreenshotBase64 && messagesToSend.length > 0) {
+      var lastIdx = messagesToSend.length - 1;
+      var lastMsg = messagesToSend[lastIdx];
+      if (lastMsg.role === "user" && typeof lastMsg.content === "string") {
+        // Replace the slot with a fresh object instead of mutating lastMsg
+        // in place — when chatContext failed to load, messagesToSend
+        // aliases the live history Proxy and mutating content into an
+        // array would permanently warp the stored user turn.
+        messagesToSend[lastIdx] = {
+          role: lastMsg.role,
+          content: [
+            { type: "text", text: lastMsg.content },
+            { type: "image_url", image_url: { url: "data:image/png;base64," + _pendingScreenContext.rawScreenshotBase64 } },
+          ],
+        };
+      }
+    }
+    // Reset _pendingScreenContext so the next user chat doesn't reuse stale data.
+    _pendingScreenContext = null;
   }
 
   try {
     const resp = await fetch(sidecarUrl + "/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        messages: messagesToSend,
-        stream: true,
-        max_new_tokens: maxNewTokens,
-        temperature: (typeof chatParams.temperature === "number") ? chatParams.temperature : 0.6,
-        top_p: (typeof chatParams.top_p === "number") ? chatParams.top_p : 0.95,
-        top_k: (typeof chatParams.top_k === "number") ? chatParams.top_k : 0,
-        repetition_penalty: (typeof chatParams.repetition_penalty === "number") ? chatParams.repetition_penalty : 1.05,
-        thinking: effectiveThinking,
-      }),
+      body: JSON.stringify(body),
       signal: abortCtrl.signal,
     });
     if (!resp.ok) throw new Error("HTTP " + resp.status);
@@ -950,20 +1974,52 @@ async function submit(text) {
           typer.feed(obj.content);
         } else if (obj.event === "error") {
           throw new Error(obj.message || "model error");
+        } else if (obj.event === "next_chat") {
+          // Model scheduled its next proactive chat — store the interval
+          // and mark it explicit so scheduleProactiveChat can tell an
+          // intentional N=0 ("don't bother me") from a missing tag.
+          _nextChatSeconds = Number(obj.seconds) || 0;
+          _nextChatExplicit = true;
+          if (_nextChatSeconds > 0) scheduleProactiveChat();
         }
       }
     }
 
     if (typer) await typer.drain();
-    history.push({ role: "assistant", content: replyAcc });
-    if (speakEl) {
+
+    // Strip the [EMOTION:xxx] / [NEXT_CHAT:xxx] control tags the model
+    // emits for the desk-pet animation / proactive-chat systems. The
+    // gateway already parsed them; these are raw streamed bytes we don't
+    // want to show, persist, or feed back on the next turn. A global strip
+    // (not end-anchored) survives the common [EMOTION:]→[NEXT_CHAT:]
+    // ordering that the old chained regex left behind.
+    replyAcc = sanitizeReplyTags(replyAcc);
+
+	    history.push({ role: "assistant", content: replyAcc, thinking: thinkAcc || null });
+	    _persistHistory();
+	    if (speakEl) {
       speakEl.classList.remove("streaming");
-      // Swap the plain typewriter text for a markdown-rendered version
-      // once the stream completes — keeps the streaming reveal smooth
-      // (no HTML thrash per chunk) while still presenting bold/italics/
-      // headings/lists/code in their final form.
       speakEl.classList.add("rendered");
       speakEl.innerHTML = renderMarkdown(replyAcc);
+
+      // ── Thinking content toggle button ──
+      // If the model produced reasoning (thinkAcc), add a button
+      // below the reply that shows/hides the full thinking text.
+      if (thinkAcc && thinkAcc.trim()) {
+        var thinkToggle = document.createElement("button");
+        thinkToggle.textContent = "🧠 查看思考";
+        thinkToggle.style.cssText = "font-size:11px;padding:2px 8px;margin-top:6px;border:1px solid var(--border,#45475a);border-radius:4px;background:transparent;color:var(--text-secondary,#8899b0);cursor:pointer;";
+        var thinkBox = document.createElement("div");
+        thinkBox.style.cssText = "display:none;margin-top:6px;padding:8px;border-radius:6px;background:rgba(255,255,255,0.03);border:1px solid var(--border,#45475a);font-size:12px;line-height:1.5;white-space:pre-wrap;max-height:300px;overflow-y:auto;color:var(--text-secondary,#8899b0);";
+        thinkBox.textContent = thinkAcc;
+        thinkToggle.addEventListener("click", function() {
+          var shown = thinkBox.style.display !== "none";
+          thinkBox.style.display = shown ? "none" : "block";
+          thinkToggle.textContent = shown ? "🧠 查看思考" : "🧠 收起思考";
+        });
+        speakEl.appendChild(thinkToggle);
+        speakEl.appendChild(thinkBox);
+      }
     }
 
     // ── New: keep the bubble alive for follow-up turns. After a tiny
@@ -973,10 +2029,11 @@ async function submit(text) {
     // inactivity window, the bubble fades quietly.
     const readingMs = 1500;
     const lastReply = replyAcc;
+    const lastThinking = thinkAcc || null;
     fadeTimer = setTimeout(async () => {
       fadeTimer = null;
       // Re-render with the previous reply pinned dimly above a fresh input.
-      await showAsk(lastReply);
+      await showAsk(lastReply, lastThinking);
       // Auto-fade if user idles in ask phase for ~25s.
       fadeTimer = setTimeout(() => {
         fadeTimer = null;
@@ -985,6 +2042,11 @@ async function submit(text) {
         }
       }, 25000);
     }, readingMs);
+
+    // Schedule proactive chat — model decides its next spontaneous message
+    // time via [NEXT_CHAT:30m], or we default to 15 minutes of idle.
+    scheduleProactiveChat();
+
   } catch (err) {
     if (typer) typer.stop();
     if (err.name === "AbortError") return;
@@ -1063,6 +2125,13 @@ async function cmdOpen({ side } = {}) {
     abortCtrl = null;
   }
   if (!await ensureBooted()) return;
+  // Restore persisted conversation history on every open. The save path
+  // (_persistHistory → save-history IPC → chat-history.json) runs after
+  // every assistant turn and on beforeunload, so the file is always fresh.
+  // Without this call, a restart reinitialises historyByAssistant to an
+  // empty default bucket and every prior conversation is lost — even
+  // though it's still on disk.
+  await _restoreHistory();
   await showAsk();
 }
 
@@ -1075,7 +2144,7 @@ async function cmdDismiss() {
 }
 
 async function cmdReset() {
-  history = [];
+  replaceActiveHistory([]);
   thinkingOverride = null;
   if (phase === "ask" && inputEl) inputEl.value = "";
 }
@@ -1139,13 +2208,20 @@ if (window.minicpm) {
   if (window.minicpm.onUpdateStatus) window.minicpm.onUpdateStatus(updateBadge);
   if (window.minicpm.onUpdateApplying) window.minicpm.onUpdateApplying(showUpdateProgress);
   if (window.minicpm.onNarrate) window.minicpm.onNarrate(showNarration);
+  // Proactive policy from settings: "off" / "free" / "interval:<seconds>"
+  if (window.minicpm.onProactivePolicy) {
+    window.minicpm.onProactivePolicy((p) => {
+      const policy = p && typeof p.policy === "string" ? p.policy : "free";
+      setProactivePolicy(policy);
+    });
+  }
   // Out-of-band system messages (e.g. "已切换到 X" pushed from the
   // Settings panel after an adapter swap). Routed to the same
   // showCommandReply path the in-chat commands use, with optional
   // history wipe so the new persona starts clean.
   if (window.minicpm.onCmdReply) window.minicpm.onCmdReply(async (cmd) => {
     if (!cmd || !cmd.text) return;
-    if (cmd.resetHistory) history = [];
+    if (cmd.resetHistory) replaceActiveHistory([]);
     await showCommandReply(cmd);
   });
   // Drag-to-position: turn the whole window into a draggable handle
@@ -1157,6 +2233,21 @@ if (window.minicpm) {
       exitEditMode();
     }
   });
+  // Context management
+  try { window.minicpm.onClearHistory(() => { replaceActiveHistory([]); }); } catch {}
+  // Flush pending save when the window is about to close so the last
+  // message isn't lost to the 500ms debounce timer.
+  window.addEventListener("beforeunload", () => {
+    if (_persistTimer) { clearTimeout(_persistTimer); _persistTimer = null; }
+    _persistHistoryNow();
+  });
+  // Active assistant (driven by theme switch in main process). Maps a theme
+  // id like "cybercat" / "calico" to an isolated conversation bucket.
+  if (window.minicpm && window.minicpm.onSetActiveAssistant) {
+    window.minicpm.onSetActiveAssistant((p) => {
+      setActiveAssistant(p && p.assistant);
+    });
+  }
 }
 
 // ── Drag-to-position edit mode ─────────────────────────────────────────

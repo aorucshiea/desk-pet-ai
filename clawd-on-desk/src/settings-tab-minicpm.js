@@ -400,26 +400,180 @@
     box.appendChild(section);
   }
 
+  function pickLabelFromPath(p) {
+    if (!p) return t("minicpmModelPathUnset");
+    const m = String(p).match(/([^\\/]+?)(?:\.gguf)?$/i);
+    return m ? m[1] : String(p);
+  }
+  function formatSize(bytes) {
+    if (!Number.isFinite(bytes) || bytes <= 0) return "";
+    if (bytes >= 1024 * 1024 * 1024) return (bytes / 1073741824).toFixed(2) + " GB";
+    return (bytes / 1048576).toFixed(0) + " MB";
+  }
+
   function renderModelSection(box, ctx) {
     box.innerHTML = "";
     const snap = ctx.healthSnapshot || {};
     const modelDir = snap.modelDir || "";
     const hasPath = !!modelDir;
     const truncated = hasPath ? truncatePath(modelDir, PATH_TRUNCATE_MAX) : t("minicpmModelPathUnset");
+    const currentLabel = hasPath ? pickLabelFromPath(modelDir) : t("minicpmModelPathUnset");
 
     box.appendChild(sectionTitle(t("minicpmSectionModel")));
     const section = helpers.buildSection("", []);
     const rows = section.querySelector(".section-rows");
 
-    // ── Model info row (hardcoded product name) ───────────────────────
+    // ── Model info row (now reflects the actual selected gguf) ───────
     const infoRow = el("div", { className: "row minicpm-info-row" });
     const infoText = el("div", { className: "row-text" });
     infoText.appendChild(el("span", { className: "row-label" }, t("minicpmRowModelInfo")));
+    infoText.appendChild(el("span", { className: "row-desc" }, t("minicpmModelPickerDesc")));
     infoRow.appendChild(infoText);
-    const infoVal = el("div", { className: "row-control minicpm-info-value" }, MODEL_INFO_LABEL);
+    const infoVal = el("div", { className: "row-control minicpm-info-value" }, currentLabel);
     infoRow.appendChild(infoVal);
     rows.appendChild(infoRow);
 
+    // ── Local-models picker row ──────────────────────────────────
+    // Drop a .gguf anywhere under userData/models and it shows up here
+    // without opening a file picker. Siblings of the active gguf directory
+    // also appear so chat-maintainers can swap quantisations easily.
+    const pickerRow = el("div", { className: "row minicpm-model-picker-row" });
+    const pickerText = el("div", { className: "row-text" });
+    pickerText.appendChild(el("span", { className: "row-label" }, t("minicpmModelPickerLabel")));
+    const pickerDesc = el("span", { className: "row-desc" }, t("minicpmModelPickerDesc"));
+    pickerText.appendChild(pickerDesc);
+    pickerRow.appendChild(pickerText);
+
+    const pickerCtl = el("div", { className: "row-control minicpm-model-picker-control" });
+    const picker = el("select", {
+      className: "setting-select minicpm-model-picker",
+      style: { minWidth: "0", fontSize: "13px", maxWidth: "320px", flex: "1" },
+    });
+    picker.appendChild(el("option", { value: "" }, "—"));
+    pickerCtl.appendChild(picker);
+
+    const pickerBtn = softBtn(t("minicpmPickModelButton"), async () => {
+      const target = picker.value;
+      if (!target) return;
+      if (!window.minicpmSettings || typeof window.minicpmSettings.useModelDir !== "function") return;
+      pickerBtn.disabled = true;
+      const origLabel = pickerBtn.textContent;
+      pickerBtn.textContent = t("minicpmPickModelBusy");
+      try {
+        const ret = await window.minicpmSettings.useModelDir(target);
+        if (ret && !ret.ok && ret.error) alert(t("minicpmReloadError") + ret.error);
+        if (ret && ret.ok && ret.reloadError) alert(t("minicpmReloadError") + ret.reloadError);
+      } finally {
+        pickerBtn.disabled = false;
+        pickerBtn.textContent = origLabel;
+        void ctx.refreshAll();
+      }
+    }, { accent: true });
+    pickerBtn.disabled = true;
+    pickerCtl.appendChild(pickerBtn);
+    pickerRow.appendChild(pickerCtl);
+    rows.appendChild(pickerRow);
+
+    // Populate the dropdown asynchronously. Done at render time so it picks
+    // up new gguf files dropped into the models folder while the settings
+    // window is open.
+    if (typeof window.minicpmSettings.listLocalModels === "function") {
+      window.minicpmSettings.listLocalModels().then((ret) => {
+        const models = (ret && ret.models) || [];
+        picker.innerHTML = "";
+        if (models.length === 0) {
+          picker.appendChild(el("option", { value: "" }, t("minicpmModelPathUnset")));
+          return;
+        }
+        for (const m of models) {
+          if (!m || !m.path) continue;
+          const sizeLabel = formatSize(m.sizeBytes);
+          const flag = m.current ? " ✓" : "";
+          const opt = el("option", { value: m.path, title: m.path },
+            `${m.label}${sizeLabel ? "  ·  " + sizeLabel : ""}${flag}`);
+          picker.appendChild(opt);
+        }
+        // Selecting an entry enables the Pick button.
+        picker.addEventListener("change", () => {
+          pickerBtn.disabled = !picker.value;
+        });
+        if (models.length === 1) {
+          picker.value = models[0].path;
+          pickerBtn.disabled = false;
+        } else {
+          // Pre-select current model if present, else empty.
+          picker.value = "";
+        }
+      }).catch(() => {
+        picker.innerHTML = "";
+        picker.appendChild(el("option", { value: "" }, t("minicpmNoAdditionalModels")));
+      });
+    }
+
+    // ── User-added model folders row ──────────────────────────────────
+    // Lets the user point the picker at any directory on disk — e.g.
+    // D:\LM\models — without copying files into userData. Each listed
+    // folder is scanned for *.gguf every time the picker is rendered.
+    const foldersRow = el("div", { className: "row minicpm-model-folders-row" });
+    const foldersText = el("div", { className: "row-text" });
+    foldersText.appendChild(el("span", { className: "row-label" }, t("minicpmModelsFolderLabel")));
+    foldersRow.appendChild(foldersText);
+
+    const foldersCtl = el("div", { className: "row-control minicpm-model-folders-control" });
+    const foldersListEl = el("div", { className: "minicpm-model-folders-list" });
+    foldersCtl.appendChild(foldersListEl);
+
+    const addFolderBtn = softBtn("+ " + t("minicpmModelsFolderAdd"), async () => {
+      addFolderBtn.disabled = true;
+      try {
+        const ret = await window.minicpmSettings.addModelFolder();
+        if (!ret || ret.canceled) return;
+        if (!ret.ok) {
+          alert(t("minicpmModelsFolderAddFailed") + (ret.error || ""));
+          return;
+        }
+        renderFoldersList(ret.folders || []);
+      } finally {
+        addFolderBtn.disabled = false;
+      }
+    });
+    foldersCtl.appendChild(addFolderBtn);
+    foldersRow.appendChild(foldersCtl);
+    rows.appendChild(foldersRow);
+
+    // Render + populate folder list. Defined inline so it can refresh
+    // when the user adds/removes folders without a full tab re-render.
+    const renderFolderRow = (folder, idx) => {
+      const row = el("div", { className: "minicpm-model-folder-item" });
+      const path = el("span", { className: "minicpm-model-folder-path", title: folder }, folder);
+      row.appendChild(path);
+      const rm = el("button", { className: "soft-btn", style: { fontSize: "11px", padding: "2px 8px", marginLeft: "auto" } },
+        t("minicpmModelsFolderRemove"));
+      rm.addEventListener("click", async () => {
+        try {
+          await window.minicpmSettings.removeModelFolder(folder);
+          const cur = await window.minicpmSettings.listModelFolders();
+          renderFoldersList(cur.folders || []);
+        } catch {}
+      });
+      row.appendChild(rm);
+      return row;
+    };
+    const renderFoldersList = (folders) => {
+      foldersListEl.innerHTML = "";
+      if (!folders || folders.length === 0) {
+        foldersListEl.appendChild(el("div", {
+          style: { fontSize: "11px", color: "var(--text-secondary)", fontStyle: "italic", padding: "4px 0" },
+        }, t("minicpmModelsFolderEmpty")));
+        return;
+      }
+      for (const f of folders) foldersListEl.appendChild(renderFolderRow(f));
+    };
+    if (window.minicpmSettings && typeof window.minicpmSettings.listModelFolders === "function") {
+      window.minicpmSettings.listModelFolders().then((ret) => {
+        renderFoldersList((ret && ret.folders) || []);
+      }).catch(() => renderFoldersList([]));
+    }
     // ── Model path row (truncated + tooltip + two buttons) ────────────
     const pathRow = el("div", { className: "row minicpm-path-row" });
     const pathText = el("div", { className: "row-text" });

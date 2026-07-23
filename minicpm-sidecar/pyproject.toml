@@ -14,6 +14,11 @@ dependencies = [
   "pydantic>=2.7.0",
   "httpx>=0.27.0",
   "huggingface_hub>=0.25.0",
+  # Phase 2: MCP client (lazy-imported; gateway boot does not break without it)
+  "mcp>=1.6.0",
+  # Screen capture for OmniParser integration
+  "mss>=9.0.0",
+  "Pillow>=10.0.0",
 ]
 
 [project.optional-dependencies]
@@ -41,3 +46,10 @@ dev = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["gateway"]
+
+[tool.pytest.ini_options]
+# Put the package root first so `import gateway.*` resolves to THIS checkout,
+# not a stale sibling checkout elsewhere on sys.path. Without this, a second
+# copy of the repo (e.g. a backup/extract on the Desktop) can shadow the
+# in-repo gateway package and make `uv run pytest` fail on new submodules.
+pythonpath = ["."]

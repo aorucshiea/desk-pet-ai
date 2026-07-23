@@ -107,6 +107,10 @@ contextBridge.exposeInMainWorld("settingsAPI", {
   sendQuickCommand: (payload) => ipcRenderer.invoke("settings:send-quick-command", payload),
   openExternal: (url) => ipcRenderer.invoke("settings:open-external", url),
   listThemes: () => ipcRenderer.invoke("settings:list-themes"),
+  getThemeEmotionMap: (themeId) => ipcRenderer.invoke("settings:get-theme-emotion-map", { themeId }),
+  pickEmotionAnimation: (payload) => ipcRenderer.invoke("settings:pick-emotion-animation", payload),
+  saveEmotionOverride: (payload) => ipcRenderer.invoke("settings:save-emotion-override", payload),
+  setProactivePolicy: (policy) => ipcRenderer.invoke("settings:set-proactive-policy", { policy }),
   openUserThemesDir: () => ipcRenderer.invoke("settings:open-user-themes-dir"),
   importUserThemeZip: () => ipcRenderer.invoke("settings:import-user-theme-zip"),
   refreshCodexPets: () => ipcRenderer.invoke("settings:refresh-codex-pets"),
@@ -169,6 +173,11 @@ contextBridge.exposeInMainWorld("minicpmSettings", {
   restartSidecar: () => ipcRenderer.invoke("minicpm-settings:restart-sidecar"),
   getModelDir: () => ipcRenderer.invoke("minicpm-settings:get-model-dir"),
   pickModelDir: () => ipcRenderer.invoke("minicpm-settings:pick-model-dir"),
+  listLocalModels: () => ipcRenderer.invoke("minicpm-settings:list-local-models"),
+  useModelDir: (path) => ipcRenderer.invoke("minicpm-settings:use-model-dir", { path }),
+  listModelFolders: () => ipcRenderer.invoke("minicpm-settings:list-model-folders"),
+  addModelFolder: () => ipcRenderer.invoke("minicpm-settings:add-model-folder"),
+  removeModelFolder: (folder) => ipcRenderer.invoke("minicpm-settings:remove-model-folder", { folder }),
   resetModelDir: () => ipcRenderer.invoke("minicpm-settings:reset-model-dir"),
   rerunOnboarding: () => ipcRenderer.invoke("minicpm-settings:rerun-onboarding"),
   relaunchApp: () => ipcRenderer.invoke("minicpm-settings:relaunch-app"),
@@ -182,6 +191,33 @@ contextBridge.exposeInMainWorld("minicpmSettings", {
   uploadAdapter: (payload) => ipcRenderer.invoke("minicpm-settings:upload-adapter", payload || {}),
   renameAdapter: (payload) => ipcRenderer.invoke("minicpm-settings:rename-adapter", payload || {}),
   removeAdapter: (payload) => ipcRenderer.invoke("minicpm-settings:remove-adapter", payload || {}),
+  // Phase 2: skills + MCP (routed through the same IPC handlers the chat uses)
+  listSkills: () => ipcRenderer.invoke("minicpm:list-skills"),
+  getSkill: (name) => ipcRenderer.invoke("minicpm:get-skill", { name }),
+  listProviders: () => ipcRenderer.invoke("minicpm:list-providers"),
+  mcpListServers: () => ipcRenderer.invoke("minicpm:mcp-list-servers"),
+  mcpExecute: (serverName, toolName, args) =>
+    ipcRenderer.invoke("minicpm:mcp-execute", { serverName, toolName, args }),
+  getProviderPrefs: () => ipcRenderer.invoke("minicpm:get-provider-prefs"),
+  getChatHistory: () => ipcRenderer.invoke("minicpm:get-chat-history"),
+  // Read another assistant's bucket directly without switching the live
+  // chat — used by the Settings → Context panel when showing history
+  // for any assistant (defaults to the live one).
+  getChatHistoryFor: (assistant) => ipcRenderer.invoke("minicpm:get-chat-history-for", { assistant }),
+  // Clear a specific assistant's bucket without touching the live chat.
+  clearChatHistoryFor: (assistant) => ipcRenderer.invoke("minicpm:clear-history-for", { assistant }),
+  setActiveAssistant: (assistant) => ipcRenderer.invoke("minicpm:set-active-assistant", { assistant }),
+  clearChatHistory: () => ipcRenderer.invoke("minicpm:clear-chat-history"),
+  // Cherry-Studio style assistant/topic management. All calls route
+  // through a single whitelisted executor on the main process that
+  // invokes safe `window.__*` helpers inside the chat renderer.
+  execRenderer: (fn, args) => ipcRenderer.invoke("minicpm-settings:exec-renderer", {
+    fn,
+    args: args === undefined ? [] : args,
+  }),
+  saveProvidersConfig: (providers) => ipcRenderer.invoke("minicpm:save-providers-config", { providers }),
+  mcpGetConfig: () => ipcRenderer.invoke("minicpm:mcp-get-config"),
+  mcpSaveConfig: (servers) => ipcRenderer.invoke("minicpm:mcp-save-config", { servers }),
 });
 
 contextBridge.exposeInMainWorld("doctor", {

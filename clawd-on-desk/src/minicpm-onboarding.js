@@ -133,9 +133,14 @@ module.exports = function initOnboarding(ctx) {
     if (!s || s.complete !== true) return true;
     // Future-proof: a schema bump invalidates older sentinels.
     if (typeof s.version === "number" && s.version < CURRENT_VERSION) return true;
-    // If the model directory the user picked has vanished (e.g. they
-    // deleted ~/Library/.../models/ manually) we re-show the wizard so
-    // they can pick a new path or re-download.
+    // API providers are configured — skip model presence check
+    try {
+      const chat = ctx && ctx.getChat && ctx.getChat();
+      if (chat && typeof chat.hasApiProviders === "function" && chat.hasApiProviders()) {
+        return false;
+      }
+    } catch {}
+    // Fall through: without API providers, check local model presence
     try {
       const chat = ctx && ctx.getChat && ctx.getChat();
       if (chat && typeof chat.isModelPresent === "function" && !chat.isModelPresent()) {

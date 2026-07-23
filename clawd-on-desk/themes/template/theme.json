@@ -45,13 +45,19 @@
   },
 
   "states": {
-    "_comment": "Each state can be an array of filenames or an object like { files: [...], fallbackTo: \"attention\" }. SVG, GIF, APNG, WebP, PNG, JPG, JPEG all work. Only eyeTracking.states entries MUST be SVG.",
+    "_comment": "Each state can be an array of filenames or an object like { files: [...], fallbackTo: \"attention\" }. SVG, GIF, APNG, WebP, PNG, JPG, JPEG all work. Only eyeTracking.states entries MUST be SVG. Individual file entries may also be objects {file, emotion} to declare an emotion-specific variant — the desk-pet picks a variant matching the chat reply's [EMOTION:xxx] tag when one exists, falling back to plain entries otherwise.",
     "idle":         ["idle-follow.svg"],
     "thinking":     ["thinking.gif"],
     "working":      ["typing.gif"],
     "juggling":     ["juggling.gif"],
     "error":        { "fallbackTo": "attention" },
-    "attention":    ["happy.gif"],
+    "attention":    [
+      "happy.gif",
+      { "file": "happy.gif",          "emotion": "happy" },
+      { "file": "thinking.gif",       "emotion": "curious" },
+      { "file": "sleeping.gif",       "emotion": "sad" },
+      { "file": "happy.gif",          "emotion": "excited" }
+    ],
     "notification": ["notification.gif"],
     "sleeping":     ["sleeping.gif"],
     "waking":       ["waking.gif"]

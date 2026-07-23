@@ -35,6 +35,20 @@ hidden += [
     "httpcore",
     "anyio._backends._asyncio",
     "huggingface_hub",
+    # Phase 2: providers + MCP
+    "gateway.providers",
+    "gateway.providers.base",
+    "gateway.providers.local",
+    "gateway.providers.openai",
+    "gateway.providers.anthropic",
+    "gateway.mcp",
+    "gateway.mcp.mcp_client",
+    "gateway.mcp.mcp_manager",
+    "gateway.mcp.mcp_router",
+    "gateway.evolve",
+    "mcp",
+    "mcp.client.stdio",
+    "mcp.client.sse",
 ]
 
 a = Analysis(

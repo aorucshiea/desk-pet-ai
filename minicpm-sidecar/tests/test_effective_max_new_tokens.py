@@ -1,6 +1,7 @@
 from gateway.server import (
     ChatMessage,
     ChatRequest,
+    MAX_NEW_TOKENS_CAP,
     THINKING_MIN_MAX_NEW_TOKENS,
     _effective_max_new_tokens,
 )
@@ -29,4 +30,4 @@ def test_no_thinking_leaves_budget_unchanged():
 
 
 def test_clamps_absurd_input_before_bump():
-    assert _effective_max_new_tokens(_req(max_new_tokens=99999, thinking=True)) == 4096
+    assert _effective_max_new_tokens(_req(max_new_tokens=99999, thinking=True)) == MAX_NEW_TOKENS_CAP

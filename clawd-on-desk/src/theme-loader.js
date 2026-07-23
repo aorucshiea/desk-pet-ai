@@ -53,6 +53,7 @@ let userDataDir = null;        // app.getPath("userData") — set by init()
 let userThemesDir = null;      // {userData}/themes/
 let themeCacheDir = null;      // {userData}/theme-cache/
 let soundOverridesRoot = null; // {userData}/sound-overrides/ — per-theme copied audio
+let emotionOverridesRoot = null; // {userData}/emotion-overrides/ — per-theme custom emotion anims
 
 // ── Public API ──
 
@@ -70,6 +71,7 @@ function init(appDir, userData) {
     userThemesDir = path.join(userData, "themes");
     themeCacheDir = path.join(userData, "theme-cache");
     soundOverridesRoot = path.join(userData, "sound-overrides");
+    emotionOverridesRoot = path.join(userData, "emotion-overrides");
   }
 }
 
@@ -79,6 +81,19 @@ function init(appDir, userData) {
 function getSoundOverridesDir(themeId) {
   if (!soundOverridesRoot || typeof themeId !== "string" || !themeId) return null;
   return path.join(soundOverridesRoot, themeId);
+}
+
+// Directory where emotion-override animation files for `themeId` live.
+// Returns null when the loader hasn't been initialized.
+function getEmotionOverridesDir(themeId) {
+  if (!emotionOverridesRoot || typeof themeId !== "string" || !themeId) return null;
+  return path.join(emotionOverridesRoot, themeId);
+}
+
+// Root directory for emotion overrides (without themeId). Used by the
+// settings IPC to read/write the per-theme manifest JSON.
+function getEmotionOverridesRoot() {
+  return emotionOverridesRoot;
 }
 
 function _createThemeContext(theme) {
@@ -481,6 +496,8 @@ module.exports = {
   getSoundUrl,
   getPreviewSoundUrl,
   getSoundOverridesDir,
+  getEmotionOverridesDir,
+  getEmotionOverridesRoot,
   createThemeContext: _createThemeContext,
   _resolveAssetPath,
   _externalAssetsSourceDir,

@@ -123,7 +123,12 @@
       "cloudling-juggling.svg"
     ],
     "attention": [
-      "cloudling-attention.svg"
+      "cloudling-attention.svg",
+      { "file": "cloudling-attention.svg", "emotion": "happy" },
+      { "file": "cloudling-thinking.svg", "emotion": "curious" },
+      { "file": "cloudling-error.svg", "emotion": "sad" },
+      { "file": "cloudling-conducting.svg", "emotion": "excited" },
+      { "file": "cloudling-react-drag.svg", "emotion": "mad" }
     ],
     "notification": [
       "cloudling-notification.svg"

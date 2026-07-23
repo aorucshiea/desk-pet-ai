@@ -29,6 +29,14 @@ const ICONS = {
     '<path d="M377.155 0L342.607 89.4753L278.432 255.678L372.466 264.715L423.047 269.575L380.443 297.333L317.266 338.491L430.581 409.397L483 442.198L421.206 442.271L234.596 442.489L241.294 479.049L206.392 485.475L195.85 427.942L192.007 406.969L213.28 406.944L359.37 406.771L274.848 353.882L251.22 339.097L274.574 323.882L318.499 295.263L251.743 288.849L228.439 286.61L236.889 264.725L274.966 166.109L203.457 245.266L184.916 265.79L174.005 240.353L148.719 181.411L141.971 249.893L138.774 282.326L113.293 262.083L79.638 235.344L102.221 295.148L113.983 326.294L81.6193 318.771L0.798157 299.985L8.81415 265.333L57.2705 276.594L23.6994 187.692L0.948303 127.445L51.314 167.457L109.852 213.961L120.175 109.251L126.942 40.5891L154.132 103.974L195.692 200.864L312.909 71.1169L377.155 0Z"/>' +
     '</svg>',
 
+  // 📖 — book (skills)
+  skills:
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" width="100%" height="100%">' +
+    '<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/>' +
+    '<path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2Z"/>' +
+    '<path d="M12 6v7M9 9h6"/>' +
+    '</svg>',
+
   // ⚡ — bolt
   agents:
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" width="100%" height="100%">' +
@@ -91,6 +99,12 @@ const ICONS = {
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" width="100%" height="100%">' +
     '<circle cx="12" cy="12" r="9"/>' +
     '<path d="M12 11v6M12 7.5v.01"/>' +
+    '</svg>',
+
+  // 🖱 — mouse pointer (Screen Click)
+  screenclick:
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" width="100%" height="100%">' +
+    '<path d="M4 3 5 21 10 16 14 21 16 19 12 14 20 12 4 3Z"/>' +
     '</svg>',
 
   // 🛠 — wrench-and-screwdriver (placeholder when a tab is missing one)

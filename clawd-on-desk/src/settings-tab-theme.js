@@ -335,6 +335,22 @@
       btn.addEventListener("keydown", stopThemeCardButtonKeydown);
       footer.appendChild(btn);
     }
+    // Emotion animations button — opens a modal showing this theme's
+    // emotion → animation mappings. Available on every theme card.
+    {
+      const btn = document.createElement("button");
+      btn.className = "soft-btn";
+      btn.type = "button";
+      btn.textContent = "情绪动画";
+      btn.style.fontSize = "11px";
+      btn.style.padding = "3px 10px";
+      btn.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        showEmotionModal(theme);
+      });
+      btn.addEventListener("keydown", stopThemeCardButtonKeydown);
+      footer.appendChild(btn);
+    }
     card.appendChild(footer);
 
     if (!theme.active) {
@@ -547,6 +563,259 @@
       .catch((err) => {
         ops.showToast(t("toastThemeDeleteFailed") + (err && err.message), { error: true });
       });
+  }
+
+  // ── Emotion animation modal ──
+  // Shows a theme's emotion → animation mappings in a popup overlay.
+  const EMOTION_ICONS = {
+    happy: "😸", curious: "🤔", sad: "😿",
+    excited: "🙌", mad: "😤", neutral: "😐",
+  };
+  const EMOTION_LABELS = {
+    happy: "开心", curious: "好奇", sad: "难过",
+    excited: "兴奋", mad: "生气", neutral: "平静",
+  };
+
+  function showEmotionModal(theme) {
+    // Remove any existing modal first
+    const existing = document.getElementById("emotion-modal-overlay");
+    if (existing) existing.remove();
+
+    const overlay = document.createElement("div");
+    overlay.id = "emotion-modal-overlay";
+    Object.assign(overlay.style, {
+      position: "fixed", top: "0", left: "0", right: "0", bottom: "0",
+      background: "rgba(0,0,0,0.5)", zIndex: "10000",
+      display: "flex", alignItems: "center", justifyContent: "center",
+    });
+
+    const modal = document.createElement("div");
+    Object.assign(modal.style, {
+      background: "var(--bg, #1e1e2e)", color: "var(--text-primary, #cdd6f4)",
+      borderRadius: "12px", padding: "24px", maxWidth: "520px", width: "90%",
+      maxHeight: "80vh", overflowY: "auto",
+      border: "1px solid var(--border, #45475a)",
+      boxShadow: "0 8px 32px rgba(0,0,0,0.3)",
+    });
+
+    // Header
+    const header = document.createElement("div");
+    Object.assign(header.style, {
+      display: "flex", justifyContent: "space-between", alignItems: "center",
+      marginBottom: "16px", paddingBottom: "12px",
+      borderBottom: "1px solid var(--border, #45475a)",
+    });
+    const title = document.createElement("h3");
+    title.textContent = (localizeField(theme.name) || theme.id) + " — 情绪动画";
+    title.style.margin = "0";
+    title.style.fontSize = "16px";
+    title.style.fontWeight = "600";
+    header.appendChild(title);
+
+    const closeBtn = document.createElement("button");
+    closeBtn.textContent = "✕";
+    closeBtn.style.background = "none";
+    closeBtn.style.border = "none";
+    closeBtn.style.color = "var(--text-secondary)";
+    closeBtn.style.cursor = "pointer";
+    closeBtn.style.fontSize = "18px";
+    closeBtn.addEventListener("click", () => overlay.remove());
+    header.appendChild(closeBtn);
+    modal.appendChild(header);
+
+    // Loading indicator
+    const loading = document.createElement("div");
+    loading.textContent = "加载中...";
+    loading.style.color = "var(--text-secondary)";
+    loading.style.padding = "20px 0";
+    loading.style.textAlign = "center";
+    modal.appendChild(loading);
+
+    overlay.appendChild(modal);
+    overlay.addEventListener("click", (ev) => {
+      if (ev.target === overlay) overlay.remove();
+    });
+    document.body.appendChild(overlay);
+
+    // Fetch emotion map
+    if (!window.settingsAPI || typeof window.settingsAPI.getThemeEmotionMap !== "function") {
+      loading.textContent = "API 不可用";
+      return;
+    }
+    window.settingsAPI.getThemeEmotionMap(theme.id).then((result) => {
+      loading.remove();
+      if (!result || result.status !== "ok") {
+        const err = document.createElement("div");
+        err.textContent = "无法加载情绪映射: " + (result && result.message || "未知错误");
+        err.style.color = "#ff4d4f";
+        modal.appendChild(err);
+        return;
+      }
+      const map = Array.isArray(result.map) ? result.map : [];
+      if (map.length === 0) {
+        const empty = document.createElement("div");
+        empty.textContent = "这个主题还没有配置情绪动画。在 theme.json 的 states.attention 里添加 {\"file\": \"动画.gif\", \"emotion\": \"happy\"} 格式的条目即可。";
+        empty.style.color = "var(--text-secondary)";
+        empty.style.fontSize = "13px";
+        empty.style.lineHeight = "1.6";
+        modal.appendChild(empty);
+        return;
+      }
+      // Render emotion list
+      for (const item of map) {
+        const row = document.createElement("div");
+        Object.assign(row.style, {
+          display: "flex", alignItems: "center", gap: "10px",
+          padding: "10px 12px", marginBottom: "8px", borderRadius: "8px",
+          background: "var(--panel-bg, #181825)",
+          border: "1px solid var(--border, #45475a)",
+        });
+        const icon = document.createElement("span");
+        icon.textContent = EMOTION_ICONS[item.emotion] || "🎬";
+        icon.style.fontSize = "20px";
+        row.appendChild(icon);
+
+        const info = document.createElement("div");
+        info.style.flex = "1";
+        const label = document.createElement("div");
+        label.textContent = EMOTION_LABELS[item.emotion] || item.emotion;
+        label.style.fontSize = "14px";
+        label.style.fontWeight = "600";
+        info.appendChild(label);
+        const tag = document.createElement("div");
+        tag.textContent = "[EMOTION:" + item.emotion + "]";
+        tag.style.fontSize = "11px";
+        tag.style.fontFamily = "monospace";
+        tag.style.color = "var(--text-secondary)";
+        info.appendChild(tag);
+        row.appendChild(info);
+
+        const file = document.createElement("div");
+        file.textContent = item.file;
+        file.style.fontSize = "12px";
+        file.style.fontFamily = "monospace";
+        file.style.color = "var(--text-secondary)";
+        file.style.maxWidth = "180px";
+        file.style.overflow = "hidden";
+        file.style.textOverflow = "ellipsis";
+        file.style.whiteSpace = "nowrap";
+        row.appendChild(file);
+
+        if (item.isDefault) {
+          const def = document.createElement("span");
+          def.textContent = "默认";
+          def.style.fontSize = "10px";
+          def.style.color = "var(--text-secondary)";
+          def.style.fontStyle = "italic";
+          row.appendChild(def);
+        }
+        // Preview button
+        const previewBtn = document.createElement("button");
+        previewBtn.textContent = "预览";
+        previewBtn.style.cssText = "font-size:11px;padding:2px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--text-primary);cursor:pointer;";
+        previewBtn.addEventListener("click", (ev) => {
+          ev.stopPropagation();
+          if (window.settingsAPI && typeof window.settingsAPI.previewAnimationOverride === "function") {
+            window.settingsAPI.previewAnimationOverride({ stateKey: "attention", file: item.file, durationMs: 3000 });
+          }
+        });
+        row.appendChild(previewBtn);
+
+        // Upload button — pick a custom animation file for this emotion
+        const uploadBtn = document.createElement("button");
+        uploadBtn.textContent = "上传";
+        uploadBtn.style.cssText = "font-size:11px;padding:2px 8px;border:1px solid var(--accent);border-radius:4px;background:var(--bg);color:var(--accent);cursor:pointer;";
+        uploadBtn.addEventListener("click", (ev) => {
+          ev.stopPropagation();
+          if (!window.settingsAPI || typeof window.settingsAPI.pickEmotionAnimation !== "function") return;
+          window.settingsAPI.pickEmotionAnimation({ emotionName: item.emotion }).then((result) => {
+            if (!result || result.status !== "ok") return;
+            return window.settingsAPI.saveEmotionOverride({
+              themeId: theme.id,
+              emotionName: item.emotion,
+              file: result.file,
+            }).then(() => {
+              overlay.remove();
+              showEmotionModal(theme);
+            });
+          }).catch(() => {});
+        });
+        row.appendChild(uploadBtn);
+
+        // Remove override button (only for user-added emotions)
+        if (item.isOverride) {
+          const delBtn = document.createElement("button");
+          delBtn.textContent = "删除";
+          delBtn.style.cssText = "font-size:11px;padding:2px 8px;border:1px solid #ff4d4f;border-radius:4px;background:var(--bg);color:#ff4d4f;cursor:pointer;";
+          delBtn.addEventListener("click", (ev) => {
+            ev.stopPropagation();
+            if (!window.settingsAPI || typeof window.settingsAPI.saveEmotionOverride !== "function") return;
+            window.settingsAPI.saveEmotionOverride({
+              themeId: theme.id,
+              emotionName: item.emotion,
+              file: null,
+            }).then(() => {
+              overlay.remove();
+              showEmotionModal(theme);
+            }).catch(() => {});
+          });
+          row.appendChild(delBtn);
+        }
+        modal.appendChild(row);
+      }
+
+      // Add custom emotion section
+      const addSection = document.createElement("div");
+      Object.assign(addSection.style, {
+        marginTop: "16px", padding: "12px", borderRadius: "8px",
+        border: "1px dashed var(--border)", display: "flex",
+        alignItems: "center", gap: "8px", flexWrap: "wrap",
+      });
+      const addLabel = document.createElement("span");
+      addLabel.textContent = "添加自定义情绪：";
+      addLabel.style.cssText = "font-size:13px;color:var(--text-secondary);white-space:nowrap;";
+      addSection.appendChild(addLabel);
+      const addInput = document.createElement("input");
+      addInput.type = "text";
+      addInput.placeholder = "情绪标签名（如：surprised）";
+      addInput.style.cssText = "flex:1;min-width:120px;padding:4px 8px;font-size:12px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--text-primary);";
+      addSection.appendChild(addInput);
+      const addBtn = document.createElement("button");
+      addBtn.textContent = "上传动画";
+      addBtn.style.cssText = "font-size:12px;padding:4px 14px;border:1px solid var(--accent);border-radius:4px;background:var(--accent);color:#fff;cursor:pointer;";
+      addBtn.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        const name = addInput.value.trim().toLowerCase();
+        if (!name || !/^[a-z_]+$/.test(name)) { addInput.style.borderColor = "#ff4d4f"; return; }
+        addInput.style.borderColor = "";
+        if (!window.settingsAPI || typeof window.settingsAPI.pickEmotionAnimation !== "function") return;
+        window.settingsAPI.pickEmotionAnimation({ emotionName: name }).then((result) => {
+          if (!result || result.status !== "ok") return;
+          return window.settingsAPI.saveEmotionOverride({
+            themeId: theme.id,
+            emotionName: name,
+            file: result.file,
+          }).then(() => {
+            overlay.remove();
+            showEmotionModal(theme);
+          });
+        }).catch(() => {});
+      });
+      addSection.appendChild(addBtn);
+      modal.appendChild(addSection);
+
+      // Help text
+      const help = document.createElement("div");
+      Object.assign(help.style, {
+        marginTop: "16px", padding: "12px", borderRadius: "6px",
+        background: "color-mix(in srgb, var(--accent, #89b4fa) 8%, transparent)",
+        fontSize: "12px", color: "var(--text-secondary)", lineHeight: "1.6",
+      });
+      help.textContent = "聊天时模型会在回复末尾输出 [EMOTION:xxx] 标签，桌宠自动切换到对应动画。要添加新情绪，在主题文件夹的 theme.json 里加 {\"file\": \"你的动画.gif\", \"emotion\": \"标签名\"}。";
+      modal.appendChild(help);
+    }).catch((err) => {
+      loading.textContent = "加载失败: " + (err && err.message || err);
+    });
   }
 
   function init(core) {

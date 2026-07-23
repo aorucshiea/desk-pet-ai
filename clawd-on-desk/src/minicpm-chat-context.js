@@ -17,7 +17,7 @@
 (function initChatContext(root) {
   // Mirrors the sidecar `--ctx-size` default (MINICPM_CTX). Keep in sync if
   // that default changes.
-  const DEFAULT_CTX_WINDOW_TOKENS = 4096;
+  const DEFAULT_CTX_WINDOW_TOKENS = 16384;
   // Headroom for the chat template scaffolding + an optional system prompt the
   // gateway prepends that the renderer can't see.
   const CTX_SAFETY_TOKENS = 320;

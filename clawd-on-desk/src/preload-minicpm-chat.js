@@ -6,6 +6,7 @@ contextBridge.exposeInMainWorld("minicpm", {
   // Sidecar lifecycle
   start: (opts) => ipcRenderer.invoke("minicpm:start", opts),
   status: () => ipcRenderer.invoke("minicpm:status"),
+  getActiveThemeId: () => ipcRenderer.invoke("minicpm:get-active-theme-id"),
 
   // Bubble window controls
   resize: (width, height) => ipcRenderer.invoke("minicpm:resize", { width, height }),
@@ -28,6 +29,33 @@ contextBridge.exposeInMainWorld("minicpm", {
   // pipeline. Pass `null` to unload.
   loadAdapter: (pathOrNull) => ipcRenderer.invoke("minicpm-settings:load-adapter", { path: pathOrNull }),
 
+  // Skills discovery (Phase 1)
+  listSkills: () => ipcRenderer.invoke("minicpm:list-skills"),
+  getSkill: (name) => ipcRenderer.invoke("minicpm:get-skill", { name }),
+
+  // Model providers (Phase 2)
+  listProviders: () => ipcRenderer.invoke("minicpm:list-providers"),
+  mcpListServers: () => ipcRenderer.invoke("minicpm:mcp-list-servers"),
+  mcpExecute: (serverName, toolName, args) =>
+    ipcRenderer.invoke("minicpm:mcp-execute", { serverName, toolName, args }),
+
+  // Provider prefs (Phase 2)
+  getProviderPrefs: () => ipcRenderer.invoke("minicpm:get-provider-prefs"),
+
+  // Screen observation consent
+  setScreenObserveConsent: (value) => ipcRenderer.invoke("minicpm:set-screen-consent", value),
+
+  // Chat history persistence (save/load conversation history to userData)
+  saveHistory: (data) => ipcRenderer.invoke("minicpm:save-history", data),
+  loadHistory: () => ipcRenderer.invoke("minicpm:load-history"),
+
+  // Long-term memory snapshot (frozen MEMORY.md + USER.md from the sidecar)
+  getMemory: () => ipcRenderer.invoke("minicpm:get-memory"),
+
+  // External distillation: /learn prompt + skill creation
+  getLearnPrompt: (request) => ipcRenderer.invoke("minicpm:learn-prompt", request),
+  createSkill: (payload) => ipcRenderer.invoke("minicpm:create-skill", payload),
+
   // i18n: initial fetch + live updates
   getI18n: () => ipcRenderer.invoke("minicpm:get-i18n"),
   onLangChange: (cb) => {
@@ -46,4 +74,11 @@ contextBridge.exposeInMainWorld("minicpm", {
   onNarrate:        (cb) => ipcRenderer.on("minicpm:narrate",             (_e, p) => cb(p || {})),
   onCmdReply:       (cb) => ipcRenderer.on("minicpm:cmd-reply",           (_e, p) => cb(p || {})),
   onEditMode:       (cb) => ipcRenderer.on("minicpm:edit-mode",           (_e, p) => cb(p || {})),
+  onClearHistory:   (cb) => ipcRenderer.on("minicpm:clear-history",        ()  => cb()),
+  onSetActiveAssistant: (cb) => ipcRenderer.on("minicpm:set-active-assistant", (_e, p) => {
+    try { cb(p || {}); } catch {}
+  }),
+  onProactivePolicy: (cb) => ipcRenderer.on("minicpm:set-proactive-policy", (_e, p) => {
+    try { cb(p || {}); } catch {}
+  }),
 });

@@ -73,8 +73,8 @@
   "upstreamRepository": "https://github.com/rullerzhou-afk/clawd-on-desk",
   "type": "commonjs",
   "build": {
-    "appId": "com.openbmb.minicpm-desk-pet",
-    "productName": "MiniCPM Desk Pet",
+    "appId": "com.openbmb.deskpt",
+    "productName": "deskpt",
     "copyright": "Copyright © 2026 OpenBMB. Based on clawd-on-desk by rullerzhou-afk (AGPL-3.0-only).",
     "protocols": [
       {
@@ -86,7 +86,7 @@
     ],
     "mac": {
       "icon": "assets/icon.icns",
-      "artifactName": "MiniCPM-Desk-Pet-${version}-${arch}.${ext}",
+      "artifactName": "deskpt-${version}-${arch}.${ext}",
       "target": [
         {
           "target": "dmg",
@@ -107,7 +107,7 @@
     },
     "win": {
       "icon": "assets/icon.ico",
-      "artifactName": "MiniCPM-Desk-Pet-Setup-${version}-${arch}.${ext}",
+      "artifactName": "deskpt-Setup-${version}-${arch}.${ext}",
       "target": [
         {
           "target": "nsis",
@@ -122,7 +122,7 @@
       "maintainer": "OpenBMB <opensource@openbmb.org>",
       "icon": "assets/icons",
       "category": "Utility",
-      "artifactName": "MiniCPM-Desk-Pet-${version}-${arch}.${ext}",
+      "artifactName": "deskpt-${version}-${arch}.${ext}",
       "target": [
         {
           "target": "AppImage",

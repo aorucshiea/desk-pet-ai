@@ -33,6 +33,14 @@ adapters/**/*.gguf
 *.swp
 *~
 
+# External agent working dirs (opencode / workbuddy scratch — not part of
+# this repo; their node_modules/skills/memory are machine-local)
+.opencode/
+.workbuddy/
+
+# Stray Windows NUL device-named junk (created by `> nul` redirects)
+nul
+
 # Local scratch dir for one-off assets/exports
 temp/
 

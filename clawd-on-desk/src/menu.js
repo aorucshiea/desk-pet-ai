@@ -211,6 +211,10 @@ module.exports = function initMenu(ctx) {
           if (typeof ctx.openMinicpmChat === "function") ctx.openMinicpmChat();
         },
       },
+      {
+        label: t("showContext") || "Show Context",
+        click: () => ctx.openSettingsWindow(),
+      },
       { type: "separator" },
       {
         label: t("settings"),

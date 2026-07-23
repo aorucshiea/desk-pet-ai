@@ -395,6 +395,8 @@ class Sidecar {
     // sidecar's startup. We re-read prefs each respawn so a swap done
     // via Settings persists across an explicit "Restart Sidecar".
     this.activeAdapterPath = null;
+    // Phase 2: provider keys for OpenAI/Anthropic. Set before spawn.
+    this._providerKeys = {};
     // Append-mode file stream where every stdout / stderr line from the
     // sidecar gets persisted to <userData>/logs/sidecar.log. Critical
     // for packaged builds where console.log goes nowhere.
@@ -456,6 +458,22 @@ class Sidecar {
 
   baseUrl() { return `http://${this.host}:${this.port}`; }
 
+  setProviderInfo(info) {
+    if (info && typeof info === "object") {
+      this._providerKeys = info;
+    }
+  }
+
+  _providerKeysToEnv() {
+    const out = {};
+    for (const [k, v] of Object.entries(this._providerKeys || {})) {
+      if (!v) continue;
+      const envKey = `MINICPM_${k.toUpperCase()}`;
+      out[envKey] = String(v);
+    }
+    return out;
+  }
+
   async ensureRunning(initialModelDir) {
     if (await this.isHealthy(initialModelDir)) return { status: "already-running" };
     if (this.starting) return this.starting;
@@ -486,9 +504,14 @@ class Sidecar {
     } catch { return null; }
   }
 
-  async loadModel(p) {
+  async loadModel(p, opts) {
+    // Pass an optional explicit mmproj through to the gateway. When omitted,
+    // the gateway looks up a sibling `mmproj-*.gguf` automatically.
     try {
-      const r = await httpJson("POST", `${this.baseUrl()}/api/load-model`, { path: p }, 90000);
+      const body = opts && opts.mmproj
+        ? { path: p, mmproj: opts.mmproj }
+        : { path: p };
+      const r = await httpJson("POST", `${this.baseUrl()}/api/load-model`, body, 90000);
       return r.json || null;
     } catch (err) { return { error: String(err && err.message || err) }; }
   }
@@ -500,17 +523,26 @@ class Sidecar {
     } catch { return null; }
   }
 
-  async _spawnAndWait(initialModelDir) {
-    // We need either the prebuilt gateway binary or the source tree
-    // (with a Python venv) to spawn.
-    if (!this.sidecarBin && !this.sidecarDir) {
-      const err = new Error("sidecar binary not found");
-      err.minicpmI18nKey = "chatSidecarMissingBin";
-      throw err;
-    }
+	  async _spawnAndWait(initialModelDir, _retry = false) {
+	    // We need either the prebuilt gateway binary or the source tree
+	    // (with a Python venv) to spawn.
+	    if (!this.sidecarBin && !this.sidecarDir) {
+	      const err = new Error("sidecar binary not found");
+	      err.minicpmI18nKey = "chatSidecarMissingBin";
+	      throw err;
+	    }
 
-    // Both the binary and `python -m gateway` accept the same flags;
-    // we treat them uniformly here.
+	    // Kill any stale process holding our port before we try to bind.
+	    // If we have a tracked PID, stop it first; then do a port-level
+	    // sweep in case the gateway binary crashed but a child kept the
+	    // socket open (e.g. llama-server still running after gateway crash,
+	    // or a previous sidecar instance whose proc ref went null).
+	    if (this.proc) this.stop();
+	    await this._killPortHolder();
+	    await new Promise((r) => setTimeout(r, 300));
+
+	    // Both the binary and `python -m gateway` accept the same flags;
+	    // we treat them uniformly here.
     const argsCommon = [
       "--host", this.host,
       "--port", String(this.port),
@@ -527,6 +559,11 @@ class Sidecar {
       // Point gateway at the writable user adapter dir so /api/adapters
       // and /api/load-adapter see exactly what Settings UI shows.
       MINICPM_ADAPTER_DIR: this.adapterDir || process.env.MINICPM_ADAPTER_DIR || "",
+      // Long-term memory dir. The gateway boots a MemoryStore here and
+      // serves the frozen MEMORY.md / USER.md snapshot via /api/memory.
+      // Same per-userData layout as adapters/models so memory survives
+      // across restarts and is editable by the user.
+      MINICPM_MEMORY_DIR: path.join(app.getPath("userData"), "memories"),
       // Boot directly into the user's persisted LoRA choice. Empty
       // string (or unset) means "boot Base, no LoRA loaded" — the
       // gateway then refrains from passing any --lora flag, keeping
@@ -539,6 +576,8 @@ class Sidecar {
       // sidecar + llama-server within ~2s, so :18765 / :18766 don't
       // stay held by an orphan.
       MINICPM_PARENT_PID: String(process.pid),
+      // Phase 2: provider API keys from prefs (any OpenAI-compatible provider)
+      ...this._providerKeysToEnv(),
     };
 
     // Strip proxy environment variables to avoid socksio dependency issues.
@@ -554,7 +593,18 @@ class Sidecar {
     }
 
     let proc;
-    if (this.sidecarBin) {
+    // Dev-mode preference: when both a source tree and a prebuilt binary
+    // exist, prefer the Python source so edits take effect immediately
+    // without a PyInstaller rebuild. Packaged builds (no source tree)
+    // fall straight through to the binary path as before.
+    const python = this.sidecarDir ? locatePython(this.sidecarDir) : null;
+    if (python && this.sidecarDir) {
+      this.log(`[minicpm-chat] spawn ${python} -m gateway --port ${this.port}`);
+      proc = spawn(python, ["-m", "gateway", ...argsCommon], {
+        cwd: this.sidecarDir,
+        env,
+      });
+    } else if (this.sidecarBin) {
       // Production path: a self-contained gateway binary. No Python
       // interpreter required on the host. The gateway itself locates
       // and spawns the llama-server binary sitting next to it.
@@ -564,17 +614,9 @@ class Sidecar {
         env,
       });
     } else {
-      const python = locatePython(this.sidecarDir);
-      if (!python) {
-        const err = new Error("Python interpreter not found");
-        err.minicpmI18nKey = "chatSidecarMissingPython";
-        throw err;
-      }
-      this.log(`[minicpm-chat] spawn ${python} -m gateway --port ${this.port}`);
-      proc = spawn(python, ["-m", "gateway", ...argsCommon], {
-        cwd: this.sidecarDir,
-        env,
-      });
+      const err = new Error("Neither Python venv nor sidecar binary found");
+      err.minicpmI18nKey = "chatSidecarMissingBin";
+      throw err;
     }
 
     this.proc = proc;
@@ -640,9 +682,18 @@ class Sidecar {
     const deadline = Date.now() + 90_000;
     while (Date.now() < deadline) {
       if (!this.proc) {
-        const err = new Error(`Python process exited prematurely. stderr tail:\n${this._stderrTailString(1500)}`);
+        const tail = this._stderrTailString(1500);
+        // One-shot retry: if the port was still occupied (EADDRINUSE),
+        // kill whatever is holding it and try once more.
+        if (!_retry && /only one usage of each socket address/i.test(tail)) {
+          this.log(`[minicpm-chat] port ${this.port} in use, killing port holder and retrying...`);
+          await this._killPortHolder();
+          await new Promise((r) => setTimeout(r, 600));
+          return this._spawnAndWait(initialModelDir, true);
+        }
+        const err = new Error(`Python process exited prematurely. stderr tail:\n${tail}`);
         err.minicpmI18nKey = "chatSidecarPyExited";
-        err.minicpmI18nParams = { tail: this._stderrTailString(1500) };
+        err.minicpmI18nParams = { tail };
         throw err;
       }
       const health = await httpJson("GET", `${this.baseUrl()}/api/health`, null, 1500).catch(() => null);
@@ -697,6 +748,32 @@ class Sidecar {
     setTimeout(() => {
       if (this.proc === proc) { try { proc.kill("SIGKILL"); } catch {} }
     }, 2000).unref();
+  }
+
+  async _killPortHolder() {
+    const port = String(this.port);
+    try {
+      if (process.platform === "win32") {
+        // PowerShell: find LISTENING process on the port and kill it.
+        // Avoid cmd's `for /f` — its quote-escaping rules are fragile
+        // inside execFile and break the command silently.
+        await execFileAsync("powershell", [
+          "-NoProfile",
+          "-Command",
+          `Get-NetTCPConnection -LocalPort ${port} -State Listen -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }`,
+        ], { timeout: 10000 });
+      } else {
+        // lsof -ti :{port} → xargs kill -9 (macOS / Linux)
+        await execFileAsync("bash", [
+          "-c",
+          `lsof -ti :${port} | xargs -r kill -9`,
+        ], { timeout: 5000 });
+      }
+    } catch {
+      // Best effort — if nothing is on the port, the commands are no-ops
+      // and may exit with non-zero, which execFileAsync surfaces as an
+      // error. Swallow it.
+    }
   }
 
   async stopAndWait(timeoutMs = 5000) {
@@ -818,6 +895,7 @@ module.exports = function initMinicpmChat(ctx) {
   const port = Number(process.env.MINICPM_PORT || DEFAULT_PORT);
   const host = process.env.MINICPM_HOST || DEFAULT_HOST;
   const log = (msg) => { try { console.log(msg); } catch {} };
+  log(`[minicpm-chat] __dirname=${__dirname} appRoot=${appRoot} sidecarDir=${sidecarDir} sidecarBin=${sidecarBin} python=${sidecarDir ? locatePython(sidecarDir) : 'null'}`);
 
   // ── i18n bridge ──────────────────────────────────────────────────────
   // ctx.getLang() returns the *effective* UI language. Used to translate
@@ -1255,6 +1333,11 @@ module.exports = function initMinicpmChat(ctx) {
     adapterDir,
     modelPresent: (dir) => isModelPresent(dir),
   });
+  // Kill any orphan sidecar process still holding our port from a
+  // previous session so the next spawn doesn't hit EADDRINUSE.
+  // Fire-and-forget — the command completes within a few seconds,
+  // well before the user opens the chat bubble.
+  sidecar._killPortHolder();
   // Refresh `sidecar.activeAdapterPath` from prefs every time we're about
   // to spawn. Lets the user pick a persona, restart the sidecar from
   // Settings, and have the new choice take effect — without needing to
@@ -1299,7 +1382,7 @@ module.exports = function initMinicpmChat(ctx) {
   // `mergeMinicpmPrefs()` — a naive `JSON.stringify(chatParams)` would erase
   // `model_dir` the next time the user toggled "thinking", etc.
   const DEFAULT_CHAT_PARAMS = {
-    max_new_tokens: 768,
+    max_new_tokens: 4096,
     temperature: 0.6,
     top_p: 0.95,
     top_k: 0,                  // 0 = disabled
@@ -1439,6 +1522,41 @@ module.exports = function initMinicpmChat(ctx) {
       if (st.isDirectory()) return _firstGgufIn(target) !== null;
     } catch {}
     return false;
+  }
+  // User-configurable model folders. Stored in minicpm-prefs.json so they
+  // survive restarts. Multiple folders are scanned for .gguf files when
+  // populating the local-models picker.
+  function getModelFolders() {
+    const raw = readMinicpmPrefsRaw();
+    const list = Array.isArray(raw.model_folders) ? raw.model_folders : [];
+    return list.filter((p) => typeof p === "string" && p.trim());
+  }
+  function addModelFolder(folder) {
+    let next = (typeof folder === "string" ? folder.trim() : "");
+    if (!next) return { ok: false, error: "invalid path" };
+    try {
+      const st = fs.statSync(next);
+      if (!st.isDirectory()) return { ok: false, error: "selected path is not a folder" };
+      next = path.resolve(next);
+    } catch (err) {
+      return { ok: false, error: `cannot read folder: ${err && err.message}` };
+    }
+    const cur = getModelFolders();
+    if (cur.some((p) => p.toLowerCase() === next.toLowerCase())) {
+      return { ok: true, folders: cur, duplicate: true };
+    }
+    const nextList = [...cur, next];
+    mergeMinicpmPrefs({ model_folders: nextList });
+    return { ok: true, folders: nextList };
+  }
+  function removeModelFolder(folder) {
+    const target = (typeof folder === "string" ? folder : "").toLowerCase();
+    if (!target) return { ok: false, error: "invalid path" };
+    const cur = getModelFolders();
+    const next = cur.filter((p) => p.toLowerCase() !== target);
+    if (next.length === cur.length) return { ok: true, folders: cur, noop: true };
+    mergeMinicpmPrefs({ model_folders: next });
+    return { ok: true, folders: next };
   }
   function resolveCurrentGgufPath(healthJson) {
     const candidates = [];
@@ -2206,6 +2324,14 @@ module.exports = function initMinicpmChat(ctx) {
       url: sidecar.baseUrl(),
       healthy: await sidecar.isHealthy(getEffectiveModelDir()),
     }),
+    "minicpm:get-active-theme-id": async () => {
+      try {
+        const theme = typeof ctx.getActiveThemeId === "function"
+          ? ctx.getActiveThemeId()
+          : null;
+        return { ok: true, themeId: theme || "default" };
+      } catch { return { ok: true, themeId: "default" }; }
+    },
     "minicpm:start": async (_evt, opts = {}) => {
       try {
         // Default to the user-effective dir; opts.modelDir still wins
@@ -2257,6 +2383,199 @@ module.exports = function initMinicpmChat(ctx) {
       await refreshUpdateStatus();
       return { ...result, status: updateStatus };
     },
+    "minicpm:list-skills": async () => {
+      const snapshot = typeof ctx.getSettingsSnapshot === "function" ? ctx.getSettingsSnapshot() : {};
+      const skillsPref = (snapshot && snapshot.skills) || {};
+      if (skillsPref.enabled === false) return { skills: [] };
+      const r = await httpJson("GET", `${sidecar.baseUrl()}/api/skills`, null, 2000).catch(() => null);
+      return r && r.json ? r.json : { skills: [] };
+    },
+    "minicpm:get-skill": async (_evt, { name } = {}) => {
+      if (!name || typeof name !== "string") return { error: "skill name required" };
+      const r = await httpJson("GET", `${sidecar.baseUrl()}/api/skills/${encodeURIComponent(name)}`, null, 2000).catch(() => null);
+      return r && r.json ? r.json : { error: "skill not found" };
+    },
+    // Phase 2: model providers
+    "minicpm:list-providers": async () => {
+      const r = await httpJson("GET", `${sidecar.baseUrl()}/api/providers`, null, 2000).catch(() => null);
+      return r && r.json ? r.json : { providers: [], default: "local" };
+    },
+    // Phase 2: MCP servers (stored in ~/.minicpm/mcp.json, Claude Code compat)
+    "minicpm:mcp-list-servers": async () => {
+      const r = await httpJson("GET", `${sidecar.baseUrl()}/api/mcp/servers`, null, 3000).catch(() => null);
+      return r && r.json ? r.json : { servers: [], tools: [], count: 0 };
+    },
+    "minicpm:mcp-execute": async (_evt, { serverName, toolName, args } = {}) => {
+      if (!serverName || !toolName) return { summary: "Missing serverName or toolName", is_error: true };
+      const r = await httpJson("POST", `${sidecar.baseUrl()}/api/mcp/execute`, { server_name: serverName, tool_name: toolName, arguments: args || {} }, 30000).catch(() => null);
+      return r && r.json ? r.json : { summary: "MCP execute failed", is_error: true };
+    },
+    "minicpm:mcp-get-config": async () => {
+      const p = path.join(os.homedir(), ".minicpm", "mcp.json");
+      try {
+        const raw = fs.readFileSync(p, "utf-8");
+        return JSON.parse(raw);
+      } catch { return { mcpServers: {} }; }
+    },
+    "minicpm:mcp-save-config": async (_evt, { servers } = {}) => {
+      if (!servers || typeof servers !== "object") return { ok: false, error: "invalid servers object" };
+      const p = path.join(os.homedir(), ".minicpm", "mcp.json");
+      try {
+        fs.mkdirSync(path.dirname(p), { recursive: true });
+        fs.writeFileSync(p, JSON.stringify({ mcpServers: servers }, null, 2), "utf-8");
+        return { ok: true };
+      } catch (e) { return { ok: false, error: String(e.message || e) }; }
+    },
+    "minicpm:save-providers-config": async (_evt, { providers } = {}) => {
+      if (!providers) return { ok: false, error: "invalid providers" };
+      const p = path.join(os.homedir(), ".minicpm", "providers.json");
+      try {
+        fs.mkdirSync(path.dirname(p), { recursive: true });
+        // Convert array to object map format
+        const map = {};
+        for (const item of providers) {
+          if (!item || !item.provider) continue;
+          map[item.provider] = {
+            apiKey: item.apiKey || "",
+            baseUrl: item.baseUrl || "https://api.openai.com/v1",
+            model: item.model || "gpt-4o",
+          };
+          if (item.thinking != null) map[item.provider].thinking = item.thinking;
+          if (item.reasoningEffort) map[item.provider].reasoningEffort = item.reasoningEffort;
+          if (item.contextWindow) map[item.provider].contextWindow = Number(item.contextWindow);
+        }
+        fs.writeFileSync(p, JSON.stringify({ providers: map }, null, 2), "utf-8");
+        return { ok: true };
+      } catch (e) { return { ok: false, error: String(e.message || e) }; }
+    },
+    "minicpm:get-provider-prefs": async () => {
+      const snapshot = typeof ctx.getSettingsSnapshot === "function" ? ctx.getSettingsSnapshot() : {};
+      const skills = (snapshot && snapshot.skills) || {};
+      return {
+        defaultProvider: skills.defaultProvider || "local",
+        autoRoute: skills.autoRoute || false,
+        modelProviders: Array.isArray(skills.modelProviders) ? skills.modelProviders : [],
+        screenObserveConsent: snapshot.screenObserveConsent || "deny",
+        screenclick_ocrMode: snapshot.screenclick_ocrMode || "local",
+        screenclick_ocrApiUrl: snapshot.screenclick_ocrApiUrl || "",
+        screenclick_ocrApiKey: snapshot.screenclick_ocrApiKey || "",
+        screenclick_ocrApiModel: snapshot.screenclick_ocrApiModel || "",
+        screenclick_chineseOcr: !!snapshot.screenclick_chineseOcr,
+      };
+    },
+    "minicpm:set-screen-consent": async (_e, value) => {
+      try {
+        if (typeof ctx.setPref === "function") {
+          ctx.setPref("screenObserveConsent", value);
+          return { ok: true };
+        }
+        const snapshot = typeof ctx.getSettingsSnapshot === "function" ? ctx.getSettingsSnapshot() : {};
+        const p = typeof ctx.savePrefs === "function" ? ctx : undefined;
+        if (p) {
+          p.savePrefs({ ...snapshot, screenObserveConsent: value });
+          return { ok: true };
+        }
+        return { ok: false, error: "no prefs access" };
+      } catch (e) { return { ok: false, error: String(e.message || e) }; }
+    },
+    "minicpm:get-chat-history": async () => {
+      if (bubble && !bubble.isDestroyed()) {
+        try {
+          return await bubble.webContents.executeJavaScript("window.__getChatHistory ? window.__getChatHistory() : []");
+        } catch { return []; }
+      }
+      return [];
+    },
+    "minicpm:get-chat-history-for": async (_e, { assistant } = {}) => {
+      // Read-only: pull the named assistant's bucket WITHOUT activating it.
+      // The Context settings panel can refresh every few seconds; we must
+      // not steal the live chat bubble's persona from a user mid-type.
+      const name = (typeof assistant === "string" && assistant) ? assistant : "default";
+      if (!bubble || bubble.isDestroyed()) return [];
+      try {
+        const json = JSON.stringify(name);
+        return await bubble.webContents.executeJavaScript(
+          `window.__getChatHistoryFor ? window.__getChatHistoryFor(${json}) : []`
+        );
+      } catch { return []; }
+    },
+    "minicpm:clear-history-for": async (_e, { assistant } = {}) => {
+      const name = (typeof assistant === "string" && assistant) ? assistant : "default";
+      if (!bubble || bubble.isDestroyed()) return { ok: false };
+      try {
+        const json = JSON.stringify(name);
+        const ok = await bubble.webContents.executeJavaScript(
+          `window.__clearChatHistoryFor ? window.__clearChatHistoryFor(${json}) : false`
+        );
+        return { ok: !!ok, assistant: name };
+      } catch { return { ok: false, assistant: name }; }
+    },
+    "minicpm:set-active-assistant": async (_e, { assistant } = {}) => {
+      const name = (typeof assistant === "string" && assistant) ? assistant : "default";
+      api.setActiveAssistant(name);
+      return { ok: true, assistant: name };
+    },
+    // Sandbox executor: lets the settings panel call read-only / mutating
+    // helpers that live in the chat renderer. The function name MUST be
+    // on the allow-list below — bare `window.foo()` is rejected so a
+    // malicious caller can't invoke arbitrary renderer code. Disabled
+    // when the chat bubble isn't open.
+    "minicpm-settings:exec-renderer": async (_e, payload) => {
+      // Ensure the bubble exists (hidden is fine) so renderer globals are
+      // available even when the user hasn't opened the chat yet. This
+      // lets the Settings → Context panel create assistants / topics /
+      // list history without requiring the chat bubble to be visible.
+      ensureBubble();
+      if (!bubble || bubble.isDestroyed()) return { ok: false, error: "chat bubble unavailable" };
+      // Wait for the renderer to finish loading before executing JS.
+      try {
+        if (bubble.webContents.isLoading()) {
+          await new Promise((r) => {
+            const done = () => { r(); };
+            bubble.webContents.once("did-finish-load", done);
+            setTimeout(done, 5000); // timeout fallback
+          });
+        }
+      } catch {}
+      const fn = payload && typeof payload.fn === "string" ? payload.fn : "";
+      const argsJson = (payload && typeof payload.args === "string")
+        ? payload.args
+        : JSON.stringify(payload && payload.args !== undefined ? payload.args : []);
+      const ALLOWED = new Set([
+        "__getChatHistoryFor",
+        "__clearChatHistoryFor",
+        "__listTopicsFor",
+        "__listAssistants",
+        "__getActiveAssistant",
+        "__createAssistant",
+        "__deleteAssistant",
+        "__createTopic",
+        "__renameTopic",
+        "__deleteTopic",
+        "__setActiveTopic",
+      ]);
+      if (!ALLOWED.has(fn)) return { ok: false, error: "fn not allowed" };
+      try {
+        // Two-step dance: build the args array literal inside the
+        // sandbox so we don't leak user JSON via string concat that
+        // could break out of the call site.
+        const result = await bubble.webContents.executeJavaScript(
+          `(window.${fn} ? window.${fn}.apply(null, ${argsJson}) : Promise.resolve({ ok: false, error: "missing fn" }))`
+        );
+        return result || { ok: false };
+      } catch (err) {
+        return { ok: false, error: String(err && err.message || err) };
+      }
+    },
+    "minicpm:clear-chat-history": async () => {
+      if (bubble && !bubble.isDestroyed()) {
+        try {
+          bubble.webContents.send("minicpm:clear-history");
+          return { ok: true };
+        } catch { return { ok: false }; }
+      }
+      return { ok: false };
+    },
     "minicpm:focus-window": () => {
       // Bring bubble to the front AND give it keyboard focus. Used when
       // we transition back to ask mode after a reply so the user can
@@ -2293,18 +2612,86 @@ module.exports = function initMinicpmChat(ctx) {
       return { ok: true };
     },
   };
+  function wrapHandler(ch, fn) {
+    return async (...args) => {
+      try {
+        return await fn(...args);
+      } catch (err) {
+        try {
+          const logDir = path.join(app.getPath("userData"), "logs");
+          fs.mkdirSync(logDir, { recursive: true });
+          fs.appendFileSync(
+            path.join(logDir, "ipc-error.log"),
+            `[${new Date().toISOString()}] ${ch}: ${err.stack || err}\n`
+          );
+        } catch {}
+        // Return a structured error instead of re-throwing, so Electron's
+        // internal replyWithError -> console.error doesn't hit EPIPE.
+        return { error: true, message: String(err && err.message || err) };
+      }
+    };
+  }
   for (const [ch, fn] of Object.entries(handlers)) {
     try { ipcMain.removeHandler(ch); } catch {}
-    ipcMain.handle(ch, fn);
+    ipcMain.handle(ch, wrapHandler(ch, fn));
   }
 
   ipcMain.removeAllListeners("minicpm:open-context-menu");
   ipcMain.on("minicpm:open-context-menu", () => { void openContextMenu(); });
 
-  try { ipcMain.removeHandler("minicpm:get-chat-params"); } catch {}
-  ipcMain.handle("minicpm:get-chat-params", async () => getChatParams());
+	  try { ipcMain.removeHandler("minicpm:get-chat-params"); } catch {}
+	  ipcMain.handle("minicpm:get-chat-params", wrapHandler("minicpm:get-chat-params", async () => getChatParams()));
 
-  // ── Settings-window facing IPC ────────────────────────────────────────
+	  // ── Chat history persistence ─────────────────────────────────────────
+	  const CHAT_HISTORY_PATH = path.join(app.getPath("userData"), "chat-history.json");
+	  try { ipcMain.removeHandler("minicpm:save-history"); } catch {}
+	  ipcMain.handle("minicpm:save-history", wrapHandler("minicpm:save-history", async (_, data) => {
+	    try {
+	      await fs.promises.writeFile(CHAT_HISTORY_PATH, JSON.stringify(data), "utf-8");
+	      return { ok: true };
+	    } catch (err) {
+	      return { ok: false, error: err.message };
+	    }
+	  }));
+	  try { ipcMain.removeHandler("minicpm:load-history"); } catch {}
+	  ipcMain.handle("minicpm:load-history", wrapHandler("minicpm:load-history", async () => {
+	    try {
+	      const raw = await fs.promises.readFile(CHAT_HISTORY_PATH, "utf-8");
+	      return JSON.parse(raw);
+	    } catch { return null; }
+	  }));
+
+	  // ── Long-term memory snapshot ────────────────────────────────────────
+	  // Fetches the frozen MEMORY.md + USER.md blocks from the sidecar so the
+	  // renderer can prepend them to the chat system prompt. Snapshot is
+	  // frozen at sidecar boot; refreshes next sidecar restart.
+	  try { ipcMain.removeHandler("minicpm:get-memory"); } catch {}
+	  ipcMain.handle("minicpm:get-memory", wrapHandler("minicpm:get-memory", async () => {
+	    const r = await httpJson("GET", `${sidecar.baseUrl()}/api/memory`, null, 4000);
+	    if (!r || r.status !== 200 || !r.json) {
+	      return { memory: "", user: "", memory_dir: null };
+	    }
+	    return r.json;
+	  }));
+
+	  // ── External distillation: /learn prompt + skill creation ───────────
+	  // /learn returns a prompt the renderer feeds to the model as a normal
+	  // turn; the model then authors a SKILL.md via POST /api/skills (or the
+	  // skill_create builtin tool). Capability → auditable text file.
+	  try { ipcMain.removeHandler("minicpm:learn-prompt"); } catch {}
+	  ipcMain.handle("minicpm:learn-prompt", wrapHandler("minicpm:learn-prompt", async (_e, request) => {
+	    const r = await httpJson("POST", `${sidecar.baseUrl()}/api/skills/learn`, { request: request || "" }, 5000);
+	    if (!r || r.status !== 200 || !r.json) return { prompt: "" };
+	    return r.json;
+	  }));
+	  try { ipcMain.removeHandler("minicpm:create-skill"); } catch {}
+	  ipcMain.handle("minicpm:create-skill", wrapHandler("minicpm:create-skill", async (_e, payload) => {
+	    const r = await httpJson("POST", `${sidecar.baseUrl()}/api/skills`, payload || {}, 8000);
+	    if (!r || r.status !== 200 || !r.json) return { ok: false, error: "sidecar unreachable" };
+	    return r.json;
+	  }));
+
+	  // ── Settings-window facing IPC ────────────────────────────────────────
   // Surface the MiniCPM panel state to the main Settings window.
   const settingsHandlers = {
     "minicpm-settings:get-status": async () => {
@@ -2553,6 +2940,139 @@ module.exports = function initMinicpmChat(ctx) {
       default: getDefaultModelDir(),
       present: isModelPresent(),
     }),
+
+    // List local .gguf files available on disk. Always includes the
+    // currently configured model (and the bundled MiniCPM fallback), then
+    // everything else found in the user's models folder or the same dir as
+    // the active gguf. Used by the "Available models" dropdown in the
+    // MiniCPM settings tab so the user can switch between gguf files
+    // without invoking a file picker dialog.
+    "minicpm-settings:list-local-models": async () => {
+      try {
+        const out = [];
+        const seen = new Set();
+        const push = (path) => {
+          if (!path) return;
+          if (seen.has(path)) return;
+          seen.add(path);
+          let size = 0;
+          try {
+            const st = fs.statSync(path);
+            if (st.isFile()) size = st.size;
+          } catch {}
+          out.push({
+            path,
+            label: path.split(/[\\/]/).pop() || path,
+            sizeBytes: size,
+            current: path === getEffectiveModelDir(),
+          });
+        };
+
+        // 1) Currently selected model (always included).
+        const cur = getEffectiveModelDir();
+        if (cur) push(cur);
+
+        // 2) Bundled MiniCPM fallback location.
+        const def = getDefaultModelDir();
+        push(def);
+
+        // 3) Any siblings in the same dir as the active gguf (so users
+        //    who keep several quantizations together can switch without
+        //    re-importing each one through the file dialog).
+        const seeds = [cur, def].filter(Boolean);
+        for (const s of seeds) {
+          try {
+            const st = fs.statSync(s);
+            if (st.isFile()) {
+              const dir = path.dirname(s);
+              for (const entry of fs.readdirSync(dir)) {
+                if (entry.toLowerCase().endsWith(".gguf")) {
+                  push(path.join(dir, entry));
+                }
+              }
+            } else if (st.isDirectory()) {
+              for (const entry of fs.readdirSync(s)) {
+                if (entry.toLowerCase().endsWith(".gguf")) {
+                  push(path.join(s, entry));
+                }
+              }
+            }
+          } catch {}
+        }
+
+        // 4) User-added model folders (configured via Settings → MiniCPM).
+        for (const folder of getModelFolders()) {
+          try {
+            for (const entry of fs.readdirSync(folder)) {
+              if (entry.toLowerCase().endsWith(".gguf")) push(path.join(folder, entry));
+            }
+          } catch {}
+        }
+
+        return { ok: true, models: out, folders: getModelFolders() };
+      } catch (err) {
+        return { ok: false, error: String(err && err.message || err), models: [], folders: [] };
+      }
+    },
+
+    // User-managed folders scanned for .gguf files. Opens the OS folder
+    // picker so the user can point the app at D:\LM\models or wherever
+    // their pre-existing collection lives.
+    "minicpm-settings:list-model-folders": async () => {
+      return { ok: true, folders: getModelFolders() };
+    },
+    "minicpm-settings:add-model-folder": async () => {
+      const { dialog } = require("electron");
+      const ret = await dialog.showOpenDialog({
+        title: "选择模型文件夹",
+        properties: ["openDirectory"],
+      });
+      if (ret.canceled || !ret.filePaths.length) return { ok: false, canceled: true };
+      return addModelFolder(ret.filePaths[0]);
+    },
+    "minicpm-settings:remove-model-folder": async (_e, { folder } = {}) => {
+      return removeModelFolder(folder);
+    },
+
+    "minicpm-settings:use-model-dir": async (_e, { path: modelPath, mmproj: mmprojPath } = {}) => {
+      if (typeof modelPath !== "string" || !modelPath.trim()) {
+        return { ok: false, error: "无效的模型路径" };
+      }
+      try {
+        const st = fs.statSync(modelPath);
+        if (!st.isFile() || !modelPath.toLowerCase().endsWith(".gguf")) {
+          return { ok: false, error: `请选择 .gguf 模型：\n${modelPath}` };
+        }
+      } catch (err) {
+        return { ok: false, error: `模型文件不存在：\n${modelPath}` };
+      }
+      if (typeof mmprojPath === "string" && mmprojPath.trim()) {
+        try {
+          const st = fs.statSync(mmprojPath);
+          if (!st.isFile() || !mmprojPath.toLowerCase().endsWith(".gguf")) {
+            return { ok: false, error: `请选择 .gguf mmproj：\n${mmprojPath}` };
+          }
+        } catch {}
+      }
+      setEffectiveModelDir(modelPath);
+      let reloadError = null;
+      try {
+        // Forward the explicit mmproj choice (if any) to the gateway; an
+        // empty string tells it to keep the existing pairing untouched.
+        const opts = (typeof mmprojPath === "string" && mmprojPath.trim()) ? { mmproj: mmprojPath.trim() } : undefined;
+        const r = await sidecar.loadModel(modelPath, opts);
+        if (r && r.error) reloadError = String(r.error);
+      } catch (err) {
+        reloadError = String(err && err.message || err);
+      }
+      return {
+        ok: true,
+        modelDir: modelPath,
+        mmprojDir: (typeof mmprojPath === "string" && mmprojPath.trim()) ? mmprojPath : null,
+        reloaded: !reloadError,
+        reloadError,
+      };
+    },
     "minicpm-settings:pick-model-dir": async () => {
       const { dialog } = require("electron");
       const ret = await dialog.showOpenDialog({
@@ -2758,7 +3278,7 @@ module.exports = function initMinicpmChat(ctx) {
           try { gguf_size = fs.statSync(gguf_path).size; } catch {}
         }
         const llama = tree.find((p) => /llama-server/i.test(p.cmd));
-        const ctx_size = Number(process.env.MINICPM_CTX) || 4096;
+        const ctx_size = Number(process.env.MINICPM_CTX) || 131072;
         const mmap_kb = gguf_size ? Math.round(gguf_size / 1024) : null;
         const private_kb = mmap_kb != null
           ? Math.max(0, total_rss_kb - mmap_kb)
@@ -2947,13 +3467,33 @@ module.exports = function initMinicpmChat(ctx) {
   };
   for (const [ch, fn] of Object.entries(settingsHandlers)) {
     try { ipcMain.removeHandler(ch); } catch {}
-    ipcMain.handle(ch, fn);
+    ipcMain.handle(ch, wrapHandler(ch, fn));
   }
 
   // Stop the running sidecar (if any) and immediately restart it. Used
   // after settings changes that the engine reads at construction time
   // only — accelerator (MINICPM_DEVICE) and the active model directory.
+  function _syncProviderInfo() {
+    try {
+      if (typeof ctx.getSettingsSnapshot !== "function") return;
+      const snap = ctx.getSettingsSnapshot();
+      const skills = (snap && snap.skills) || {};
+      const modelProviders = Array.isArray(skills.modelProviders) ? skills.modelProviders : [];
+
+      const keys = {};
+      for (const mp of modelProviders) {
+        if (!mp || !mp.provider || !mp.apiKey) continue;
+        const id = mp.provider.toLowerCase();
+        keys[`${id}_api_key`] = mp.apiKey || "";
+        keys[`${id}_base_url`] = mp.baseUrl || "https://api.openai.com/v1";
+        keys[`${id}_model`] = mp.model || "gpt-4o";
+      }
+      sidecar.setProviderInfo(keys);
+    } catch {}
+  }
+
   async function restartSidecar() {
+    _syncProviderInfo();
     await sidecar.stopAndWait();
     return sidecar.ensureRunning(getEffectiveModelDir());
   }
@@ -2963,6 +3503,7 @@ module.exports = function initMinicpmChat(ctx) {
   // Onboarding wizard needs to *know* if spawn failed so it can show a
   // proper error message instead of hitting ECONNREFUSED later on.
   async function ensureSidecarReady() {
+    _syncProviderInfo();
     return sidecar.ensureRunning(getEffectiveModelDir());
   }
 
@@ -2992,6 +3533,22 @@ module.exports = function initMinicpmChat(ctx) {
     restartSidecar,
     ensureSidecarReady,
     sendI18n,
+    // Push an active-assistant update (driven by theme switch). The chat
+    // renderer keeps a per-assistant history bucket so each theme has its
+    // own conversation, like Cherry Studio's "Default Assistant / Cyber Cat
+    // / Calico / ..." pattern.
+    setActiveAssistant(assistantName) {
+      if (!bubble || bubble.isDestroyed()) return;
+      bubble.webContents.send("minicpm:set-active-assistant", { assistant: String(assistantName || "default") });
+    },
+    // Push a proactive-chat policy update to the chat renderer ("off",
+    // "free", or "interval:<N>" seconds). Safe to call even if the
+    // bubble is closed — the subscription in the renderer just stores
+    // the policy for when the bubble next opens.
+    setProactivePolicy(policy) {
+      if (!bubble || bubble.isDestroyed()) return;
+      bubble.webContents.send("minicpm:set-proactive-policy", { policy: String(policy || "free") });
+    },
     getSidecarUrl: () => sidecar.baseUrl(),
     getBridgeDir: () => bridgeDir,
     getSidecarBinary: () => sidecarBin,
@@ -3002,5 +3559,14 @@ module.exports = function initMinicpmChat(ctx) {
     getDefaultModelDir,
     setModelDir: (dir) => setEffectiveModelDir(dir),
     isModelPresent: () => isModelPresent(),
+    hasApiProviders: () => {
+      try {
+        if (typeof ctx.getSettingsSnapshot !== "function") return false;
+        const snap = ctx.getSettingsSnapshot();
+        const skills = (snap && snap.skills) || {};
+        const providers = Array.isArray(skills.modelProviders) ? skills.modelProviders : [];
+        return providers.some((p) => p && p.apiKey && typeof p.apiKey === "string" && p.apiKey.length > 5);
+      } catch { return false; }
+    },
   };
 };

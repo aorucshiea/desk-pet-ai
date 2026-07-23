@@ -166,6 +166,12 @@ function handleStatePost(req, res, options) {
       const permissionSuspect = data.permission_suspect === true;
       const preserveState = data.preserve_state === true;
       const hookSource = typeof data.hook_source === "string" ? data.hook_source : null;
+      // Emotion tag forwarded by the MiniCPM gateway after parsing
+      // [EMOTION:xxx] from the LLM reply. Lowercase, alphabetic + underscore
+      // only — anything else is dropped so a malformed payload can't smuggle a
+      // weird string into the visual resolver.
+      const rawEmotion = typeof data.emotion === "string" ? data.emotion.trim().toLowerCase() : "";
+      const emotion = /^[a-z_]+$/.test(rawEmotion) ? rawEmotion : null;
       // #406 completion-gate inputs from the Claude Stop hook. Counts / boolean
       // only — the hook never forwards task command or description text.
       const backgroundTasksCount = Number.isFinite(data.background_tasks_count)
@@ -254,9 +260,23 @@ function handleStatePost(req, res, options) {
           }
         }
         recordRequestHookEvent.acceptedUnlessDnd(shouldDropForDnd());
+        // When the gateway sends an emotion tag without an svg override
+        // (the common path for chat replies), feed the emotion into the
+        // state machine BEFORE updateSession so currentEmotion is already
+        // set when updateSession's internal applyResolvedDisplayState fires.
+        // Otherwise updateSession renders the default animation first,
+        // then our setState re-renders with the correct one — a visible
+        // double-transition.
+        if (emotion && !svg) {
+          ctx.setState(state, undefined, { emotion });
+        }
         if (svg) {
           const safeSvg = pathApi.basename(svg);
-          ctx.setState(state, safeSvg);
+          if (emotion) {
+            ctx.setState(state, safeSvg, { emotion });
+          } else {
+            ctx.setState(state, safeSvg);
+          }
         } else {
           ctx.updateSession(sid, state, event, {
             sourcePid: source_pid,

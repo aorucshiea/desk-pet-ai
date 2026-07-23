@@ -61,7 +61,7 @@ class ClawdBridge:
         with self._lock:
             self._session_id = f"minicpm-{uuid.uuid4().hex[:8]}"
 
-    def post(self, state: str, *, event: Optional[str] = None, title: Optional[str] = None) -> None:
+    def post(self, state: str, *, event: Optional[str] = None, title: Optional[str] = None, emotion: Optional[str] = None) -> None:
         if not self.enabled:
             return
         body = {
@@ -73,6 +73,8 @@ class ClawdBridge:
         }
         if title:
             body["session_title"] = title
+        if emotion and emotion != "neutral":
+            body["emotion"] = emotion
 
         order: list[int] = []
         if self._port:

@@ -342,6 +342,171 @@ function registerSettingsIpc(options = {}) {
     }
   });
 
+  // Returns the emotion → animation mapping for a given theme's attention
+  // state. Used by the Theme settings tab to show which GIFs play for each
+  // [EMOTION:xxx] tag the LLM emits.
+  handle("settings:get-theme-emotion-map", (event, { themeId } = {}) => {
+    try {
+      const id = typeof themeId === "string" && themeId ? themeId : DEFAULT_THEME_ID;
+      const theme = themeLoader.loadTheme(id);
+      if (!theme || !theme.states || !theme.states.attention) return { status: "ok", map: [] };
+      const files = Array.isArray(theme.states.attention) ? theme.states.attention : [];
+      const map = [];
+      const seen = new Set();
+      for (const entry of files) {
+        if (typeof entry === "object" && entry && entry.file && entry.emotion) {
+          const emo = String(entry.emotion).toLowerCase();
+          if (!seen.has(emo)) {
+            seen.add(emo);
+            map.push({ emotion: emo, file: entry.file, isDefault: false });
+          }
+        } else if (typeof entry === "string") {
+          if (!seen.has("neutral")) {
+            seen.add("neutral");
+            map.push({ emotion: "neutral", file: entry, isDefault: true });
+          }
+        }
+      }
+      // Load user overrides from {userData}/emotion-overrides/{themeId}.json
+      // so uploaded custom animations show up alongside the theme's built-in
+      // entries. Overrides with the same emotion name replace the built-in.
+      let overrides = {};
+      try {
+        const root = typeof themeLoader.getEmotionOverridesRoot === "function"
+          ? themeLoader.getEmotionOverridesRoot() : null;
+        if (root) {
+          const manifestPath = path.join(root, `${id}.json`);
+          try { overrides = JSON.parse(fs.readFileSync(manifestPath, "utf-8")); } catch {}
+        }
+      } catch {}
+      // Merge overrides: replace built-in entry if same emotion, otherwise append
+      for (const [emo, ov] of Object.entries(overrides)) {
+        if (!ov || typeof ov.file !== "string") continue;
+        const idx = map.findIndex((m) => m.emotion === emo);
+        if (idx >= 0) {
+          map[idx] = { emotion: emo, file: ov.file, isDefault: false, isOverride: true };
+        } else {
+          map.push({ emotion: emo, file: ov.file, isDefault: false, isOverride: true });
+        }
+      }
+      return { status: "ok", map, themeDir: theme._themeDir || null };
+    } catch (err) {
+      console.warn("Clawd: settings:get-theme-emotion-map failed:", err && err.message);
+      return { status: "error", message: String(err && err.message), map: [] };
+    }
+  });
+
+  // Emotion animation file picker — lets the user upload a custom GIF/APNG/
+  // SVG/PNG/WebP file for a specific emotion tag. Follows the sound-override
+  // pattern: native file dialog → copy into userData dir → update prefs.
+  const EMOTION_ANIMATION_ASSET_EXTS = new Set([".gif", ".apng", ".svg", ".png", ".webp", ".jpg", ".jpeg"]);
+  handle("settings:pick-emotion-animation", async (event, payload) => {
+    if (!payload || typeof payload !== "object") {
+      return { status: "error", message: "pickEmotionAnimation payload must be an object" };
+    }
+    const { emotionName } = payload;
+    if (typeof emotionName !== "string" || !emotionName) {
+      return { status: "error", message: "pickEmotionAnimation.emotionName must be a non-empty string" };
+    }
+    if (!/^[a-zA-Z0-9_-]+$/.test(emotionName)) {
+      return { status: "error", message: `emotionName "${emotionName}" contains invalid characters` };
+    }
+
+    const activeTheme = getActiveTheme();
+    if (!activeTheme) return { status: "error", message: "no active theme" };
+    const themeId = activeTheme._id;
+    const overridesDir = typeof themeLoader.getEmotionOverridesDir === "function"
+      ? themeLoader.getEmotionOverridesDir(themeId) : null;
+    if (!overridesDir) return { status: "error", message: "emotion-overrides directory unavailable" };
+
+    const lang = getLang();
+    const strings = {
+      en: { title: "Choose an emotion animation", filterName: "Animations" },
+      zh: { title: "选择情绪动画文件", filterName: "动画" },
+      "zh-TW": { title: "選擇情緒動畫檔案", filterName: "動畫" },
+    };
+    const loc = strings[lang] || strings.en;
+    const extList = [...EMOTION_ANIMATION_ASSET_EXTS].map((ext) => ext.slice(1));
+    let result;
+    try {
+      result = await dialog.showOpenDialog(getDialogParent(event), {
+        title: loc.title,
+        filters: [{ name: loc.filterName, extensions: extList }],
+        properties: ["openFile"],
+      });
+    } catch (err) {
+      return { status: "error", message: `pick dialog failed: ${err && err.message}` };
+    }
+    if (result.canceled || !result.filePaths || !result.filePaths[0]) {
+      return { status: "cancel" };
+    }
+
+    const sourcePath = result.filePaths[0];
+    const ext = path.extname(sourcePath).toLowerCase();
+    if (!EMOTION_ANIMATION_ASSET_EXTS.has(ext)) {
+      return { status: "error", message: `unsupported extension: ${ext || "(none)"}` };
+    }
+
+    try { fs.mkdirSync(overridesDir, { recursive: true }); }
+    catch (err) { return { status: "error", message: `mkdir failed: ${err && err.message}` }; }
+
+    const destFilename = `${emotionName}${ext}`;
+    const destPath = path.join(overridesDir, destFilename);
+    try {
+      fs.copyFileSync(sourcePath, destPath);
+    } catch (err) {
+      return { status: "error", message: `copy failed: ${err && err.message}` };
+    }
+    return { status: "ok", themeId, emotionName, file: destFilename, absPath: destPath };
+  });
+
+  // Save an emotion override — records the uploaded file in a per-theme JSON,
+  // merged into the emotion map returned by get-theme-emotion-map.
+  // Forward a proactive-chat policy change to the chat renderer.
+  // policy = "off" | "free" | "interval:<seconds>"
+  handle("settings:set-proactive-policy", (event, { policy } = {}) => {
+    try {
+      const chat = typeof options.getMinicpmChat === "function" ? options.getMinicpmChat() : null;
+      if (chat && typeof chat.setProactivePolicy === "function") {
+        chat.setProactivePolicy(String(policy || "free"));
+        return { status: "ok" };
+      }
+      return { status: "error", message: "minicpm chat not available" };
+    } catch (err) {
+      return { status: "error", message: String(err && err.message) };
+    }
+  });
+
+  handle("settings:save-emotion-override", async (event, payload) => {
+    if (!payload || typeof payload !== "object") {
+      return { status: "error", message: "saveEmotionOverride payload must be an object" };
+    }
+    const { themeId, emotionName, file } = payload;
+    if (typeof themeId !== "string" || !themeId) {
+      return { status: "error", message: "themeId required" };
+    }
+    if (typeof emotionName !== "string" || !emotionName) {
+      return { status: "error", message: "emotionName required" };
+    }
+    const overridesDir = typeof themeLoader.getEmotionOverridesRoot === "function"
+      ? themeLoader.getEmotionOverridesRoot() : null;
+    if (!overridesDir) return { status: "error", message: "emotion-overrides root unavailable" };
+    const manifestPath = path.join(overridesDir, `${themeId}.json`);
+    let manifest = {};
+    try { manifest = JSON.parse(fs.readFileSync(manifestPath, "utf-8")); } catch {}
+    if (file === null) {
+      delete manifest[emotionName];
+    } else {
+      manifest[emotionName] = { file };
+    }
+    try {
+      fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), "utf-8");
+    } catch (err) {
+      return { status: "error", message: `write manifest failed: ${err && err.message}` };
+    }
+    return { status: "ok" };
+  });
+
   handle("settings:open-user-themes-dir", async () => {
     const dir = typeof themeLoader.ensureUserThemesDir === "function"
       ? themeLoader.ensureUserThemesDir()

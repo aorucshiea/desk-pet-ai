@@ -13,6 +13,7 @@ const {
   hasOwnVisualFiles: hasOwnVisualFilesWithBindings,
   resolveVisualBinding: resolveVisualBindingWithBindings,
   getSvgOverride: getSvgOverrideWithDeps,
+  filesToNames,
 } = require("./state-visual-resolver");
 const {
   getStaleSessionDecision,
@@ -144,6 +145,12 @@ let currentHitBox = HIT_BOXES.default;
 let currentState = "idle";
 let previousState = "idle";
 let currentSvg = null;
+// Current pet emotion, set from [EMOTION:xxx] tags forwarded by the MiniCPM
+// gateway. Used by resolveVisualBinding to prefer emotion-tagged animation
+// variants (e.g. attention-happy.gif over plain attention.gif) when present.
+// Resets to "neutral" on auto-return to idle so a fleeting reaction doesn't
+// pin the pet into one mood forever.
+let currentEmotion = "neutral";
 let stateChangedAt = Date.now();
 let pendingTimer = null;
 let autoReturnTimer = null;
@@ -308,13 +315,26 @@ function resolveHitBoxForSvg(svg) {
 
 function refreshTheme() {
   theme = ctx.theme;
-  SVG_IDLE_FOLLOW = theme.states.idle[0];
-  STATE_SVGS = { ...theme.states };
+  // Normalize theme.states into STATE_SVGS holding plain filename strings
+  // only, so tiered-state lookups / hitbox resolution / eye-tracking
+  // validation don't trip on {file, emotion} variant objects. The full
+  // object form is preserved inside STATE_BINDINGS, where the
+  // emotion-aware picker can still consult the emotion tag.
+  const normalizedStates = {};
+  for (const [k, v] of Object.entries(theme.states || {})) {
+    normalizedStates[k] = filesToNames(v);
+  }
+  STATE_SVGS = normalizedStates;
+  SVG_IDLE_FOLLOW = STATE_SVGS.idle && STATE_SVGS.idle[0];
   STATE_BINDINGS = buildStateBindings(theme);
   // Sync back so settings-animation-overrides can resolve roam/fallback states
   theme._stateBindings = STATE_BINDINGS;
   if (theme.miniMode && theme.miniMode.states) {
-    Object.assign(STATE_SVGS, theme.miniMode.states);
+    const normalizedMini = {};
+    for (const [k, v] of Object.entries(theme.miniMode.states)) {
+      normalizedMini[k] = filesToNames(v);
+    }
+    Object.assign(STATE_SVGS, normalizedMini);
   }
   MIN_DISPLAY_MS = theme.timings.minDisplay;
   AUTO_RETURN_MS = theme.timings.autoReturn;
@@ -389,7 +409,14 @@ function setState(newState, svgOverride, options = {}) {
 
   const sameState = newState === currentState;
   const sameSvg = !svgOverride || svgOverride === currentSvg;
-  if (sameState && sameSvg) {
+  // Emotion-tagged state pushes may re-trigger the same state with a
+  // different mood (e.g. attention+happy → attention+curious). Don't
+  // short-circuit when the emotion changed — the visual resolver needs to
+  // pick a different animation variant.
+  const emotionChanged = typeof options.emotion === "string"
+    && /^[a-z_]+$/.test(options.emotion)
+    && options.emotion !== currentEmotion;
+  if (sameState && sameSvg && !emotionChanged) {
     // Kimi CLI permission hold: re-arm the auto-return timer so the
     // notification animation keeps cycling while the user is reviewing
     // the permission prompt.
@@ -448,8 +475,8 @@ function hasOwnVisualFiles(state) {
   return hasOwnVisualFilesWithBindings(STATE_BINDINGS, state);
 }
 
-function resolveVisualBinding(state) {
-  return resolveVisualBindingWithBindings(state, STATE_BINDINGS);
+function resolveVisualBinding(state, options = {}) {
+  return resolveVisualBindingWithBindings(state, STATE_BINDINGS, options);
 }
 
 function applyResolvedDisplayState() {
@@ -557,7 +584,19 @@ function applyState(state, svgOverride, options = {}) {
     if (!applyOptions.muteNotificationSound) ctx.playSound("confirm");
   }
 
-  const svg = svgOverride || resolveVisualBinding(state);
+  // Capture the emotion carried with this setState call. Only validated
+  // emotion strings (alphabetic+underscore, lowercase) reach here — the
+  // route layer scrubs malformed input. Persist it so subsequent idle
+  // transitions (which don't carry options) keep the most recent mood
+  // until the auto-return timer resets it below.
+  if (typeof applyOptions.emotion === "string" && /^[a-z_]+$/.test(applyOptions.emotion)) {
+    currentEmotion = applyOptions.emotion;
+  } else if (state === "idle" || state === "mini-idle") {
+    // Auto-return / genuine idle — relax the mood so the pet settles.
+    currentEmotion = "neutral";
+  }
+
+  const svg = svgOverride || resolveVisualBinding(state, { emotion: currentEmotion });
   currentSvg = svg;
 
   // Force eye resend after SVG load completes (~300ms)
@@ -1979,6 +2018,7 @@ function startStartupRecovery() {
 
 function getCurrentState() { return currentState; }
 function getCurrentSvg() { return currentSvg; }
+function getCurrentEmotion() { return currentEmotion; }
 function getCurrentHitBox() { return currentHitBox; }
 function getStartupRecoveryActive() { return startupRecoveryActive; }
 
@@ -2016,7 +2056,7 @@ return {
   clearSessionsByAgent,
   disposeAllKimiPermissionState,
   deriveSessionBadge,
-  getCurrentState, getCurrentSvg, getCurrentHitBox, getStartupRecoveryActive,
+  getCurrentState, getCurrentSvg, getCurrentEmotion, getCurrentHitBox, getStartupRecoveryActive,
   sessions, STATE_PRIORITY, ONESHOT_STATES, SLEEP_SEQUENCE,
   get STATE_SVGS() { return STATE_SVGS; },
   get HIT_BOXES() { return HIT_BOXES; },

@@ -99,7 +99,12 @@
       "calico-error.apng"
     ],
     "attention": [
-      "calico-happy.apng"
+      "calico-happy.apng",
+      { "file": "calico-happy.apng", "emotion": "happy" },
+      { "file": "calico-thinking.apng", "emotion": "curious" },
+      { "file": "calico-error.apng", "emotion": "sad" },
+      { "file": "calico-working-juggling.apng", "emotion": "excited" },
+      { "file": "calico-react-poke.apng", "emotion": "mad" }
     ],
     "notification": [
       "calico-notification.apng"
@@ -412,3 +417,4 @@
     }
   }
 }
+

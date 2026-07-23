@@ -45,7 +45,7 @@ const {
 } = require("./text-scale");
 const { DEFAULT_THEME_ID } = require("./default-theme");
 
-const CURRENT_VERSION = 11;
+const CURRENT_VERSION = 13;
 const DEFAULT_INTEGRATION_INSTALLED_IDS = Object.freeze(["claude-code", "codex"]);
 const DEFAULT_INTEGRATION_INSTALLED_SET = new Set(DEFAULT_INTEGRATION_INSTALLED_IDS);
 
@@ -344,6 +344,36 @@ const SCHEMA = {
     defaultFactory: () => ({}),
     normalize: normalizeDismissedUpdateVersions,
   },
+  // Skills system (Phase 1: skill discovery + injection, Phase 2: MCP,
+  // Phase 3: self-evolution).
+  skills: {
+    type: "object",
+    defaultFactory: () => ({
+      enabled: true,
+      searchPaths: [],
+      searchUrls: [],
+      autoReview: false,
+      nudgeInterval: 604800000,  // 7 days in ms
+      // Phase 2: model providers (MCP servers stored separately in ~/.minicpm/mcp.json)
+      defaultProvider: "local",
+      autoRoute: false,
+      modelProviders: [],
+    }),
+    normalize: normalizeSkills,
+  },
+  screenObserveConsent: {
+    type: "string",
+    default: "deny",
+    enum: ["deny", "once", "always"],
+  },
+  // Screen Click (OmniParser integration)
+  screenclick_enabled: { type: "boolean", default: false },
+  screenclick_clickEnabled: { type: "boolean", default: false },
+  screenclick_ocrMode: { type: "string", default: "local", enum: ["local", "api"] },
+  screenclick_chineseOcr: { type: "boolean", default: false },
+  screenclick_ocrApiUrl: { type: "string", default: "" },
+  screenclick_ocrApiKey: { type: "string", default: "" },
+  screenclick_ocrApiModel: { type: "string", default: "" },
 };
 
 const SCHEMA_KEYS = Object.freeze(Object.keys(SCHEMA));
@@ -571,6 +601,16 @@ function migrate(raw) {
   if (out.version < 11) {
     out.version = 11;
   }
+  // v11 -> v12: introduce skills config (Phase 1). New keys fill in from
+  // schema defaults via validate(). The version bump records the growth.
+  if (out.version < 12) {
+    out.version = 12;
+  }
+  // v12 -> v13: introduce screenObserveConsent for OmniParser integration.
+  // screenObserveConsent fills from schema default ("deny") via validate().
+  if (out.version < 13) {
+    out.version = 13;
+  }
   if ((typeof out.version === "number" ? out.version : 0) < CURRENT_VERSION) {
     out.version = CURRENT_VERSION;
   }
@@ -785,6 +825,42 @@ function normalizeAutoReturnOverrides(value) {
     out[stateKey] = duration;
   }
   return Object.keys(out).length > 0 ? out : null;
+}
+
+function normalizeSkills(value) {
+  if (!value || typeof value !== "object") {
+    return {
+      enabled: true,
+      searchPaths: [],
+      searchUrls: [],
+      autoReview: false,
+      nudgeInterval: 604800000,
+      defaultProvider: "local",
+      autoRoute: false,
+      modelProviders: [],
+    };
+  }
+  return {
+    enabled: typeof value.enabled === "boolean" ? value.enabled : true,
+    searchPaths: Array.isArray(value.searchPaths)
+      ? value.searchPaths.filter((p) => typeof p === "string" && p.trim())
+      : [],
+    searchUrls: Array.isArray(value.searchUrls)
+      ? value.searchUrls.filter((u) => typeof u === "string" && u.trim())
+      : [],
+    autoReview: typeof value.autoReview === "boolean" ? value.autoReview : false,
+    nudgeInterval:
+      typeof value.nudgeInterval === "number" && Number.isFinite(value.nudgeInterval) && value.nudgeInterval >= 0
+        ? value.nudgeInterval
+        : 604800000,
+    // Phase 2: any OpenAI-compatible provider (not restricted to openai/anthropic)
+    defaultProvider:
+      typeof value.defaultProvider === "string" ? value.defaultProvider : "local",
+    autoRoute: typeof value.autoRoute === "boolean" ? value.autoRoute : false,
+    modelProviders: Array.isArray(value.modelProviders)
+      ? value.modelProviders.filter((p) => typeof p === "object" && p && typeof p.provider === "string")
+      : [],
+  };
 }
 
 function normalizeThemeOverrides(value, defaultsValue) {

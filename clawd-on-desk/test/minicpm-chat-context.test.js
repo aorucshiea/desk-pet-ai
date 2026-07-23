@@ -59,7 +59,11 @@ describe("trimHistoryForContext", () => {
       { role: "assistant", content: big },
       { role: "user", content: "latest" },
     ];
-    const out = trimHistoryForContext(msgs, { maxNewTokens: 768 });
+    // Pass an explicit small ctx window so the synthetic ~4000-token
+    // history actually exceeds the budget. The default (16384, mirroring
+    // the sidecar --ctx-size) is large enough that this history fits
+    // without trimming, which would make the assertion meaningless.
+    const out = trimHistoryForContext(msgs, { maxNewTokens: 768, ctxWindowTokens: 2600 });
     // The most recent turn must survive, and the result must be shorter.
     assert.ok(out.length < msgs.length);
     assert.strictEqual(out[out.length - 1].content, "latest");
@@ -71,7 +75,8 @@ describe("trimHistoryForContext", () => {
       { role: "user", content: "old" },
       { role: "user", content: huge },
     ];
-    const out = trimHistoryForContext(msgs, { maxNewTokens: 768 });
+    // Explicit small ctx window so the huge turn alone exceeds budget.
+    const out = trimHistoryForContext(msgs, { maxNewTokens: 768, ctxWindowTokens: 4096 });
     assert.strictEqual(out.length, 1);
     assert.strictEqual(out[0].content, huge);
   });

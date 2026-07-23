@@ -225,6 +225,28 @@ function validateTheme(cfg) {
     errors.push("theme must declare at least one state with real files");
   }
 
+  // Validate {file, emotion} variant objects if an author uses them. Plain
+  // strings remain the common case; emotion-tagged objects are purely
+  // optional and only consulted by the emotion-aware visual resolver.
+  const EMOTION_RE = /^[a-z_]+$/;
+  for (const [stateKey, rawEntry] of Object.entries(cfg.states || {})) {
+    const rawFiles = Array.isArray(rawEntry) ? rawEntry
+      : (isPlainObject(rawEntry) && Array.isArray(rawEntry.files) ? rawEntry.files : []);
+    for (const f of rawFiles) {
+      if (f == null || typeof f === "string") continue;
+      if (!isPlainObject(f)) {
+        errors.push(`states.${stateKey} file entry must be a string or {file, emotion} object`);
+        continue;
+      }
+      if (typeof f.file !== "string" || !f.file) {
+        errors.push(`states.${stateKey} emotion variant must have a non-empty "file" string`);
+      }
+      if (f.emotion != null && (typeof f.emotion !== "string" || !EMOTION_RE.test(f.emotion))) {
+        errors.push(`states.${stateKey} emotion "${String(f.emotion)}" must match ${EMOTION_RE.source}`);
+      }
+    }
+  }
+
   if (isMiniSupported(cfg)) {
     for (const stateName of MINI_REQUIRED_STATES) {
       const files = cfg.miniMode.states && cfg.miniMode.states[stateName];
@@ -254,15 +276,34 @@ function hasNonEmptyArray(value) {
 
 function getStateBindingEntry(entry) {
   if (Array.isArray(entry)) {
-    return { files: [...entry], fallbackTo: null };
+    return { files: flattenFiles(entry), fallbackTo: null };
   }
   if (isPlainObject(entry)) {
     return {
-      files: Array.isArray(entry.files) ? [...entry.files] : [],
+      files: Array.isArray(entry.files) ? flattenFiles(entry.files) : [],
       fallbackTo: (typeof entry.fallbackTo === "string" && entry.fallbackTo) ? entry.fallbackTo : null,
     };
   }
   return { files: [], fallbackTo: null };
+}
+
+// Flatten a state-files array, preserving emotion-tagged variants. Entries
+// may be either plain filename strings ("attention.svg") or objects
+// ({file, emotion}) declaring an emotion-specific variant. We keep the
+// object form intact so the emotion-aware visual resolver downstream can
+// still consult the emotion tag. Schema validation only cares that a
+// usable filename exists on each entry (string or {file: string}).
+function flattenFiles(files) {
+  if (!Array.isArray(files)) return [];
+  const out = [];
+  for (const f of files) {
+    if (typeof f === "string") {
+      out.push(f);
+    } else if (f && typeof f === "object" && !Array.isArray(f) && typeof f.file === "string") {
+      out.push({ ...f });
+    }
+  }
+  return out;
 }
 
 function getStateFiles(entry) {
@@ -407,7 +448,16 @@ function deepMergeObject(base, patch) {
 }
 
 function basenameOnly(value) {
-  return typeof value === "string" ? value.replace(/^.*[\/\\]/, "") : value;
+  if (typeof value === "string") return value.replace(/^.*[\/\\]/, "");
+  // Preserve emotion-tagged variant objects ({file, emotion}): basename the
+  // inner .file path but keep the emotion tag intact so the resolver still
+  // sees the variant. Any non-string/non-plain-object value passes through
+  // unchanged (callers detect missing files via falsy checks).
+  if (value && typeof value === "object" && !Array.isArray(value)
+      && typeof value.file === "string") {
+    return { ...value, file: value.file.replace(/^.*[\/\\]/, "") };
+  }
+  return value;
 }
 
 function normalizeViewBox(value) {

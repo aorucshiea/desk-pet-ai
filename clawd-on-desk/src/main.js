@@ -1,4 +1,16 @@
 const { app, BrowserWindow, screen, ipcMain, globalShortcut, nativeTheme, dialog, shell, nativeImage, powerSaveBlocker, clipboard } = require("electron");
+process.on("uncaughtException", (err) => {
+  let p, f;
+  try { p = require("path"); f = require("fs"); } catch { return; }
+  try {
+    const logDir = p.join(app.getPath("userData"), "logs");
+    f.mkdirSync(logDir, { recursive: true });
+    f.appendFileSync(
+      p.join(logDir, "ipc-error.log"),
+      `[${new Date().toISOString()}] UNCAUGHT: ${err.stack || err}\n`
+    );
+  } catch {}
+});
 // ── Linux/Wayland: relaunch under XWayland so the pet is draggable (issue #441) ──
 // Native Wayland ignores client-side window positioning and blocks global cursor
 // queries, so the pet spawns centered, can't be dragged, and has no tracking;
@@ -362,6 +374,9 @@ const _settingsController = createSettingsController({
     // Theme runtime is wired after theme-loader.init(); keep these closures
     // lazy so settings actions never capture a pre-init runtime reference.
     activateTheme: (id, variantId, overrideMap) => themeRuntime.activateTheme(id, variantId, overrideMap),
+    // Map a fresh theme change to its per-theme chat-assistant bucket so
+    // each desk pet has its own conversation history.
+    getMinicpmChat: () => _minicpmChat,
     refreshActiveThemeHitboxOverrides: (id, overrideMap) =>
       themeRuntime.refreshActiveThemeHitboxOverrides(id, overrideMap),
     getThemeInfo: (id) => themeRuntime.getThemeInfo(id),
@@ -1599,6 +1614,8 @@ _minicpmChat = require("./minicpm-chat")({
   },
   getNearestWorkArea,
   getLang: () => lang,
+  getSettingsSnapshot: () => _settingsController ? _settingsController.getSnapshot() : null,
+  getActiveThemeId: () => themeRuntime ? themeRuntime.getActiveThemeId(DEFAULT_THEME_ID) : "default",
 });
 
 function openMinicpmChat() {
@@ -3179,6 +3196,7 @@ registerSettingsIpc({
   checkForUpdates,
   aboutHeroSvgPath: path.join(__dirname, "..", "assets", "svg", "minicpm-logo.svg"),
   getLanWsServer: () => _lanWss,
+  getMinicpmChat: () => _minicpmChat,
 });
 
 registerSessionIpc({

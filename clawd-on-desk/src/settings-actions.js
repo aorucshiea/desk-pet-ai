@@ -491,6 +491,44 @@ const updateRegistry = {
     }
     return { status: "ok" };
   },
+  skills(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return { status: "error", message: "skills must be an object" };
+    }
+    const errors = [];
+    if ("enabled" in value && typeof value.enabled !== "boolean") errors.push("skills.enabled must be boolean");
+    if ("searchPaths" in value && (!Array.isArray(value.searchPaths) || !value.searchPaths.every((p) => typeof p === "string"))) {
+      errors.push("skills.searchPaths must be an array of strings");
+    }
+    if ("searchUrls" in value && (!Array.isArray(value.searchUrls) || !value.searchUrls.every((u) => typeof u === "string"))) {
+      errors.push("skills.searchUrls must be an array of strings");
+    }
+    if ("autoReview" in value && typeof value.autoReview !== "boolean") errors.push("skills.autoReview must be boolean");
+    if ("nudgeInterval" in value && (typeof value.nudgeInterval !== "number" || !Number.isFinite(value.nudgeInterval) || value.nudgeInterval < 0)) {
+      errors.push("skills.nudgeInterval must be a non-negative number");
+    }
+    // Phase 2: any string is valid (local, openai, deepseek, anthropic, ollama...)
+    if ("defaultProvider" in value && (typeof value.defaultProvider !== "string")) {
+      errors.push("skills.defaultProvider must be a string");
+    }
+    if ("autoRoute" in value && typeof value.autoRoute !== "boolean") errors.push("skills.autoRoute must be boolean");
+    if ("modelProviders" in value && (!Array.isArray(value.modelProviders) || !value.modelProviders.every(
+      (p) => typeof p === "object" && p && typeof p.provider === "string",
+    ))) {
+      errors.push("skills.modelProviders must be an array of provider config objects");
+    }
+    if (errors.length) return { status: "error", message: errors.join("; ") };
+    return { status: "ok" };
+  },
+
+  // ── Screen Click (OmniParser) ──
+  screenclick_enabled: requireBoolean("screenclick_enabled"),
+  screenclick_clickEnabled: requireBoolean("screenclick_clickEnabled"),
+  screenclick_chineseOcr: requireBoolean("screenclick_chineseOcr"),
+  screenclick_ocrMode: requireEnum("screenclick_ocrMode", ["local", "api"]),
+  screenclick_ocrApiUrl: requireString("screenclick_ocrApiUrl", { allowEmpty: true }),
+  screenclick_ocrApiKey: requireString("screenclick_ocrApiKey", { allowEmpty: true }),
+  screenclick_ocrApiModel: requireString("screenclick_ocrApiModel", { allowEmpty: true }),
 };
 
 // ── commandRegistry ──
@@ -783,10 +821,19 @@ function setThemeSelection(payload, deps) {
     : targetVariant;
 
   const nextVariantMap = { ...currentVariantMap, [themeId]: resolvedVariant };
-  return {
+  const result = {
     status: "ok",
     commit: { theme: themeId, themeVariant: nextVariantMap },
   };
+  // Side-effect: map the new theme to its assistant bucket in the chat
+  // renderer. Each animation theme = its own conversation history.
+  try {
+    const chat = deps && typeof deps.getMinicpmChat === "function" ? deps.getMinicpmChat() : null;
+    if (chat && typeof chat.setActiveAssistant === "function") {
+      chat.setActiveAssistant(themeId);
+    }
+  } catch {}
+  return result;
 }
 
 function resizePet(payload, deps) {

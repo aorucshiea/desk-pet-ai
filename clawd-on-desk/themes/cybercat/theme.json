@@ -27,7 +27,14 @@
     "working":      ["cybercat-working.gif"],
     "juggling":     ["cybercat-juggling.gif"],
     "error":        ["cybercat-error.gif"],
-    "attention":    ["cybercat-happy.gif"],
+    "attention":    [
+      "cybercat-happy.gif",
+      { "file": "cybercat-happy.gif", "emotion": "happy" },
+      { "file": "cybercat-thinking.gif", "emotion": "curious" },
+      { "file": "cybercat-error.gif", "emotion": "sad" },
+      { "file": "cybercat-conducting.gif", "emotion": "excited" },
+      { "file": "cybercat-annoying.gif", "emotion": "mad" }
+    ],
     "notification": ["cybercat-notification.gif"],
     "sleeping":     ["cybercat-sleeping.gif"],
     "carrying":     ["cybercat-carrying.gif"],

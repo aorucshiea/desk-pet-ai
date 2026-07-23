@@ -239,7 +239,12 @@
       "hamster-working-2session.svg"
     ],
     "attention": [
-      "hamster-attention.svg"
+      "hamster-attention.svg",
+      { "file": "hamster-attention.svg", "emotion": "happy" },
+      { "file": "hamster-thinking.svg", "emotion": "curious" },
+      { "file": "hamster-error.svg", "emotion": "sad" },
+      { "file": "hamster-working-2session.svg", "emotion": "excited" },
+      { "file": "hamster-error.svg", "emotion": "mad" }
     ],
     "notification": [
       "hamster-notification.svg"

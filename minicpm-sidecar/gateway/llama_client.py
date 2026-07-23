@@ -195,6 +195,115 @@ def detect_backend() -> dict:
     }
 
 
+# Names we recognise as multimodal projector files when scanning a model
+# directory. llama.cpp calls them `mmproj-*` (the canonical flag); Ophcrack /
+# coqui and a few older projects use other prefixes. Match is case- and
+# separator-insensitive via the suffix check below.
+_MMPROJ_BASENAMES = (
+    "mmproj",
+)
+
+
+# Model-family detection: we extract the leading family prefix from the
+# model file name (before the quantisation tag) so we can require the
+# sibling mmproj to belong to the same family. Without this check, two
+# models sharing a directory and a quant tag (e.g. `MiniCPM5-1B-Q4` and
+# `Llama-3.2-Vision-Q4`) would pair by quant tag alone, silently
+# mismatching the vision projector head dimension and segfaulting
+# llama-server on the first vision request.
+def _model_family(stem: str) -> str:
+    s = stem.lower()
+    # Drop trailing quant tag and version suffixes first.
+    for sep in ("-", "_"):
+        if sep in s:
+            tail = s.rsplit(sep, 1)[-1]
+            if tail and tail[:1].isalpha():
+                s = s.rsplit(sep, 1)[0]
+                break
+    # Match the family by the longest known prefix; fall back to the
+    # whole stripped stem so unrelated families never collide.
+    for family in ("minicpm", "minicpm-o", "llava", "qwen-vl", "qwen", "llama", "phi", "gemma"):
+        if s.startswith(family):
+            return family
+    return s
+
+
+def find_sibling_mmproj(model_path: Path) -> Optional[Path]:
+    """If `model_path` lives next to a `mmproj-*.gguf` (a CLIP-style vision
+    projector), return its resolved path. Used to automatically pair the
+    active text checkpoint with its complementary vision encoder so
+    llama-server can answer multimodal requests.
+
+    Resolution rules:
+      - Same directory as the model file, scan for *.gguf whose basename
+        starts with any of the known projector prefixes
+        (`mmproj-...-{f16,bf16,...}.gguf`, case-insensitive).
+      - The projector's model family (minicpm, llava, qwen, llama, ...)
+        must match the text model's family. Quant tag is only used as a
+        tiebreaker so two `mmproj-*-q4.gguf` from different families
+        never collide.
+    Returns None when no projector file is present (whether because no
+    mmproj lives there, or because none matches the model family).
+    """
+    if model_path is None:
+        return None
+    model_path = Path(model_path).expanduser().resolve()
+    if not model_path.is_file():
+        return None
+    parent = model_path.parent
+    model_stem = model_path.stem.lower()
+    family = _model_family(model_stem)
+    # Pull the quantisation tag (after the last hyphen) from the model
+    # stem so we can prefer a matching mmproj when several exist. E.g.
+    # MiniCPM5-1B-F16.gguf → "f16".
+    quant = None
+    for sep in ("-", "_"):
+        if sep in model_stem:
+            tail = model_stem.rsplit(sep, 1)[-1]
+            if tail and tail[:1].isalpha():
+                quant = tail
+                break
+    try:
+        entries = list(parent.iterdir())
+    except OSError:
+        return None
+    candidates: list[Path] = []
+    all_mmproj: list[Path] = []  # all mmproj files, regardless of family
+    for entry in entries:
+        if not entry.is_file():
+            continue
+        name = entry.name.lower()
+        if not name.endswith(".gguf"):
+            continue
+        # Match only `mmproj*.gguf` (any quantisation in between).
+        if not name.startswith("mmproj"):
+            continue
+        all_mmproj.append(entry)
+        # Prefer same-family projectors, but DON'T reject generic
+        # mmproj-F32.gguf that doesn't mention the family name.
+        # The family check is only a tiebreaker when multiple
+        # mmproj files from different families coexist.
+        if family and family not in entry.stem.lower():
+            continue
+        candidates.append(entry)
+    # If no family-matched candidates but there IS a single generic
+    # mmproj file, use it — the user put it there for this model.
+    if not candidates and len(all_mmproj) == 1:
+        candidates = all_mmproj
+    if not candidates:
+        return None
+    if len(candidates) == 1:
+        return candidates[0]
+    # Prefer a projector whose stem mentions the model's quant tag.
+    if quant:
+        scored = sorted(
+            candidates,
+            key=lambda p: (quant not in p.stem.lower(), p.name),
+        )
+        return scored[0]
+    return candidates[0]
+
+
 class LlamaServer:
     """Owns one llama-server subprocess + an httpx client that talks to it."""
 
@@ -207,8 +316,17 @@ class LlamaServer:
         threads: Optional[int] = None,
         extra_args: Optional[list[str]] = None,
         adapters: Optional[list[Path]] = None,
+        mmproj_path: Optional[Path] = None,
     ) -> None:
         self.model_path: Optional[Path] = Path(model_path).expanduser().resolve() if model_path else None
+        # Optional CLIP-style vision projector. When the active model is a
+        # multimodal checkpoint (Vision-Instruct / Omni…), llama-server
+        # needs `--mmproj` to decode attached images. We accept either an
+        # explicit path or auto-detection (handled by the caller) and pass
+        # it through to the spawned argv.
+        self.mmproj_path: Optional[Path] = (
+            Path(mmproj_path).expanduser().resolve() if mmproj_path else None
+        )
         self.ctx_size = int(ctx_size)
         self.n_gpu_layers = int(n_gpu_layers)
         self.device = _normalise_device()
@@ -267,6 +385,11 @@ class LlamaServer:
             argv += ["--gpu-layers", str(self.n_gpu_layers)]
         if self.threads:
             argv += ["--threads", str(self.threads)]
+        # Multimodal: if a CLIP/mmproj projector was paired with the model,
+        # pass it through. llama-server only loads it when --mmproj is set
+        # alongside --model, so the two flags must land in the same argv.
+        if self.mmproj_path and self.mmproj_path.is_file():
+            argv += ["--mmproj", str(self.mmproj_path)]
         # Pre-register every discovered GGUF LoRA. Even when no adapter is
         # currently "active" we keep them loaded so /api/load-adapter can
         # toggle them without restarting llama-server. The actual scaling
@@ -421,10 +544,16 @@ class LlamaServer:
         # a now-dead pid.
         clear_pid_file(self._pid_file)
 
-    async def swap_model(self, model_path: Path) -> None:
-        """Restart llama-server with a different `--model`."""
+    async def swap_model(self, model_path: Path, mmproj_path: Optional[Path] = None) -> None:
+        """Restart llama-server with a different `--model` (and optional mmproj).
+
+        mmproj_path=None leaves the previous projector paired; pass an
+        explicit path to switch / clear it.
+        """
         await self.stop()
         self.model_path = Path(model_path).expanduser().resolve()
+        if mmproj_path is not None:
+            self.mmproj_path = Path(mmproj_path).expanduser().resolve() if mmproj_path else None
         await self.start()
 
     async def reload_adapters(self, paths: list[Path]) -> None:
