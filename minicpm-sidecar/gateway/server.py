@@ -37,12 +37,21 @@ from .providers.base import ToolDef, parse_mcp_calls
 from .providers.local import LocalProvider
 from .skills.skill_routes import register_skill_routes
 from .omniparser_manager import OmniParserManager
-from .memory import MemoryStore
+from .memory import MemoryStore, EventStore, MoodStore
 from .memory.tool import (
     MEMORY_TOOL_SCHEMA,
     memory_tool_handler,
     set_memory_store,
 )
+from .memory import decay as _decay_module
+from .memory import loader as _loader_module
+from .memory import resonance as _resonance_module
+from .memory.recall import (
+    RECALL_TOOL_SCHEMA,
+    recall_tool_handler,
+    set_event_store,
+)
+from .memory.mood import build_mood_assessment_prompt, EMOTION_TO_MOOD
 from . import screen_click
 from .screen_capture import capture as screen_capture
 from .think_filter import ThinkBlockFilter
@@ -387,6 +396,22 @@ def build_app(
         log.warning("memory store load failed (continuing with empty memory): %s", exc)
     set_memory_store(memory_store)
 
+    # ── LingLing episodic memory (events + mood) ─────────────────────
+    event_store = EventStore()
+    try:
+        event_store.load_from_disk(memory_dir)
+        log.info("event store loaded: %d events", event_store.event_count())
+    except Exception as exc:
+        log.warning("event store load failed (starting fresh): %s", exc)
+    set_event_store(event_store)
+
+    mood_store = MoodStore()
+    try:
+        mood_store.load_from_disk(memory_dir)
+        log.info("mood store loaded: %s (intensity=%d)", mood_store.current_mood, mood_store.intensity)
+    except Exception as exc:
+        log.warning("mood store load failed: %s", exc)
+
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         nonlocal startup_error
@@ -428,10 +453,25 @@ def build_app(
                 log.warning("curator startup check failed: %s", exc)
         import asyncio as _aio
         _aio.get_event_loop().create_task(_curator_startup_check())
+
+        # LingLing: background weight decay. Runs every 10 minutes.
+        # Events with pause_decay=True are skipped (actively being
+        # thought about). Consolidated events decay slower.
+        async def _decay_loop():
+            while True:
+                try:
+                    await asyncio.sleep(_decay_module.DECAY_INTERVAL_SECONDS)
+                    _decay_module.run_decay(event_store)
+                except asyncio.CancelledError:
+                    break
+                except Exception as exc:
+                    log.warning("decay loop error: %s", exc)
+        _decay_task = _aio.get_event_loop().create_task(_decay_loop())
         try:
             yield
         finally:
             bridge.post("sleeping")
+            _decay_task.cancel()
             # Tear down MCP subprocesses gracefully *before* everything else.
             # The mcp SDK's transport context managers back onto anyio
             # TaskGroups whose cancel scopes must be exited in the same task
@@ -717,6 +757,14 @@ def build_app(
         "handler": memory_tool_handler,
     })
 
+    # ── Builtin tool: recall (LingLing model-initiated memory recall) ──
+    mcp_manager.register_builtin({
+        "name": RECALL_TOOL_SCHEMA["name"],
+        "description": RECALL_TOOL_SCHEMA["description"],
+        "input_schema": RECALL_TOOL_SCHEMA["input_schema"],
+        "handler": recall_tool_handler,
+    })
+
     # ── Builtin tool: skill_create (external distillation write surface) ─
     # Lets the model persist a workflow it just executed (or one the user
     # described via /learn) as an auditable SKILL.md. This is the 创建 step
@@ -778,6 +826,107 @@ def build_app(
             "memory": memory_store.format_for_system_prompt("memory") or "",
             "user": memory_store.format_for_system_prompt("user") or "",
             "memory_dir": str(memory_dir),
+        }
+
+    # ── LingLing episodic memory endpoints ───────────────────────────
+
+    @app.get("/api/events/context")
+    async def get_events_context():
+        """Build the episodic memory context for system-prompt injection.
+
+        Returns the two-layer loaded context (top-5 + flashback + faded
+        directory) that the renderer prepends to the system prompt.
+        """
+        context = _loader_module.build_memory_context(event_store)
+        return {
+            "context": context,
+            "event_count": event_store.event_count(),
+            "total_weight": event_store.total_weight(),
+        }
+
+    @app.post("/api/events/extract")
+    async def extract_events(payload: dict):
+        """Extract events from the last conversation turn.
+
+        Called by the renderer after the streaming reply completes.
+        The model's response is parsed for events and mood assessment.
+        Body: { "response_text": "...", "conversation_summary": "..." }
+        """
+        response_text = str(payload.get("response_text") or "")
+        # Try to parse JSON events from the model's response
+        events_added = []
+        mood_updated = False
+        try:
+            # Look for JSON block in the response
+            import re as _re
+            json_match = _re.search(r'\{[^{}]*"events"[^{}]*\}', response_text, _re.DOTALL)
+            if json_match:
+                data = json.loads(json_match.group())
+                for evt_data in data.get("events", []):
+                    evt = event_store.add_event(
+                        title=evt_data.get("title", ""),
+                        content=evt_data.get("content", ""),
+                        weight=evt_data.get("weight", 300),
+                    )
+                    events_added.append(evt["id"])
+                _resonance_module.mark_stale()
+
+                mood_data = data.get("mood", {})
+                if mood_data:
+                    mood_store.update_mood(
+                        mood=mood_data.get("mood", "平静"),
+                        intensity=mood_data.get("intensity", 40),
+                        reason=mood_data.get("reason", ""),
+                        changed=mood_data.get("changed", False),
+                    )
+                    mood_updated = True
+        except Exception as exc:
+            log.warning("Event extraction parse failed: %s", exc)
+
+        # End-of-conversation housekeeping: consolidate mentioned events
+        _decay_module.on_conversation_end(event_store)
+
+        return {
+            "ok": True,
+            "events_added": events_added,
+            "mood_updated": mood_updated,
+            "mood": mood_store.current_mood,
+            "mood_intensity": mood_store.intensity,
+        }
+
+    @app.get("/api/mood")
+    async def get_mood():
+        """Return the current mood state."""
+        return {
+            "mood": mood_store.current_mood,
+            "intensity": mood_store.intensity,
+            "reason": mood_store.reason,
+            "since": mood_store.since,
+            "params": mood_store.get_params(),
+            "emotion_tag": mood_store.get_emotion_tag(),
+        }
+
+    @app.get("/api/mood/context")
+    async def get_mood_context():
+        """Return the mood context block for system-prompt injection."""
+        return {"context": mood_store.format_for_system_prompt()}
+
+    @app.post("/api/events/resonance")
+    async def check_resonance(payload: dict):
+        """Check if a user message resonates with stored events.
+
+        Called by the renderer before sending the chat request.
+        Returns any resonant events to inject into the system prompt.
+        Body: { "message": "user's latest message" }
+        """
+        message = str(payload.get("message") or "")
+        results = _resonance_module.find_resonance(event_store, message)
+        return {
+            "resonant": [
+                {"id": e["id"], "title": e["title"], "content": e["content"]}
+                for e in results
+            ],
+            "count": len(results),
         }
 
     @app.get("/api/providers")
@@ -1504,6 +1653,8 @@ def build_app(
                 "/api/curator/run", "/api/curator/status", "/api/curator/paused", "/api/curator/pin", "/api/curator/restore",
                 "/api/providers",
                 "/api/memory",
+                "/api/events/context", "/api/events/extract", "/api/events/resonance",
+                "/api/mood", "/api/mood/context",
                 "/api/mcp/servers", "/api/mcp/execute",
                 "/api/screen/consent-status", "/api/screen/observe", "/api/debug/chat",
             ],
@@ -1648,6 +1799,37 @@ async def _stream_chat_provider(
 
     messages = [{"role": m.role, "content": m.content} for m in req.messages]
     system = req.system
+
+    # ── LingLing: inject episodic memory + mood + resonance ──────────
+    try:
+        # 1. Episodic memory context (top-5 + flashback + faded directory)
+        episodic_ctx = _loader_module.build_memory_context(event_store)
+        if episodic_ctx and event_store.event_count() > 0:
+            system = (system or "") + "\n\n" + episodic_ctx
+
+        # 2. Mood context
+        mood_ctx = mood_store.format_for_system_prompt()
+        if mood_ctx:
+            system = (system or "") + "\n\n" + mood_ctx
+
+        # 3. Resonance: check if the user's latest message triggers stored events
+        if messages:
+            last_msg = messages[-1]
+            msg_text = last_msg.get("content", "") if isinstance(last_msg.get("content"), str) else ""
+            if not msg_text and isinstance(last_msg.get("content"), list):
+                # Extract text from content blocks
+                msg_text = " ".join(
+                    b.get("text", "") for b in last_msg["content"] if isinstance(b, dict) and b.get("type") == "text"
+                )
+            if msg_text:
+                resonance_hits = _resonance_module.find_resonance(event_store, msg_text)
+                if resonance_hits:
+                    resonance_text = "\n\n【因为用户刚才说的话，你想起了这些】\n"
+                    for evt in resonance_hits:
+                        resonance_text += f"- [{evt['title']}] {evt['content']}\n"
+                    system = (system or "") + resonance_text
+    except Exception as exc:
+        log.warning("LingLing context injection failed (continuing): %s", exc)
 
     cw = getattr(provider, "_context_window", None) or req.context_window
     if cw and isinstance(cw, int) and cw > 0:

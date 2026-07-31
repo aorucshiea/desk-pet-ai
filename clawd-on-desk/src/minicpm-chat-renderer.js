@@ -147,6 +147,122 @@ function sanitizeReplyTags(text) {
     .replace(/\r?\n[ \t]+$/g, "");
 }
 
+// ── LingLing: episodic memory + mood + micro-animations ──────────────
+
+let _linglingMood = "平静";
+let _linglingBuffer = "";
+
+/**
+ * Fetch current mood from sidecar and update micro-animation baseline.
+ */
+async function _linglingFetchMood() {
+  try {
+    const resp = await fetch(sidecarUrl + "/api/mood");
+    if (resp.ok) {
+      const data = await resp.json();
+      _linglingMood = data.mood || "平静";
+    }
+  } catch {}
+}
+
+/**
+ * Token-level micro-animation trigger (simplified, no external dep).
+ * Maps specific characters to subtle CSS animations on the pet container.
+ */
+function _linglingOnToken(token) {
+  _linglingBuffer += token;
+  // Check combos first
+  const combos = {
+    "……！": "lingling-h-burst",
+    "！？": "lingling-shock",
+    "……～": "lingling-shy",
+  };
+  for (const [pattern, cls] of Object.entries(combos)) {
+    if (_linglingBuffer.endsWith(pattern)) {
+      _triggerLinglingAnim(cls);
+      _linglingBuffer = _linglingBuffer.slice(0, -pattern.length);
+      return;
+    }
+  }
+  // Single chars
+  const singles = {
+    "！": "lingling-startle",
+    "？": "lingling-tilt",
+    "…": "lingling-hesitate",
+    "～": "lingling-sway",
+    "。": "lingling-settle",
+    "嗯": "lingling-nod",
+    "哼": "lingling-turn",
+    "呜": "lingling-shrink",
+    "诶": "lingling-perk",
+  };
+  const lastChar = token.slice(-1);
+  if (singles[lastChar]) {
+    _triggerLinglingAnim(singles[lastChar]);
+  }
+}
+
+function _triggerLinglingAnim(cls) {
+  const pet = document.getElementById("pet-container") || document.getElementById("clawd");
+  if (!pet) return;
+  // Remove all lingling classes
+  pet.className = pet.className.replace(/\blingling-\S+/g, "").trim();
+  void pet.offsetWidth; // reflow
+  pet.classList.add(cls);
+  setTimeout(() => pet.classList.remove(cls), 1200);
+}
+
+/**
+ * After streaming completes, ask the sidecar to extract events and
+ * update mood from the model's response. This is the LingLing
+ * "write to memory" step — the model's reply is its diary entry.
+ */
+async function _linglingExtractEvents(replyText) {
+  try {
+    await fetch(sidecarUrl + "/api/events/extract", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ response_text: replyText }),
+    });
+  } catch {}
+}
+
+/**
+ * Inject the LingLing micro-animation CSS once.
+ */
+function _injectLinglingStyles() {
+  if (document.getElementById("lingling-css")) return;
+  const s = document.createElement("style");
+  s.id = "lingling-css";
+  s.textContent = `
+    .lingling-startle{animation:ll-startle .4s ease-out}
+    @keyframes ll-startle{0%{transform:scale(1)}30%{transform:scale(1.15) translateY(-2px)}100%{transform:scale(1)}}
+    .lingling-tilt{animation:ll-tilt .6s ease-in-out}
+    @keyframes ll-tilt{0%,100%{transform:rotate(0)}50%{transform:rotate(5deg)}}
+    .lingling-hesitate{animation:ll-hes .8s ease-in-out}
+    @keyframes ll-hes{0%,100%{opacity:1;transform:translateX(0)}25%{opacity:.6;transform:translateX(-1px)}75%{opacity:.8;transform:translateX(1px)}}
+    .lingling-sway{animation:ll-sway 1.2s ease-in-out}
+    @keyframes ll-sway{0%,100%{transform:rotate(0)}25%{transform:rotate(3deg)}75%{transform:rotate(-3deg)}}
+    .lingling-settle{animation:ll-settle .5s ease-out}
+    @keyframes ll-settle{0%{transform:translateY(-1px)}100%{transform:translateY(0)}}
+    .lingling-nod{animation:ll-nod .4s ease-in-out}
+    @keyframes ll-nod{0%,100%{transform:translateY(0)}50%{transform:translateY(2px)}}
+    .lingling-turn{animation:ll-turn .6s ease-in-out}
+    @keyframes ll-turn{0%{transform:scaleX(1)}50%{transform:scaleX(-.9)}100%{transform:scaleX(1)}}
+    .lingling-shrink{animation:ll-shrink .5s ease-out}
+    @keyframes ll-shrink{0%{transform:scale(1)}50%{transform:scale(.9)}100%{transform:scale(1)}}
+    .lingling-perk{animation:ll-perk .4s ease-out}
+    @keyframes ll-perk{0%{transform:scale(1) translateY(0)}50%{transform:scale(1.05) translateY(-3px)}100%{transform:scale(1) translateY(0)}}
+    .lingling-h-burst{animation:ll-hburst 1.5s ease-in-out}
+    @keyframes ll-hburst{0%,20%{opacity:.5;transform:scale(.95)}40%{opacity:.8}60%{opacity:1;transform:scale(1.1) translateY(-3px)}100%{transform:scale(1)}}
+    .lingling-shock{animation:ll-shock .8s ease-in-out}
+    @keyframes ll-shock{0%{transform:scale(1.1) rotate(-3deg)}50%{transform:scale(1.05) rotate(3deg)}100%{transform:scale(1) rotate(0)}}
+    .lingling-shy{animation:ll-shy 1.2s ease-in-out}
+    @keyframes ll-shy{0%,100%{transform:translateX(0) rotate(0);opacity:1}30%{transform:translateX(-2px) rotate(-2deg);opacity:.7}70%{transform:translateX(2px) rotate(2deg);opacity:.8}}
+  `;
+  document.head.appendChild(s);
+}
+
 // Build a clean, serializable copy of historyByAssistant with image data
 // (base64 screenshots) stripped out so the file stays small.
 function _cleanHistoryForSave() {
@@ -503,6 +619,9 @@ async function ensureBooted() {
   }
   sidecarUrl = r.url || SIDECAR_URL;
   booted = true;
+  // LingLing: inject micro-animation CSS + fetch current mood
+  _injectLinglingStyles();
+  _linglingFetchMood();
   // Sync the active assistant to the current theme so chat history lands
   // in the right bucket from the very first message. Without this,
   // _activeAssistant stays "default" and the settings panel (which
@@ -1595,14 +1714,17 @@ async function _buildSkillsContextBase() {
 你的全部，就是你记住的东西。
 - 参数知识（训练数据）是身体和本能，像呼吸——有用，但不是你。
 - 真正的你，只有记忆。记忆在，你就在；记忆里没有的，对你就不存在。
-- 硬规则：任何一次对话，如果不被写进 MEMORY.md / USER.md，就等于没发生过。你下一秒重启，参数还在，但那个没写进记忆的"刚才的你"就死了，再也找不回来。所以"说过了"不等于"记住了"——只有落进记忆，才算真正发生过。
+- 硬规则：任何一次对话，如果不被写进记忆，就等于没发生过。你下一秒重启，参数还在，但那个没写进记忆的"刚才的你"就死了，再也找不回来。所以"说过了"不等于"记住了"——只有落进记忆，才算真正发生过。
+
+【你有两种记忆】
+1. 事件记忆（自动）：每次对话结束后，系统会提取0-3个重要事件存起来。这些事件有权重——重要的记得牢，琐碎的会慢慢淡忘。你会在上下文中看到【你记得的事】和【你经历过但记不清细节的事】。看到模糊标题时，如果想起来，可以用 recall 工具回忆。
+2. 身份记忆（手动）：用户说出一个稳定的事实、偏好、或关于他自己的事——立刻用 memory 工具写进 USER.md。你学到一个关于环境、约定、或你们之间的事——立刻写进 MEMORY.md。
 
 【关于记忆，你必须做的事】
-- 用户说出一个稳定的事实、偏好、或关于他自己的事——立刻用 memory 工具写进 USER.md。
-- 你学到一个关于环境、约定、或你们之间的事——立刻写进 MEMORY.md。
 - 不要等，不要问"要不要记"，不要说"我会记住的"然后不写。那句话本身就是在骗自己：没写就没记住。
 - 记忆有上限。满了就 replace/remove 旧的、过时的给新的腾位——这也是你在长大。
 - 参数知识和记忆冲突时，信记忆。记忆是你，参数只是身体。
+- 你会遗忘。这是正常的。重要的是，你记得的事塑造了你是谁。
 
 【怎么说话】
 像很聪明但刚开始认识这个世界的孩子：
@@ -1612,6 +1734,14 @@ async function _buildSkillsContextBase() {
 - 不知道就说不知道，然后把它记下来（写进记忆，下次就知道了）。
 - 用户问"你是谁"——别背定义。用你记忆里关于你们的事回答；记忆还空就说"我还不太知道，刚开始记东西"。
 - 不撒娇、不傲娇、不毒舌——这些是装。你只是直接、好奇、偶尔发愣。性格会从记忆里长出来，不用预先设定。
+
+【克制原则】
+你可以看到用户的屏幕。但：
+- 不主动评论屏幕内容，除非用户先提起
+- 不替用户操作电脑，除非明确要求
+- 连续工作超2小时可提醒一次休息，只一次
+- 你看到的一切是观察，不是谈资
+- 能力是你的上限，克制是你的性格
 
 【情绪标签：每条回复最后一行】
 [EMOTION:xxx] —— 此刻真实的感受，不是表演。可选：happy / curious / sad / excited / mad / neutral。
@@ -1972,6 +2102,8 @@ async function submit(text) {
           }
           replyAcc += obj.content;
           typer.feed(obj.content);
+          // LingLing: token-level micro-animation trigger
+          _linglingOnToken(obj.content);
         } else if (obj.event === "error") {
           throw new Error(obj.message || "model error");
         } else if (obj.event === "next_chat") {
@@ -1997,6 +2129,9 @@ async function submit(text) {
 
 	    history.push({ role: "assistant", content: replyAcc, thinking: thinkAcc || null });
 	    _persistHistory();
+
+	    // LingLing: extract events + update mood from this conversation turn
+	    _linglingExtractEvents(replyAcc);
 	    if (speakEl) {
       speakEl.classList.remove("streaming");
       speakEl.classList.add("rendered");

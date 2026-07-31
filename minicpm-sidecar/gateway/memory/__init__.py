@@ -1,8 +1,15 @@
 """Persistent cross-session memory for the desk pet.
 
-Ported from hermes-agent's ``tools/memory_tool.py`` (MemoryStore). The
-design is deliberately the same so behaviour and limits match a proven
-implementation:
+Two layers:
+
+  1. **Identity memory** (store.py): MEMORY.md + USER.md — who the user is,
+     who the pet is. Bounded, curated by the model via the ``memory`` tool.
+
+  2. **Episodic memory** (events.py + decay.py + loader.py): Weighted events
+     with time-based decay. Things that happened, weighted by importance,
+     fading over time unless recalled. The LingLing innovation.
+
+Design notes for the identity layer (from upstream hermes-agent):
 
   - Two files: ``MEMORY.md`` (the pet's own notes) + ``USER.md`` (what the
     pet knows about the user). Both live under ``<userData>/memories/``.
@@ -18,23 +25,20 @@ implementation:
   - Atomic write via temp-file + ``os.replace()`` — readers always see a
     complete file, never a half-written one.
 
-Differences from the upstream Hermes source (intentional simplifications
-for the desk-pet scope):
+Design notes for the episodic layer (LingLing):
 
-  - No ``threat_patterns`` injection scan. The desk pet is a single-user,
-    local-first companion; MEMORY.md is only ever written by the pet
-    itself or edited directly by the user. (If you later expose memory to
-    untrusted input, re-add a scan here.)
-  - No cross-process file lock (``fcntl``/``msvcrt``). The sidecar runs
-    one MemoryStore per process; concurrent writes from a second sidecar
-    instance are not a supported topology. The atomic-rename write still
-    keeps a single reader/writer safe.
-  - No external-write approval gate (Hermes' ``_apply_write_gate``). The
-    pet is interactive and local; writes apply immediately.
-  - Drift detection is kept: if the on-disk file was hand-edited into a
-    shape that wouldn't round-trip through our parser, we refuse to
-    overwrite it and point at the ``.bak`` snapshot instead of silently
-    truncating the user's edits.
+  - Events are stored in ``events.json`` — structured, weighted, decaying.
+  - Weights are model-assigned (1-999). The model decides what matters.
+  - Decay is percentage-based (5%/hour of current weight). Important
+    events naturally resist forgetting.
+  - Consolidation: each access reduces decay_coefficient × 0.7.
+    Remember something enough times and it becomes nearly permanent.
+  - Two-layer loading: top-5 deterministic + 1 flashback probabilistic.
+  - Faded directory: non-loaded events show truncated titles.
+    Below 3 visible chars: gone entirely.
+  - Embedding resonance: user messages semantically match stored events.
+  - Mood autonomy: the model self-assesses its mood after each turn.
+    The mood persists across restarts and shapes the next conversation.
 """
 
 from __future__ import annotations
@@ -43,5 +47,12 @@ from .store import (
     ENTRY_DELIMITER,
     MemoryStore,
 )
+from .events import EventStore
+from .mood import MoodStore
 
-__all__ = ["ENTRY_DELIMITER", "MemoryStore"]
+__all__ = [
+    "ENTRY_DELIMITER",
+    "MemoryStore",
+    "EventStore",
+    "MoodStore",
+]
