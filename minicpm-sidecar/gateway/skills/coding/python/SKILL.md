@@ -4,6 +4,9 @@ description: "Python 编程最佳实践：类型注解、测试、错误处理�
 tags: [coding, python, best-practices]
 version: 1.0.0
 platforms: [windows, macos, linux]
+action_type: generate
+discipline: coding
+carrier: any
 ---
 
 # Python 编程技能

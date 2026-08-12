@@ -1,18 +1,24 @@
-"""LingLing two-layer memory loader + faded directory.
+"""LingLing two-layer memory loader + faded directory (v2).
 
 Builds the episodic memory context block injected into the system prompt
-at conversation start. Three visual layers:
+at conversation start. Four felt layers:
 
-1. **Top-5 (deterministic)** — full title + content, always loaded.
+1. **Top-N (deterministic)** — full title + content, always loaded.
+   Core memories (核心记忆库) always take seats here, unconditionally.
 2. **Flashback (probabilistic)** — one random event weighted by
-   weight/1000 probability. "突然想起" — the model didn't choose to
-   remember, it just surfaced.
+   weight / (1000 + event_count × 10). The denominator grows with the
+   memory library — more memories, each individual one less likely to
+   surface. "突然想起" — the model didn't choose to remember, it just
+   surfaced.
 3. **Faded directory** — titles of remaining events, truncated by
-   weight ratio. Low-weight events show only a few characters.
-   Below 3 chars: gone entirely. Not "I can't remember" — it's
-   genuinely forgotten.
+   weight ratio, tagged with felt labels: [情绪] / [知识] / （还没放下）.
+   Low-weight events show only a few characters. Below 3 chars: gone
+   entirely. Not "I can't remember" — it's genuinely forgotten.
+4. The model doesn't see weight numbers. It sees its own memory fading.
 
-The model doesn't see weight numbers. It sees its own memory fading.
+v2 (2026-08-01): felt labels carry the four-dimension virtual-feeling
+signal (familiarity via fade ratio, emotion via tag, unfinishedness via
+（还没放下）, knowledge-vs-experience via [知识]).
 """
 
 from __future__ import annotations
@@ -29,8 +35,10 @@ logger = get_logger()
 # How many events go into the deterministic top layer.
 TOP_N = 5
 
-# Probability threshold for the flashback layer: weight / 1000.
+# Base probability denominator for the flashback layer; grows with the
+# number of stored events (memory-library dilution).
 FLASHBACK_PROBABILITY_DIVISOR = 1000
+FLASHBACK_DILUTION_PER_EVENT = 10
 
 # Minimum visible characters for a directory title to appear at all.
 # Below this, the event doesn't just look fuzzy — it's gone.
@@ -61,7 +69,11 @@ def get_session_ids() -> Set[str]:
 
 
 def load_top_events(store: EventStore, n: int = TOP_N) -> List[Dict[str, Any]]:
-    """Deterministic top-N loading: highest weight events.
+    """Deterministic top-N loading: core memories unconditionally, then
+    highest-weight events to fill the remaining seats.
+
+    Core memories always take a seat (they're what the pet keeps on its
+    mind), so with k core memories the top layer holds max(n, k) events.
 
     Every event loaded this way gets an access boost (consolidation).
     """
@@ -70,7 +82,9 @@ def load_top_events(store: EventStore, n: int = TOP_N) -> List[Dict[str, Any]]:
         key=lambda e: e["weight"],
         reverse=True,
     )
-    top = events[:n]
+    core = [e for e in events if e.get("core")]
+    rest = [e for e in events if not e.get("core")]
+    top = core + rest[: max(0, n - len(core))]
     for evt in top:
         on_event_accessed(store, evt["id"])
         add_to_session(evt["id"])
@@ -83,9 +97,12 @@ def pick_flashback(
 ) -> Optional[Dict[str, Any]]:
     """Probabilistic flashback: one random event from the remainder.
 
-    Each candidate has probability weight/1000 of being picked.
-    Higher-weight events are more likely to surface spontaneously.
+    Each candidate has probability weight / denominator of being picked,
+    where denominator = 1000 + event_count × 10. Higher-weight events are
+    more likely to surface spontaneously, and a bigger memory library
+    dilutes any single event's chance (人脑也是记忆多了，单条更难浮现).
     """
+    denominator = FLASHBACK_PROBABILITY_DIVISOR + store.event_count() * FLASHBACK_DILUTION_PER_EVENT
     candidates = [
         e for e in store.get_all_events()
         if e["id"] not in exclude_ids
@@ -95,7 +112,7 @@ def pick_flashback(
     random.shuffle(candidates)
 
     for evt in candidates:
-        if random.random() < (evt["weight"] / FLASHBACK_PROBABILITY_DIVISOR):
+        if random.random() < (evt["weight"] / denominator):
             on_event_accessed(store, evt["id"])
             add_to_session(evt["id"])
             return evt
@@ -110,6 +127,10 @@ def build_faded_directory(
 
     Title visible chars = original length × (weight / 1000).
     Titles below MIN_VISIBLE_CHARS are omitted entirely.
+    Entries carry felt labels (v2): [情绪] tag, [知识] for knowledge
+    memories (kept dim — knowledge is not lived experience), and
+    （还没放下） for unfinished business (Zeigarnik — the pet hasn't
+    let it go).
     """
     events = sorted(
         [e for e in store.get_all_events() if e["weight"] > 0],
@@ -132,7 +153,15 @@ def build_faded_directory(
             continue  # Truly forgotten — not even a ghost in the directory.
 
         faded = title[:visible]
-        lines.append(f"- {faded}")
+        prefix = ""
+        if evt.get("emotion"):
+            prefix += f"[{evt['emotion']}] "
+        if evt.get("type") == "knowledge":
+            prefix += "[知识] "
+        suffix = ""
+        if not evt.get("resolved", True) and evt["weight"] >= 200:
+            suffix = "（还没放下）"
+        lines.append(f"- {prefix}{faded}{suffix}")
 
     return lines
 
@@ -157,10 +186,23 @@ def build_memory_context(store: EventStore) -> str:
 
     lines: List[str] = []
 
+    core_events = [e for e in top_events if e.get("core")]
+    normal_events = [e for e in top_events if not e.get("core")]
+
+    # Layer 0: Core memories — what the pet keeps on its mind (P5).
+    # Nearly immortal, always loaded, presented as its own layer so the
+    # model reads them as identity anchors, not ordinary memories.
+    if core_events:
+        lines.append("【你一直放在心上的事】")
+        for i, evt in enumerate(core_events, 1):
+            lines.append(f"{i}. [{evt['title']}] {evt['content']}")
+
     # Layer 1: Full memories
-    if top_events:
+    if normal_events:
+        if lines:
+            lines.append("")
         lines.append("【你记得的事】")
-        for i, evt in enumerate(top_events, 1):
+        for i, evt in enumerate(normal_events, 1):
             lines.append(f"{i}. [{evt['title']}] {evt['content']}")
 
     # Layer 2: Flashback

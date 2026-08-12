@@ -4,6 +4,9 @@ description: "屏幕观察和点击：capture_screen 截图直看，observe_scre
 tags: [screen, vision, observe, click, desktop, omniparser]
 version: 7.0.0
 platforms: [windows]
+action_type: execute
+discipline: ops
+carrier: local
 ---
 
 # 屏幕观察和点击技能

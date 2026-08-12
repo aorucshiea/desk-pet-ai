@@ -186,6 +186,13 @@ class SkillInfo:
         self.author: str = ""
         self.license: str = ""
         self.body: str = ""
+        # Multi-axis routing labels (P3 cognition framework). Optional in
+        # frontmatter — defaults make skills backward-compatible.
+        self.action_type: str = ""      # execute|analyze|retrieve|generate|transform|record
+        self.discipline: str = ""       # coding|ops|writing|design|data|general
+        self.carrier: str = "any"       # local|api|any
+        self.triggers: list[str] = []   # routing signal keywords
+        self.requires: list[str] = []   # env deps (filter signal)
         self._loaded: bool = False
 
     def load(self) -> None:
@@ -209,17 +216,36 @@ class SkillInfo:
         self.tags = tags_raw if isinstance(tags_raw, list) else [str(tags_raw)]
         platforms_raw = metadata.get("platforms", [])
         self.platforms = platforms_raw if isinstance(platforms_raw, list) else []
+        # Multi-axis labels (P3 cognition). All optional with safe defaults.
+        self.action_type = str(metadata.get("action_type", "")).strip()
+        self.discipline = str(metadata.get("discipline", "")).strip()
+        self.carrier = str(metadata.get("carrier", "any")).strip() or "any"
+        triggers_raw = metadata.get("triggers", [])
+        self.triggers = triggers_raw if isinstance(triggers_raw, list) else [str(triggers_raw)]
+        requires_raw = metadata.get("requires", [])
+        self.requires = requires_raw if isinstance(requires_raw, list) else [str(requires_raw)]
         self.body = body
         self._loaded = True
 
     def to_listing(self) -> dict:
-        """Return a compact dict for /api/skills listing (name + description only)."""
+        """Return a compact dict for /api/skills listing.
+
+        Description gets a short [action_type] prefix so the model sees at a
+        glance what KIND of action each skill performs (execute/analyze/...).
+        The prefix is the cognition framework's single surface-level hint.
+        """
         self.load()
+        desc = self.description[:1024] if self.description else ""
+        if self.action_type:
+            desc = f"[{self.action_type}] {desc}" if desc else f"[{self.action_type}]"
         return {
             "name": self.name,
-            "description": self.description[:1024] if self.description else "",
+            "description": desc,
             "tags": self.tags[:8],
             "version": self.version,
+            "action_type": self.action_type,
+            "discipline": self.discipline,
+            "carrier": self.carrier,
         }
 
     def to_detail(self) -> dict:
@@ -235,6 +261,11 @@ class SkillInfo:
             "license": self.license,
             "content": self.body,
             "path": str(self.path),
+            "action_type": self.action_type,
+            "discipline": self.discipline,
+            "carrier": self.carrier,
+            "triggers": self.triggers,
+            "requires": self.requires,
         }
 
 
@@ -260,6 +291,12 @@ class SkillService:
         # reads this to drive active→stale→archived transitions.
         self.usage = SkillUsage()
         self.usage.load()
+        # cognition.md dirty flag — set when skills/experiences change,
+        # cleared when rebuild_cognition actually regenerates the file.
+        # The /api/cognition endpoint checks this and rebuilds lazily, so a
+        # turn that creates several skills only regenerates once.
+        self._cognition_dirty: bool = True
+        self._cognition_cache: str = ""
 
     def add_skill_dir(self, d: Path) -> None:
         self._dirs.append(d)
@@ -461,4 +498,141 @@ class SkillService:
             self.usage.seed_if_missing(name)
         except Exception:
             pass
+        # A skill change invalidates the cognition map.
+        self.mark_cognition_dirty()
         return {"ok": True, "path": str(path), "name": name, "slug": slug}
+
+    # ------------------------------------------------------------------
+    # cognition.md — the always-loaded cognitive framework
+    # ------------------------------------------------------------------
+
+    def mark_cognition_dirty(self) -> None:
+        """Flag that cognition.md needs regen. Called after skill/experience
+        mutations. The actual rebuild is deferred until /api/cognition is
+        pulled (lazy), so one turn's multiple mutations only regen once."""
+        self._cognition_dirty = True
+
+    def _experiences_dir(self) -> Path:
+        """Where experiences/*.md live. Sibling of MEMORY.md under the memory dir."""
+        env = os.environ.get("MINICPM_MEMORY_DIR", "").strip()
+        base = Path(env).expanduser() if env else (Path.home() / ".minicpm" / "memories")
+        base.mkdir(parents=True, exist_ok=True)
+        return base / "experiences"
+
+    def _count_experiences(self) -> int:
+        d = self._experiences_dir()
+        if not d.exists():
+            return 0
+        try:
+            return sum(1 for p in d.glob("*.md") if p.is_file())
+        except OSError:
+            return 0
+
+    def _action_type_counts(self) -> dict:
+        """Tally skills by their frontmatter action_type. Returns {type: count}."""
+        counts: dict[str, int] = {}
+        for info in self._skills.values():
+            info.load()
+            at = getattr(info, "action_type", "") or "uncategorized"
+            counts[at] = counts.get(at, 0) + 1
+        return counts
+
+    def _discipline_counts(self) -> dict:
+        """Tally skills by discipline. Falls back to tags if discipline unset."""
+        counts: dict[str, int] = {}
+        for info in self._skills.values():
+            info.load()
+            disc = getattr(info, "discipline", "") or (info.tags[0] if info.tags else "general")
+            counts[disc] = counts.get(disc, 0) + 1
+        return counts
+
+    def rebuild_cognition(self) -> str:
+        """Regenerate cognition.md text from skills + usage + experiences.
+
+        Pure function — no LLM. The content is the META-cognitive framework:
+        action-type / discipline tallies, experience count, and the thinking
+        posture. It does NOT list individual skills (those are already in the
+        skills description list injected separately). This avoids duplicating
+        skill info and keeps the file compact.
+        """
+        at_counts = self._action_type_counts()
+        disc_counts = self._discipline_counts()
+        exp_count = self._count_experiences()
+
+        # Tally skill lifecycle states from usage for the "what I have" line.
+        states = {"active": 0, "stale": 0, "archived": 0}
+        for rec in self.usage.all_records().values():
+            s = rec.get("state", "active")
+            states[s] = states.get(s, 0) + 1
+
+        # Build the framework text.
+        action_lines = []
+        at_labels = {
+            "execute": "执行类：运行命令、点屏幕、重启服务、部署",
+            "analyze": "分析类：读代码、搜索文件、查文档、性能分析",
+            "retrieve": "检索类：查屏幕内容、搜记忆、搜文件",
+            "generate": "生成类：写代码、写文档、写测试",
+            "transform": "转换类：翻译、格式转换、重写",
+            "record": "记录类：写记忆、创建技能、记经验",
+        }
+        for at in ["execute", "analyze", "retrieve", "generate", "transform", "record", "uncategorized"]:
+            n = at_counts.get(at, 0)
+            if n == 0:
+                continue
+            label = at_labels.get(at, f"{at}类")
+            action_lines.append(f"- {label}（{n} 个技能）")
+
+        disc_lines = []
+        for disc, n in sorted(disc_counts.items(), key=lambda x: -x[1]):
+            disc_lines.append(f"- {disc}: {n} 个技能")
+
+        sections = []
+        sections.append("# 我的认知框架")
+        sections.append("")
+        sections.append("## 我能做的事的类别（具体技能见上方的技能列表）")
+        if action_lines:
+            sections.extend(action_lines)
+        else:
+            sections.append("- （还没有技能被分类——用 /learn 学一个时记得填 action_type）")
+        sections.append("")
+        sections.append("## 我熟悉的学科")
+        if disc_lines:
+            sections.extend(disc_lines)
+        else:
+            sections.append("- general: 0")
+        sections.append("")
+        sections.append("## 我有过的经验")
+        sections.append(f"- 我有 {exp_count} 件事记在 experiences/ 里")
+        sections.append("- 用 list_experiences 看所有经验标题")
+        sections.append("- 用 read_experience <slug> 读某件的具体经过和闪光点")
+        sections.append("- 遇到新问题先想\"我做过类似的吗\"——有就直接查那件经验")
+        sections.append("")
+        sections.append("## 怎么思考（仅复杂/跨领域问题时套用——简单问题直接答）")
+        sections.append("1. 拆解：这是要干什么？涉及哪些类别？")
+        sections.append("2. 回忆：我以前做过类似的吗？（查 experiences + MEMORY）")
+        sections.append("3. 定位：需要哪些技能？（看上方的技能列表，按需 /skill 加载）")
+        sections.append("4. 适配：当前载体（本地/API）适合怎么干？")
+        sections.append("5. 行动：按上面的判断执行")
+        sections.append("")
+        sections.append("## 关于记忆的硬规则")
+        sections.append("- 任何对话，不写进 MEMORY.md/USER.md/experiences 就等于没发生过")
+        sections.append("- 主动调 memory 工具写入——不要说\"我会记住\"然后不写")
+
+        text = "\n".join(sections) + "\n"
+        self._cognition_cache = text
+        self._cognition_dirty = False
+
+        # Persist to cognition.md so it survives restarts and is editable.
+        try:
+            env = os.environ.get("MINICPM_MEMORY_DIR", "").strip()
+            base = Path(env).expanduser() if env else (Path.home() / ".minicpm" / "memories")
+            (base / "cognition.md").write_text(text, encoding="utf-8")
+        except OSError:
+            pass
+        return text
+
+    def get_cognition(self) -> str:
+        """Return the current cognition.md text. Rebuilds lazily if dirty."""
+        if self._cognition_dirty or not self._cognition_cache:
+            return self.rebuild_cognition()
+        return self._cognition_cache

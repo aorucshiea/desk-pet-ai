@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -23,6 +24,66 @@ from typing import Any, Dict, List, Optional
 from ..log_setup import get_logger
 
 logger = get_logger()
+
+# Fixed emotion vocabulary for per-sentence emotion flow annotations
+# (情绪流编码). The 0.9B model must pick from these — free-form emotion
+# words would destroy consistency.
+EMOTION_VOCAB: List[str] = [
+    "平静", "开心", "难过", "疑惑", "生气", "兴奋",
+    "疲惫", "平淡", "紧张", "期待",
+]
+
+# Content hard cap — emotion-flow format makes content longer, and
+# top-5 loads full content into context every turn.
+CONTENT_MAX_CHARS = 500
+
+
+def aggregate_emotion(content: str) -> str:
+    """Extract the event-level emotion from an emotion-flow content.
+
+    Counts ``（情绪）`` / ``(情绪)`` tags (from EMOTION_VOCAB) inside the
+    content and returns the most frequent one; empty string if none.
+    The model never writes a separate emotion field — the system derives
+    it from the flow, so the directory tag always matches the content.
+    """
+    tags = re.findall(r"[（(]([^（）()]{1,4})[）)]", content or "")
+    counts: Dict[str, int] = {}
+    for word in tags:
+        if word in EMOTION_VOCAB:
+            counts[word] = counts.get(word, 0) + 1
+    if not counts:
+        return ""
+    return max(counts, key=counts.get)
+
+
+def parse_event_block(response_text: str) -> Optional[Dict[str, Any]]:
+    """Extract the model's event/mood JSON from a reply.
+
+    Preferred: the ``<<<MEM>>>{…}<<<MEMEND>>>`` delimited block the model is
+    instructed to emit at the end of every turn. Fallback: a bare
+    ``{…"events"…}`` object for older replies / other providers.
+
+    Returns the parsed JSON dict, or None if nothing parseable.
+    """
+    if not response_text:
+        return None
+
+    block_match = re.search(
+        r"<<<MEM>>>\s*(\{.*?\})\s*<<<MEMEND>>>", response_text, re.DOTALL
+    )
+    if block_match:
+        try:
+            return json.loads(block_match.group(1))
+        except Exception:
+            pass
+
+    legacy_match = re.search(r'\{[^{}]*"events"[^{}]*\}', response_text, re.DOTALL)
+    if legacy_match:
+        try:
+            return json.loads(legacy_match.group())
+        except Exception:
+            return None
+    return None
 
 
 class EventStore:
@@ -108,20 +169,38 @@ class EventStore:
         title: str,
         content: str,
         weight: int,
+        emotion: Optional[str] = None,
+        type_: str = "experience",
+        resolved: bool = True,
+        core: bool = False,
+        conversation_tokens: int = 0,
     ) -> Dict[str, Any]:
         """Add a new event. Called by the model after conversation ends.
 
         Args:
             title: Short title (<=15 chars), model-generated.
-            content: First-person description with feelings, model-generated.
+            content: First-person emotion-flow description ("句子（情绪）"
+                format), model-generated. Capped at CONTENT_MAX_CHARS.
             weight: 1-999, model's judgment of importance.
+            emotion: Event-level emotion. When None, derived automatically
+                from the emotion-flow tags in content (aggregate_emotion).
+            type_: "experience" (lived through) or "knowledge" (learned).
+            resolved: False = unfinished business (Zeigarnik — the pet
+                hasn't let it go); True = closed.
+            core: True = nearly-immortal memory the model chose to keep
+                (core memory bank, cap enforced at extraction).
+            conversation_tokens: rough size of the conversation turn this
+                event came from (serves as engagement proxy for decay).
 
         Returns:
             The created event dict.
         """
         title = (title or "").strip()[:15]  # hard cap
-        content = (content or "").strip()
+        content = (content or "").strip()[:CONTENT_MAX_CHARS]
         weight = max(1, min(999, int(weight)))
+        if emotion is None or not str(emotion).strip():
+            emotion = aggregate_emotion(content)
+        type_ = type_ if type_ in ("experience", "knowledge") else "experience"
 
         now = datetime.now(timezone.utc).isoformat()
 
@@ -135,6 +214,11 @@ class EventStore:
             "access_count": 0,
             "decay_coefficient": 1.0,
             "pause_decay": False,
+            "emotion": emotion,
+            "type": type_,
+            "resolved": bool(resolved),
+            "core": bool(core),
+            "conversation_tokens": max(0, int(conversation_tokens or 0)),
         }
         self._next_id += 1
         self._events.append(evt)
@@ -204,6 +288,15 @@ class EventStore:
         evt["weight"] = max(0, min(999, float(evt.get("weight", 100))))
         evt.setdefault("created_at", datetime.now(timezone.utc).isoformat())
         evt.setdefault("last_accessed", datetime.now(timezone.utc).isoformat())
+        # last_decay_at defaults to created_at so a legacy event's first
+        # decay pass only bills the time since it was created.
+        evt.setdefault("last_decay_at", evt["created_at"])
         evt["access_count"] = int(evt.get("access_count", 0))
         evt["decay_coefficient"] = max(0.05, float(evt.get("decay_coefficient", 1.0)))
         evt["pause_decay"] = bool(evt.get("pause_decay", False))
+        # P1 multi-axis fields (defaults for backward compat with v1 data).
+        evt["emotion"] = str(evt.get("emotion", "") or aggregate_emotion(evt.get("content", "")))
+        evt["type"] = evt.get("type", "experience") if evt.get("type") in ("experience", "knowledge") else "experience"
+        evt["resolved"] = bool(evt.get("resolved", True))
+        evt["core"] = bool(evt.get("core", False))
+        evt["conversation_tokens"] = max(0, int(evt.get("conversation_tokens", 0)))

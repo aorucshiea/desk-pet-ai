@@ -4,6 +4,9 @@ description: "简洁写作指南：如何用最少的文字传达最多的信息
 tags: [writing, communication, clarity]
 version: 1.0.0
 platforms: [windows, macos, linux]
+action_type: generate
+discipline: writing
+carrier: any
 ---
 
 # 简洁写作技能

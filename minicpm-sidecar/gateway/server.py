@@ -16,6 +16,7 @@ import re
 import shutil
 import time
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import AsyncGenerator, List, Optional, Union
 
@@ -38,6 +39,7 @@ from .providers.local import LocalProvider
 from .skills.skill_routes import register_skill_routes
 from .omniparser_manager import OmniParserManager
 from .memory import MemoryStore, EventStore, MoodStore
+from .memory.events import parse_event_block
 from .memory.tool import (
     MEMORY_TOOL_SCHEMA,
     memory_tool_handler,
@@ -51,12 +53,20 @@ from .memory.recall import (
     recall_tool_handler,
     set_event_store,
 )
+from .screen_consent import ScreenPermissionManager
+from .memory_context import MemoryContext, theme_slug
 from .memory.mood import build_mood_assessment_prompt, EMOTION_TO_MOOD
+
+# Timestamp of the most recent conversation — the decay loop freezes when
+# the user hasn't talked to the pet for FREEZE_HOURS (memory only fades
+# while the pet is awake). Updated at the start of each /api/chat stream.
+_last_conversation_at = None
 from . import screen_click
 from .screen_capture import capture as screen_capture
 from .think_filter import ThinkBlockFilter
 from .updater import DEFAULT_SOURCE as DEFAULT_UPDATE_SOURCE
 from .updater import ModelUpdater
+from .sidecar_updater import SidecarUpdater
 
 
 # ── Request / response shapes ────────────────────────────────────────────────
@@ -122,11 +132,36 @@ def _effective_max_new_tokens(req: ChatRequest) -> int:
     return base
 
 
+# ── Emotion index → temperature (情绪指数温度调控) ─────────────────────
+# The pet's emotion index (calm=0, happy +0.1, sad -0.1, …) modulates the
+# generation temperature: happy → more divergent/creative, sad → more
+# subdued. Pure function so it's unit-testable.
+TEMP_BASE_MOD = 0.3
+TEMP_MIN = 0.2
+TEMP_MAX = 1.5
+
+
+def modulate_temperature(base: float, emotion_index: float) -> float:
+    """base + index*0.3, clamped to [0.2, 1.5]. index=0 → base unchanged."""
+    return max(TEMP_MIN, min(TEMP_MAX, float(base) + float(emotion_index) * TEMP_BASE_MOD))
+
+
 # ── Model discovery ─────────────────────────────────────────────────────────
 
 
+def _is_mmproj(name: str) -> bool:
+    """mmproj-*.gguf files are vision projector weights, NOT main models.
+    Loading one as --model fails ("unsupported model architecture:
+    'clip'"), so they must never surface in model discovery."""
+    return name.lower().startswith("mmproj")
+
+
 def discover_models(roots: List[Path]) -> List[dict]:
-    """Return [{name, path}] for every *.gguf file under `roots`."""
+    """Return [{name, path}] for every *.gguf file under `roots`.
+
+    Excludes mmproj-* vision-projector files (they are --mmproj weights,
+    not loadable as a main model).
+    """
     seen: set[Path] = set()
     out: List[dict] = []
     for root in roots:
@@ -137,13 +172,15 @@ def discover_models(roots: List[Path]) -> List[dict]:
         if not r.exists() or r in seen:
             continue
         seen.add(r)
-        if r.is_file() and r.suffix.lower() == ".gguf":
+        if r.is_file() and r.suffix.lower() == ".gguf" and not _is_mmproj(r.name):
             out.append({"name": r.name, "path": str(r)})
             continue
         if not r.is_dir():
             continue
         for p in sorted(r.rglob("*.gguf")):
             if any(part.endswith(".update-staging") or part.endswith(".bak") for part in p.parts):
+                continue
+            if _is_mmproj(p.name):
                 continue
             out.append({"name": p.name, "path": str(p)})
     return out
@@ -366,9 +403,38 @@ def build_app(
     startup_error: Optional[str] = None
 
     # ── Screen observation state ─────────────────────────────────────
-    consent_state: str = "deny"
+    # Boot consent from the Electron host (MINICPM_SCREEN_CONSENT):
+    # "always" = full permission (no per-action prompts), "deny" (default)
+    # = AI-agent style per-action authorization dialogs.
+    _boot_consent = os.environ.get("MINICPM_SCREEN_CONSENT", "deny")
+    consent_state: str = _boot_consent if _boot_consent in ("deny", "once", "always") else "deny"
     consent_lock = asyncio.Lock()
     omniparser_manager = OmniParserManager()
+
+    # ── Per-action screen permission (AI-agent style) ────────────────
+    # When consent is "deny", a tool wanting screen access posts a
+    # permission request to the Electron host (bridge notification) and
+    # awaits the user's Yes/No via /api/screen/permission-respond.
+    permission_manager = ScreenPermissionManager(consent_state)
+
+    def _notify_permission(request_id: str, tool_name: str, description: str) -> None:
+        bridge.post(
+            "notification",
+            event="MiniCPMPermission",
+            title=f"桌宠想{tool_name}",
+            extra={
+                "request_id": request_id,
+                "tool": tool_name,
+                "description": description,
+            },
+        )
+
+    async def _request_screen_permission(tool_name: str, description: str) -> bool:
+        """Ask the user (via the Electron host) to authorize one screen
+        action. Returns True when allowed, False on deny / timeout."""
+        return await permission_manager.request(
+            _notify_permission, tool_name, description
+        )
 
     # ── Long-term memory store ───────────────────────────────────────
     # One store per sidecar process. The frozen snapshot (MEMORY.md +
@@ -388,29 +454,20 @@ def build_app(
             memory_dir = Path.home() / "AppData" / "Roaming" / "MiniCPM Desk Pet" / "memories"
         else:
             memory_dir = Path.home() / ".local" / "share" / "MiniCPM Desk Pet" / "memories"
-    memory_store = MemoryStore()
+    # ── Theme-scoped memory (换身体 = 换灵魂) ─────────────────────────
+    # One MemoryContext holds the soul-layer stores (identity / episodic
+    # / mood) and switches them per animation theme. The boot theme comes
+    # from the Electron host via MINICPM_THEME.
+    mem_ctx = MemoryContext(memory_dir)
+    boot_theme = os.environ.get("MINICPM_THEME", "default")
     try:
-        memory_store.load_from_disk(memory_dir)
-        log.info("memory store loaded from %s", memory_dir)
+        mem_ctx.switch(boot_theme)
+        log.info("memory context: theme=%s base=%s", mem_ctx.current_theme, memory_dir)
     except Exception as exc:
-        log.warning("memory store load failed (continuing with empty memory): %s", exc)
-    set_memory_store(memory_store)
-
-    # ── LingLing episodic memory (events + mood) ─────────────────────
-    event_store = EventStore()
-    try:
-        event_store.load_from_disk(memory_dir)
-        log.info("event store loaded: %d events", event_store.event_count())
-    except Exception as exc:
-        log.warning("event store load failed (starting fresh): %s", exc)
-    set_event_store(event_store)
-
-    mood_store = MoodStore()
-    try:
-        mood_store.load_from_disk(memory_dir)
-        log.info("mood store loaded: %s (intensity=%d)", mood_store.current_mood, mood_store.intensity)
-    except Exception as exc:
-        log.warning("mood store load failed: %s", exc)
+        log.warning("memory context boot failed (continuing): %s", exc)
+    memory_store = mem_ctx.memory_store
+    event_store = mem_ctx.event_store
+    mood_store = mem_ctx.mood_store
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -456,12 +513,15 @@ def build_app(
 
         # LingLing: background weight decay. Runs every 10 minutes.
         # Events with pause_decay=True are skipped (actively being
-        # thought about). Consolidated events decay slower.
+        # thought about). Consolidated events decay slower. Freezes when
+        # there has been no conversation for FREEZE_HOURS (v3: memory
+        # only fades while the pet is awake — user doesn't talk for a
+        # day or two, memories hold still).
         async def _decay_loop():
             while True:
                 try:
                     await asyncio.sleep(_decay_module.DECAY_INTERVAL_SECONDS)
-                    _decay_module.run_decay(event_store)
+                    _decay_module.run_decay(event_store, _last_conversation_at)
                 except asyncio.CancelledError:
                     break
                 except Exception as exc:
@@ -555,13 +615,16 @@ def build_app(
         # "once" consent was meant for the HTTP auto-injection path.
         async with consent_lock:
             if consent_state == "deny":
-                return {
-                    "content": [{"type": "text", "text": (
-                        "⚠️ 屏幕观察未授权。请告诉用户去设置中开启「允许查看屏幕」权限。"
-                    )}],
-                    "is_error": True,
-                    "summary": "Screen observation denied — consent required.",
-                }
+                # AI-agent style: ask the user (Yes/No bubble on the
+                # Electron side) for THIS action instead of refusing.
+                if not await _request_screen_permission("查看屏幕", "观察屏幕内容（OmniParser OCR）"):
+                    return {
+                        "content": [{"type": "text", "text": (
+                            "用户拒绝了这次屏幕观察。不要继续尝试，除非用户明确要求。"
+                        )}],
+                        "is_error": True,
+                        "summary": "Screen observation denied by user.",
+                    }
             # Promote "once" to "always" so tool calls don't exhaust consent
             if consent_state == "once":
                 consent_state = "always"
@@ -627,13 +690,15 @@ def build_app(
 
         async with consent_lock:
             if consent_state == "deny":
-                return {
-                    "content": [{"type": "text", "text": (
-                        "⚠️ 屏幕截图未授权。请告诉用户去设置中开启「允许查看屏幕」权限。"
-                    )}],
-                    "is_error": True,
-                    "summary": "Screen capture denied — consent required.",
-                }
+                # AI-agent style: ask the user for THIS screenshot.
+                if not await _request_screen_permission("截图查看", "截取当前屏幕并查看画面"):
+                    return {
+                        "content": [{"type": "text", "text": (
+                            "用户拒绝了这次截图。不要继续尝试，除非用户明确要求。"
+                        )}],
+                        "is_error": True,
+                        "summary": "Screen capture denied by user.",
+                    }
             if consent_state == "once":
                 consent_state = "always"
         b64 = await asyncio.to_thread(screen_capture)
@@ -665,6 +730,26 @@ def build_app(
             "screenshot_mime": "image/jpeg",
             "is_error": False,
         }
+
+    # ── Builtin tool: screen_click (now consent-gated, async) ─────────
+    async def _handle_screen_click(args):
+        """MCP tool: perform a mouse action. Consent-gated like the other
+        screen tools (deny → per-action user authorization)."""
+        nonlocal consent_state, consent_lock
+        async with consent_lock:
+            if consent_state == "deny":
+                if not await _request_screen_permission("操作屏幕", "在屏幕上执行鼠标操作"):
+                    return {
+                        "content": [{"type": "text", "text": (
+                            "用户拒绝了这次屏幕操作。不要继续尝试，除非用户明确要求。"
+                        )}],
+                        "is_error": True,
+                        "summary": "Screen click denied by user.",
+                    }
+            if consent_state == "once":
+                consent_state = "always"
+        element = args.get("element", {}) if isinstance(args, dict) else {}
+        return screen_click.click_element(element)
 
     mcp_manager = MCPManager()
     mcp_manager.register_builtin({
@@ -712,16 +797,17 @@ def build_app(
             },
             "required": ["element"],
         },
-        "handler": lambda args: screen_click.click_element(args.get("element", {})),
+        "handler": _handle_screen_click,
     })
     mcp_manager.register_builtin({
         "name": "observe_screen",
         "description": (
-            "Capture and analyze the user's screen using OmniParser. "
-            "Returns structured labels of all visible text and icons with their "
-            "normalized bbox coordinates [x1,y1,x2,y2]. "
-            "Call this when the user asks you to look at their screen, check what "
-            "they are doing, or before clicking any screen element. "
+            "OCR the user's screen with OmniParser and return structured labels "
+            "with normalized bbox coordinates [x1,y1,x2,y2]. "
+            "USE ONLY when you need precise coordinates to CLICK or OPERATE a "
+            "screen element (screen_click needs a bbox from here). "
+            "Do NOT use this just to 'look at the screen' — you have eyes: "
+            "use capture_screen to see the actual image instead. "
             "If consent is denied the tool returns an error — guide the user to "
             "enable screen permission in settings."
         ),
@@ -733,10 +819,11 @@ def build_app(
         "description": (
             "Capture a raw screenshot of the user's screen and return it as an "
             "image for you to see directly with your vision capability. "
-            "Unlike observe_screen (which runs OCR and returns text labels), "
-            "this tool gives you the actual image so you can SEE the screen. "
-            "Call this when you want to visually inspect what's on screen — "
-            "reading UI layouts, understanding visual context, seeing images, etc. "
+            "USE THIS when the user asks you to look at their screen, see what "
+            "they're doing, or understand the current UI — you SEE the actual "
+            "picture. "
+            "Unlike observe_screen (which runs OCR for click coordinates), this "
+            "is the 'look' tool. "
             "Requires screen consent; if denied, tell the user to enable it in settings."
         ),
         "input_schema": {"type": "object", "properties": {}},
@@ -826,6 +913,24 @@ def build_app(
             "memory": memory_store.format_for_system_prompt("memory") or "",
             "user": memory_store.format_for_system_prompt("user") or "",
             "memory_dir": str(memory_dir),
+            "theme": mem_ctx.current_theme,
+        }
+
+    @app.post("/api/memory/switch")
+    async def switch_memory(payload: dict):
+        """Hot-switch the soul-layer memory to another animation theme
+        (换身体 = 换灵魂). Capability layer (skills/experiences) stays
+        global."""
+        nonlocal memory_store, event_store, mood_store
+        theme = str((payload or {}).get("theme") or "").strip()
+        slug = mem_ctx.switch(theme or None)
+        memory_store = mem_ctx.memory_store
+        event_store = mem_ctx.event_store
+        mood_store = mem_ctx.mood_store
+        return {
+            "ok": True,
+            "theme": slug,
+            "memory_dir": str(mem_ctx.theme_dir(slug)),
         }
 
     # ── LingLing episodic memory endpoints ───────────────────────────
@@ -844,6 +949,39 @@ def build_app(
             "total_weight": event_store.total_weight(),
         }
 
+    @app.get("/api/events/list")
+    async def list_events():
+        """Structured event list for the Settings → Memory viewer.
+
+        Read-only snapshot of the CURRENT theme's episodic memory,
+        sorted by weight (highest first), with the fields the model
+        judges and the system derives.
+        """
+        events = sorted(
+            event_store.get_all_events(),
+            key=lambda e: e.get("weight", 0),
+            reverse=True,
+        )
+        return {
+            "events": [
+                {
+                    "title": e.get("title", ""),
+                    "content": e.get("content", ""),
+                    "weight": e.get("weight", 0),
+                    "emotion": e.get("emotion", ""),
+                    "type": e.get("type", "experience"),
+                    "resolved": e.get("resolved", True),
+                    "core": e.get("core", False),
+                    "created_at": e.get("created_at", ""),
+                    "access_count": e.get("access_count", 0),
+                    "decay_coefficient": e.get("decay_coefficient", 1.0),
+                }
+                for e in events
+            ],
+            "count": len(events),
+            "theme": mem_ctx.current_theme,
+        }
+
     @app.post("/api/events/extract")
     async def extract_events(payload: dict):
         """Extract events from the last conversation turn.
@@ -857,19 +995,48 @@ def build_app(
         events_added = []
         mood_updated = False
         try:
-            # Look for JSON block in the response
-            import re as _re
-            json_match = _re.search(r'\{[^{}]*"events"[^{}]*\}', response_text, _re.DOTALL)
-            if json_match:
-                data = json.loads(json_match.group())
+            data = parse_event_block(response_text)
+            if data:
+                # Engagement proxy: rough token size of this conversation
+                # turn (chars/4 ≈ tokens, no tokenizer needed). Feeds the
+                # event's consolidation weighting (deep talk → harder to
+                # forget; perfunctory → fades).
+                conversation_tokens = len(response_text) // 4
                 for evt_data in data.get("events", []):
                     evt = event_store.add_event(
                         title=evt_data.get("title", ""),
                         content=evt_data.get("content", ""),
                         weight=evt_data.get("weight", 300),
+                        emotion=evt_data.get("emotion"),  # None → derive from flow
+                        type_=evt_data.get("type", "experience"),
+                        resolved=evt_data.get("resolved", True),
+                        core=bool(evt_data.get("core", False)),
+                        conversation_tokens=conversation_tokens,
                     )
                     events_added.append(evt["id"])
                 _resonance_module.mark_stale()
+
+                # Core memory bank: the model can promote events by title
+                # via a top-level "core" array. Cap the bank at CORE_CAP —
+                # putting something in means it almost never fades, so it
+                # must stay rare.
+                CORE_CAP = 7
+                core_names = data.get("core") or []
+                existing_core = sum(1 for e in event_store.get_all_events() if e.get("core"))
+                if core_names and existing_core < CORE_CAP:
+                    budget = CORE_CAP - existing_core
+                    promoted = 0
+                    for evt in event_store.get_all_events():
+                        if promoted >= budget:
+                            break
+                        if evt.get("core"):
+                            continue
+                        if evt.get("title") in core_names:
+                            evt["core"] = True
+                            promoted += 1
+                    if promoted:
+                        event_store.save()
+                        log.info("Core bank: promoted %d event(s)", promoted)
 
                 mood_data = data.get("mood", {})
                 if mood_data:
@@ -968,6 +1135,9 @@ def build_app(
 
     updater = ModelUpdater(_get_active_model_path(), source=update_source)
 
+    # llama.cpp engine self-update (binary, not weights).
+    engine_updater = SidecarUpdater()
+
     # ─── Health / introspection ────────────────────────────────────────
 
     @app.get("/api/health")
@@ -983,6 +1153,7 @@ def build_app(
             "accel": current,
             "device": current,  # alias used by older Electron code paths
             "dtype": "gguf",
+            "has_vision": bool(getattr(server, "mmproj_path", None)),
             "model_dir": str(server.model_path) if server.model_path else None,
             "model_name": server.model_path.name if server.model_path else None,
             "adapter": str(adapter) if adapter else None,
@@ -1057,14 +1228,18 @@ def build_app(
         if not target.is_file() or target.suffix.lower() != ".gguf":
             return JSONResponse({"error": f"not a .gguf file: {target}"}, status_code=400)
         # Resolve mmproj: take the explicit value when provided, otherwise
-        # look up a sibling `mmproj-*.gguf`. Empty string clears it.
+        # look up a sibling `mmproj-*.gguf`. Empty string clears it —
+        # CRITICAL: swap_model treats None as "keep the previous pairing",
+        # so a model without a sibling mmproj MUST pass "" or the old
+        # projector stays paired and crashes llama-server with an embd
+        # mismatch (e.g. Nanbeige text model + Qwen3.5 mmproj).
         if mmproj_path:
             mmproj_target = Path(mmproj_path).expanduser().resolve()
             if not mmproj_target.is_file() or mmproj_target.suffix.lower() != ".gguf":
                 return JSONResponse({"error": f"not a .gguf file: {mmproj_target}"}, status_code=400)
         else:
             sibling = find_sibling_mmproj(target)
-            mmproj_target = sibling  # may be None
+            mmproj_target = sibling or ""  # "" clears; never None
         bridge.post("working", event="LoadModel", title=f"加载 {target.name}")
         try:
             await server.swap_model(target, mmproj_target)
@@ -1307,6 +1482,137 @@ def build_app(
 
         return StreamingResponse(stream(), media_type="text/event-stream")
 
+    # ─── Engine (llama.cpp binary) updater ─────────────────────────────
+
+    @app.get("/api/engine-update-check")
+    async def engine_update_check():
+        return await asyncio.to_thread(engine_updater.check)
+
+    @app.post("/api/engine-update-apply")
+    async def engine_update_apply():
+        """One-click llama-server binary update.
+
+        Streams the same phase contract as /api/update-apply
+        (start/transfer/swap/complete → reloaded). The engine is stopped
+        before the file swap (Windows exe file locks) and restarted
+        afterwards via callbacks bridged back into this event loop.
+        """
+        nonlocal startup_error
+        loop = asyncio.get_running_loop()
+        was_alive = server.alive
+
+        async def _stop_server():
+            if server.alive:
+                await server.stop()
+
+        async def _start_server():
+            await server.start()
+            startup_error = None
+
+        def sync_stop() -> None:
+            fut = asyncio.run_coroutine_threadsafe(_stop_server(), loop)
+            fut.result(timeout=30)
+
+        def sync_start() -> None:
+            fut = asyncio.run_coroutine_threadsafe(_start_server(), loop)
+            fut.result(timeout=90)
+
+        async def stream():
+            queue: asyncio.Queue = asyncio.Queue()
+            sentinel = object()
+
+            def producer():
+                try:
+                    for ev in engine_updater.apply(
+                        stop_callback=sync_stop,
+                        start_callback=sync_start if was_alive else None,
+                    ):
+                        loop.call_soon_threadsafe(queue.put_nowait, ev)
+                finally:
+                    loop.call_soon_threadsafe(queue.put_nowait, sentinel)
+
+            import threading as _t
+            _t.Thread(target=producer, daemon=True).start()
+
+            bridge.post("working", event="EngineUpdate", title="正在更新推理引擎")
+            try:
+                while True:
+                    ev = await queue.get()
+                    if ev is sentinel:
+                        break
+                    yield _sse(ev)
+                    if ev.get("phase") == "complete":
+                        yield _sse({
+                            "phase": "reloaded",
+                            "engine": engine_updater.remote_version() or "?",
+                        })
+            finally:
+                bridge.post("idle")
+
+        return StreamingResponse(stream(), media_type="text/event-stream")
+
+    @app.post("/api/engine-update-apply-dir")
+    async def engine_update_apply_dir(payload: dict):
+        """Offline engine update from a user-provided folder (e.g. a copy
+        of an official release someone else downloaded). The folder must
+        contain a runnable llama-server newer than the installed one;
+        it is copied, never modified. Same SSE phase contract as the
+        online path."""
+        nonlocal startup_error
+        source_dir = str((payload or {}).get("source_dir") or "").strip()
+        if not source_dir:
+            return JSONResponse({"error": "source_dir is required"}, status_code=400)
+        loop = asyncio.get_running_loop()
+        was_alive = server.alive
+
+        async def _stop_server():
+            if server.alive:
+                await server.stop()
+
+        async def _start_server():
+            await server.start()
+            startup_error = None
+
+        def sync_stop() -> None:
+            fut = asyncio.run_coroutine_threadsafe(_stop_server(), loop)
+            fut.result(timeout=30)
+
+        def sync_start() -> None:
+            fut = asyncio.run_coroutine_threadsafe(_start_server(), loop)
+            fut.result(timeout=90)
+
+        async def stream():
+            queue: asyncio.Queue = asyncio.Queue()
+            sentinel = object()
+
+            def producer():
+                try:
+                    for ev in engine_updater.apply_from_dir(
+                        source_dir,
+                        stop_callback=sync_stop,
+                        start_callback=sync_start if was_alive else None,
+                    ):
+                        loop.call_soon_threadsafe(queue.put_nowait, ev)
+                finally:
+                    loop.call_soon_threadsafe(queue.put_nowait, sentinel)
+
+            import threading as _t
+            _t.Thread(target=producer, daemon=True).start()
+
+            bridge.post("working", event="EngineUpdate", title="正在从文件夹更新推理引擎")
+            try:
+                while True:
+                    ev = await queue.get()
+                    if ev is sentinel:
+                        break
+                    yield _sse(ev)
+                    if ev.get("phase") == "complete":
+                        yield _sse({"phase": "reloaded"})
+            finally:
+                bridge.post("idle")
+
+        return StreamingResponse(stream(), media_type="text/event-stream")
+
     # ─── Chat ──────────────────────────────────────────────────────────
 
     @app.post("/api/warmup")
@@ -1372,12 +1678,12 @@ def build_app(
         if req.stream:
             return StreamingResponse(
                 _stream_chat_provider(
-                    provider_registry, mcp_manager, bridge, req, server, state, lora_arr,
+                    provider_registry, mcp_manager, bridge, req, server, state, mood_store, lora_arr,
                 ),
                 media_type="text/event-stream",
             )
         return JSONResponse(await _blocking_chat_provider(
-            provider_registry, mcp_manager, bridge, req, server, state, lora_arr,
+            provider_registry, mcp_manager, bridge, req, server, state, mood_store, lora_arr,
         ))
 
     @app.post("/api/debug/chat")
@@ -1493,6 +1799,21 @@ def build_app(
     @app.get("/api/screen/consent-status")
     async def get_consent():
         return {"current_consent": consent_state}
+
+    @app.post("/api/screen/permission-respond")
+    async def permission_respond(payload: dict):
+        """Electron host replies to a per-action screen permission request
+        (user clicked Yes/No on the authorization dialog)."""
+        nonlocal consent_state, consent_lock
+        request_id = str((payload or {}).get("request_id") or "")
+        allow = bool((payload or {}).get("allow", False))
+        remember = bool((payload or {}).get("remember", False))
+        result = await permission_manager.respond(request_id, allow, remember)
+        # Keep the legacy consent_state mirror in sync ("always").
+        if remember:
+            async with consent_lock:
+                consent_state = "always"
+        return result
 
     @app.post("/api/screen/observe")
     async def observe_screen(payload: dict = {}):
@@ -1647,12 +1968,13 @@ def build_app(
                 "/api/models", "/api/load-model", "/api/upload-model",
                 "/api/devices", "/api/set-device", "/api/onboarding",
                 "/api/update-check", "/api/update-apply",
+                "/api/engine-update-check", "/api/engine-update-apply", "/api/engine-update-apply-dir",
                 "/api/adapters", "/api/load-adapter", "/api/classify",
                 "/api/state",
                 "/api/skills", "/api/skills/{name}", "/api/skills/learn",
                 "/api/curator/run", "/api/curator/status", "/api/curator/paused", "/api/curator/pin", "/api/curator/restore",
                 "/api/providers",
-                "/api/memory",
+                "/api/memory", "/api/memory/switch",
                 "/api/events/context", "/api/events/extract", "/api/events/resonance",
                 "/api/mood", "/api/mood/context",
                 "/api/mcp/servers", "/api/mcp/execute",
@@ -1760,6 +2082,7 @@ async def _stream_chat_provider(
     req: ChatRequest,
     server: LlamaServer,
     server_state: dict,
+    mood_store: Optional[MoodStore] = None,
     lora_arr: Optional[list[dict]] = None,
 ) -> AsyncGenerator[bytes, None]:
     """Provider-based streaming chat with MCP tool support."""
@@ -1797,6 +2120,10 @@ async def _stream_chat_provider(
 
     yield _sse({"event": "start"})
 
+    # LingLing v3: a conversation is happening — un-freeze memory decay.
+    global _last_conversation_at
+    _last_conversation_at = datetime.now(timezone.utc)
+
     messages = [{"role": m.role, "content": m.content} for m in req.messages]
     system = req.system
 
@@ -1822,12 +2149,11 @@ async def _stream_chat_provider(
                     b.get("text", "") for b in last_msg["content"] if isinstance(b, dict) and b.get("type") == "text"
                 )
             if msg_text:
-                resonance_hits = _resonance_module.find_resonance(event_store, msg_text)
+                resonance_hits = await _resonance_module.find_resonance(event_store, msg_text)
                 if resonance_hits:
-                    resonance_text = "\n\n【因为用户刚才说的话，你想起了这些】\n"
-                    for evt in resonance_hits:
-                        resonance_text += f"- [{evt['title']}] {evt['content']}\n"
-                    system = (system or "") + resonance_text
+                    # v2: felt-language + time annotation (this is a memory
+                    # surfacing, not a database hit).
+                    system = (system or "") + _resonance_module.build_resonance_block(resonance_hits)
     except Exception as exc:
         log.warning("LingLing context injection failed (continuing): %s", exc)
 
@@ -1865,7 +2191,13 @@ async def _stream_chat_provider(
             "system": system,
             "tools": tools_list,
             "max_tokens": effective_max,
-            "temperature": req.temperature,
+            # Emotion index modulates temperature (happy → more divergent,
+            # sad → more subdued). Applied per iteration so tool-call
+            # follow-ups also carry the current emotional temperature.
+            "temperature": modulate_temperature(
+                req.temperature,
+                mood_store.emotion_index if mood_store is not None else 0.0,
+            ),
             "top_p": req.top_p,
         }
         if provider.name == "local":
@@ -2037,6 +2369,11 @@ async def _stream_chat_provider(
 
     if not req.silent:
         bridge.post("attention", emotion=_emotion)
+        # Emotion index: the model's chosen tag moves the index (calm=0,
+        # happy +0.1, sad -0.1, …), which modulates the NEXT reply's
+        # temperature. Silent requests (narrator / classifier) never move it.
+        if mood_store is not None:
+            mood_store.apply_emotion_tag(_emotion)
     yield _sse({"event": "end"})
 
 
@@ -2047,12 +2384,13 @@ async def _blocking_chat_provider(
     req: ChatRequest,
     server: LlamaServer,
     server_state: dict,
+    mood_store: Optional[MoodStore] = None,
     lora_arr: Optional[list[dict]] = None,
 ) -> dict:
     """Non-streaming provider-based chat. Accumulates the stream into a response."""
     collector: list[str] = []
     async for sse_bytes in _stream_chat_provider(
-        registry, mcp_manager, bridge, req, server, server_state, lora_arr,
+        registry, mcp_manager, bridge, req, server, server_state, mood_store, lora_arr,
     ):
         # Parse SSE to collect content
         line = sse_bytes.decode("utf-8", "ignore")

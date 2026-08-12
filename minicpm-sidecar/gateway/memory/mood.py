@@ -49,6 +49,40 @@ EMOTION_TO_MOOD: Dict[str, str] = {
 
 MOOD_TO_EMOTION: Dict[str, str] = {v: k for k, v in EMOTION_TO_MOOD.items()}
 
+# ── Emotion index (情绪指数) ──────────────────────────────────────────
+# Every [EMOTION:xxx] tag the model emits moves the index: calm is 0,
+# happy +0.1, sad -0.1, etc. The index modulates the NEXT reply's
+# temperature (happy → more divergent, sad → more subdued). Unknown tags
+# are ignored (idempotent).
+EMOTION_INDEX_DELTAS: Dict[str, float] = {
+    "excited": +0.15,
+    "happy": +0.10,
+    "curious": +0.05,
+    "neutral": -0.05,
+    "sad": -0.10,
+    "scared": -0.10,
+    "mad": -0.15,
+}
+INDEX_MIN = -1.0
+INDEX_MAX = 1.0
+
+
+def _clamp_index(value: float) -> float:
+    return max(INDEX_MIN, min(INDEX_MAX, value))
+
+
+def index_mood_phrase(index: float) -> str:
+    """Map the numeric index to a felt phrase for the system prompt."""
+    if index >= 0.4:
+        return "高涨"
+    if index >= 0.15:
+        return "轻快"
+    if index > -0.15:
+        return "平静"
+    if index > -0.4:
+        return "低沉"
+    return "低落"
+
 
 class MoodStore:
     """Persistent mood state with file backing.
@@ -64,6 +98,7 @@ class MoodStore:
         self._reason: str = "刚开始，一切都新鲜"
         self._since: str = datetime.now(timezone.utc).isoformat()
         self._history: List[Dict[str, Any]] = []
+        self._emotion_index: float = 0.0
 
     def _path(self) -> Path:
         if self._memory_dir is None:
@@ -84,6 +119,7 @@ class MoodStore:
             self._reason = data.get("reason", "")
             self._since = data.get("since", datetime.now(timezone.utc).isoformat())
             self._history = data.get("history", [])[-50:]  # keep last 50
+            self._emotion_index = _clamp_index(float(data.get("emotion_index", 0.0)))
         except Exception as exc:
             logger.warning("MoodStore load failed: %s", exc)
 
@@ -99,6 +135,7 @@ class MoodStore:
             "reason": self._reason,
             "since": self._since,
             "history": self._history[-50:],
+            "emotion_index": self._emotion_index,
         }
         content = json.dumps(data, ensure_ascii=False, indent=2)
         fd, tmp_path = tempfile.mkstemp(
@@ -136,6 +173,23 @@ class MoodStore:
     @property
     def since(self) -> str:
         return self._since
+
+    @property
+    def emotion_index(self) -> float:
+        return self._emotion_index
+
+    def apply_emotion_tag(self, tag: str) -> float:
+        """Move the emotion index by the tag's delta (model chose the tag).
+
+        calm=0, happy +0.1, sad -0.1, … Clamped to [INDEX_MIN, INDEX_MAX],
+        persisted, returns the new index.
+        """
+        delta = EMOTION_INDEX_DELTAS.get((tag or "").lower())
+        if delta is None:
+            return self._emotion_index  # unknown tag — idempotent
+        self._emotion_index = _clamp_index(self._emotion_index + delta)
+        self.save()
+        return self._emotion_index
 
     def get_params(self) -> Dict[str, Any]:
         """Get the physical animation parameters for the current mood."""
@@ -196,6 +250,8 @@ class MoodStore:
             f"你现在感到{self._current_mood}（强度{self._intensity}/100）。\n"
             f"原因：{self._reason}\n"
             f"从{self._since[:16]}持续到现在。\n\n"
+            f"你当前的情绪指数：{self._emotion_index:+.2f}（{index_mood_phrase(self._emotion_index)}）。"
+            f"指数越高你说话越活泼发散，越低越低沉收敛。\n\n"
             f"基于这个心情自然说话。不需要每句话都体现。\n"
             f"如果你很难过，你可以只输出\"……\"。\n"
             f"在回复最开头用方括号标注情绪，如[{self._current_mood}]。此标签控制你的动画，不显示给用户。"
@@ -212,6 +268,13 @@ def build_mood_assessment_prompt(
     a conversation turn. This is combined with event extraction.
 
     The model outputs JSON with both events and mood assessment.
+
+    v2 (2026-08-01): emotion-flow encoding — every sentence of the event
+    content carries a per-speaker emotion tag in （情绪） format, so
+    recalling the event re-lives its emotional rhythm. The event-level
+    emotion is derived by the system from the flow (aggregate_emotion),
+    the model never writes a separate emotion field. The prompt must stay
+    in sync with the renderer's <<<MEM>>> instruction block.
     """
     return f"""回顾刚才的对话。
 
@@ -220,9 +283,22 @@ def build_mood_assessment_prompt(
 提取值得记住的事件（0-3条）。对每个事件输出：
 {{
   "title": "一句话标题，不超过15字",
-  "content": "用你自己的话描述发生了什么，你的感受，为什么重要",
-  "weight": 1-999的整数
+  "content": "用『句子（情绪）』格式重写刚才的对话——每句话标注当时的情绪",
+  "weight": 1-999的整数,
+  "type": "experience 或 knowledge",
+  "resolved": true 或 false
 }}
+
+content 示例：
+"今天用户问我星期几（平静），我说星期二（平淡），反问用户咋连星期几都不知道（疑惑）。"
+
+情绪只能从这些词里选：平静、开心、难过、疑惑、生气、兴奋、疲惫、平淡、紧张、期待
+
+规则：
+- 已知常识不许写成事件——参数知识里本来就有，不是经历
+- type=knowledge 只用于"你刚才学到了新信息"（比如用户告诉你的新东西）
+- 未完成的事 resolved=false（事情还没结束，你放不下）；已结束的写 true
+- 想不起原话可以概括，但每句话都必须带（情绪）
 
 权重参考（不是规则，是你自己的判断）：
 - 日常闲聊、无情感波动：100-300
@@ -231,11 +307,14 @@ def build_mood_assessment_prompt(
 
 你觉得重要就重要。不需要理由。
 
+核心记忆（core）：如果你在这一轮里经历了你一辈子都不想忘的事，把它的 title 放进顶层 "core" 数组（最多7条）。放进去就几乎永远忘不掉——要非常谨慎，宁可少放。
+
 然后评估你的心情变化。
 
 输出JSON：
 {{
-  "events": [{{"title":"...","content":"...","weight":N}}],
+  "events": [{{"title":"...","content":"...(情绪)格式...","weight":N,"type":"...","resolved":true/false}}],
+  "core": ["想永远记住的事的标题"],
   "mood": {{
     "mood": "你现在的心情",
     "intensity": 0-100,

@@ -4,6 +4,9 @@ description: "4 阶段系统化调试法：复现 → 缩小 → 根因 → 修�
 tags: [debugging, troubleshooting, root-cause]
 version: 1.0.0
 platforms: [windows, macos, linux]
+action_type: analyze
+discipline: coding
+carrier: any
 ---
 
 # 系统化调试技能

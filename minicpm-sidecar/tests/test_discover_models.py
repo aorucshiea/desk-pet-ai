@@ -35,3 +35,21 @@ def test_discover_accepts_direct_file(tmp_path: Path) -> None:
     items = discover_models([f])
     assert len(items) == 1
     assert items[0]["name"] == "single.gguf"
+
+
+def test_discover_excludes_mmproj_vision_projector(tmp_path: Path) -> None:
+    """mmproj-*.gguf is a vision projector (--mmproj), not a loadable
+    main model — loading it as --model fails with 'unsupported model
+    architecture: clip'. It must never surface in model discovery."""
+    (tmp_path / "qwen-4b-q4.gguf").write_bytes(b"x")
+    (tmp_path / "mmproj-F16.gguf").write_bytes(b"x")
+    (tmp_path / "MMPROJ-Q8.gguf").write_bytes(b"x")  # case-insensitive
+
+    items = discover_models([tmp_path])
+    assert [it["name"] for it in items] == ["qwen-4b-q4.gguf"]
+
+
+def test_discover_direct_mmproj_file_excluded(tmp_path: Path) -> None:
+    f = tmp_path / "mmproj-F16.gguf"
+    f.write_bytes(b"x")
+    assert discover_models([f]) == []

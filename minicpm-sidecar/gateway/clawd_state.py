@@ -61,7 +61,7 @@ class ClawdBridge:
         with self._lock:
             self._session_id = f"minicpm-{uuid.uuid4().hex[:8]}"
 
-    def post(self, state: str, *, event: Optional[str] = None, title: Optional[str] = None, emotion: Optional[str] = None) -> None:
+    def post(self, state: str, *, event: Optional[str] = None, title: Optional[str] = None, emotion: Optional[str] = None, extra: Optional[dict] = None) -> None:
         if not self.enabled:
             return
         body = {
@@ -75,6 +75,8 @@ class ClawdBridge:
             body["session_title"] = title
         if emotion and emotion != "neutral":
             body["emotion"] = emotion
+        if extra:
+            body.update(extra)
 
         order: list[int] = []
         if self._port:
@@ -91,7 +93,13 @@ class ClawdBridge:
                     content=payload,
                     headers={"Content-Type": "application/json"},
                 )
-                if resp.headers.get("x-clawd-server") == "clawd-on-desk" or resp.status_code < 500:
+                # Claim a port ONLY when it's really us: the
+                # x-clawd-server marker, or a 2xx (the desk-pet HTTP
+                # server answers known /state routes with 204/200).
+                # Anything else — Cherry Studio's Express 404, an
+                # unrelated service's 405, a 400 from an unknown state —
+                # is NOT our pet; keep probing the other ports.
+                if resp.headers.get("x-clawd-server") == "clawd-on-desk" or 200 <= resp.status_code < 300:
                     self._port = port
                     if self.debug:
                         print(f"[clawd] {state} -> :{port} ({resp.status_code})")

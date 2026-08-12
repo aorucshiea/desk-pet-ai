@@ -91,17 +91,20 @@ class TestResonance:
             )
             yield store
 
-    def test_find_resonance_keyword_fallback(self, event_store):
+    @pytest.mark.asyncio
+    async def test_find_resonance_keyword_fallback(self, event_store, monkeypatch):
         loader.reset_session()
-        # embedding model probably not installed, falls back to keyword
-        results = res.find_resonance(event_store, "加班")
+        # No API key → keyword fallback (no embedding calls).
+        monkeypatch.setattr(res, "_api_key", lambda: None)
+        results = await res.find_resonance(event_store, "加班")
         assert len(results) >= 0  # keyword match may find 0 or 1
 
-    def test_find_resonance_empty_message(self, event_store):
-        results = res.find_resonance(event_store, "")
+    @pytest.mark.asyncio
+    async def test_find_resonance_empty_message(self, event_store):
+        results = await res.find_resonance(event_store, "")
         assert results == []
 
-    def test_mark_stale_triggers_rebuild(self):
+    def test_mark_stale_is_noop(self):
         res.mark_stale()
-        # Just verify no crash
+        # v2 index is incremental — no-op kept for backward compat
         assert True

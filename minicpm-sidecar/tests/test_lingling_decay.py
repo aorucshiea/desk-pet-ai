@@ -20,16 +20,27 @@ class TestDecay:
 
     def test_decay_reduces_weight(self, fresh_store):
         evt = fresh_store.add_event(title="T", content="C", weight=500)
-        evt["last_accessed"] = "2000-01-01T00:00:00"  # 26 years ago
+        # v3 bills decay from last_decay_at (not last_accessed).
+        evt["last_decay_at"] = "2000-01-01T00:00:00"  # 26 years ago
         de.run_decay(fresh_store)
         updated = fresh_store.get_event(evt["id"])
         assert updated["weight"] < 500
 
     def test_decay_already_zero_stays_zero(self, fresh_store):
-        evt = fresh_store.add_event(title="Zero", content="test", weight=0)
+        """v3: weight-0 events are skipped entirely — and weight never
+        goes below the W_MIN floor (user: 不能到 0)."""
+        evt = fresh_store.add_event(title="Zero", content="test", weight=1)
+        evt["weight"] = 0.0  # explicit zero (disabled/forgotten ghost)
         evt["last_accessed"] = "2000-01-01T00:00:00"
         de.run_decay(fresh_store)
         assert fresh_store.get_event(evt["id"])["weight"] == 0
+
+    def test_decay_never_below_floor(self, fresh_store):
+        evt = fresh_store.add_event(title="Floor", content="test", weight=100)
+        evt["last_accessed"] = "2000-01-01T00:00:00"
+        for _ in range(100):
+            de.run_decay(fresh_store)
+        assert fresh_store.get_event(evt["id"])["weight"] >= de.W_MIN
 
     def test_pause_decay_skips_event(self, fresh_store):
         evt = fresh_store.add_event(title="Paused", content="test", weight=500)
