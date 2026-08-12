@@ -9,6 +9,7 @@ User spec (2026-08-01):
 
 from __future__ import annotations
 
+import random
 from pathlib import Path
 
 import pytest
@@ -91,6 +92,43 @@ class TestFadedDirectoryLabels:
         evt = store.add_event(title="模糊但还在", content="c", weight=100)
         lines = loader.build_faded_directory(store, exclude_ids=set())
         assert any("模糊但还在"[:3] in ln for ln in lines)  # 5×0.1=0→clamp 3字
+
+
+class TestMoodModulatedFlashback:
+    """闪现随情绪：冷静 → 高权重被潜意识过滤，只有低权重浮现；
+    开心 → 闪现频发 (scale 放大)。"""
+
+    def test_calm_filters_high_weight(self, store):
+        hi = store.add_event(title="大事", content="c", weight=900)
+        lo = store.add_event(title="小事", content="c", weight=100)
+        loader.reset_session()
+        # 冷静（index=-1）：高权重（>300）被过滤 — 候选只剩小事。
+        hi["weight"] = 900
+        lo["weight"] = 100
+        store.save()
+        calmed = loader.pick_flashback(store, set(), emotion_index=-1.0)
+        assert calmed is None or calmed["id"] == lo["id"]
+
+    def test_happy_scale_increases_probability(self, store, monkeypatch):
+        store.add_event(title="小事", content="c", weight=100)
+        loader.reset_session()
+        # weight-100: 冷静 p=0.1×(1-0.8)=0.02, 开心 p=0.1×1.8=0.18。
+        # roll 0.05: 冷静 miss, 开心 hit.
+        monkeypatch.setattr(random, "random", lambda: 0.05)
+        calm_hit = loader.pick_flashback(store, set(), emotion_index=-1.0)
+        monkeypatch.setattr(random, "random", lambda: 0.05)
+        happy_hit = loader.pick_flashback(store, set(), emotion_index=1.0)
+        assert calm_hit is None
+        assert happy_hit is not None
+
+    def test_flashback_surface_consolidates(self, store, monkeypatch):
+        evt = store.add_event(title="边缘", content="c", weight=100)
+        loader.reset_session()
+        monkeypatch.setattr(random, "random", lambda: 0.0)
+        hit = loader.pick_flashback(store, set(), emotion_index=0.0)
+        assert hit is not None
+        # 突然想起 = 权重加深（on_event_accessed: +2 巩固）
+        assert store.get_event(evt["id"])["weight"] >= 102
 
 
 class TestFlashbackDenominator:
@@ -191,7 +229,7 @@ class TestTimeSense:
         store.save()
         # Force flashback to pick this event.
         monkeypatch.setattr(loader, "_session_loaded_ids", set())
-        monkeypatch.setattr(loader, "pick_flashback", lambda s, ex: store.get_event(evt["id"]))
+        monkeypatch.setattr(loader, "pick_flashback", lambda s, ex, ei=0.0: store.get_event(evt["id"]))
         loader.reset_session()
         ctx = loader.build_memory_context(store)
         assert "[-5小时]" in ctx and "闪现" in ctx

@@ -41,6 +41,15 @@ TOP_N = 5
 FLASHBACK_PROBABILITY_DIVISOR = 1000
 FLASHBACK_DILUTION_PER_EVENT = 10
 
+# Flashback is mood-modulated (情绪 → 潜意识浮现):
+#   - calm/sad (emotion_index < 0): the subconscious tightens — HIGH-weight
+#     events above FLASH_CALM_FILTER_WEIGHT are filtered out (你冷静时不会
+#     突然想起大事), only low-weight edge memories may surface, and overall
+#     probability shrinks.
+#   - happy/excited (index > 0): flashes become more frequent (× scale).
+FLASH_MOOD_SCALE = 0.8            # p × (1 + index × 0.8)
+FLASH_CALM_FILTER_WEIGHT = 300    # calm-mode high-weight filter
+
 # Minimum visible characters for a directory title to appear at all.
 # Below this, the event doesn't just look fuzzy — it's gone.
 MIN_VISIBLE_CHARS = 3
@@ -106,14 +115,26 @@ def load_top_events(store: EventStore, n: int = TOP_N) -> List[Dict[str, Any]]:
 def pick_flashback(
     store: EventStore,
     exclude_ids: Set[str],
+    emotion_index: float = 0.0,
 ) -> Optional[Dict[str, Any]]:
-    """Probabilistic flashback: one random event from the remainder.
+    """Probabilistic flashback: one random event from the remainder,
+    mood-modulated.
 
     Each candidate has probability weight / denominator of being picked,
     where denominator = 1000 + event_count × 10. Higher-weight events are
     more likely to surface spontaneously, and a bigger memory library
     dilutes any single event's chance (人脑也是记忆多了，单条更难浮现).
+
+    Emotion (情绪指数) shapes the subconscious:
+      - calm/sad (index < 0): high-weight events are filtered out — you
+        don't suddenly remember big things when you're quiet; only low-
+        weight edge memories may surface, and overall probability shrinks.
+      - happy/excited (index > 0): flashes scale up (× 1 + index×0.8).
+
+    A surfaced flashback consolidates (+2 & ×0.7 coefficient via
+    on_event_accessed) — 突然想起 = 权重加深.
     """
+    mood = max(-1.0, min(1.0, emotion_index or 0.0))
     denominator = FLASHBACK_PROBABILITY_DIVISOR + store.event_count() * FLASHBACK_DILUTION_PER_EVENT
     candidates = [
         e for e in store.get_all_events()
@@ -121,10 +142,14 @@ def pick_flashback(
         and e["id"] not in _session_loaded_ids
         and e["weight"] > 0
     ]
+    if mood < 0:
+        # 冷静：潜意识收敛，高权重记忆被过滤（不会突然想起大事）
+        candidates = [e for e in candidates if e["weight"] <= FLASH_CALM_FILTER_WEIGHT]
+    scale = 1.0 + mood * FLASH_MOOD_SCALE
     random.shuffle(candidates)
 
     for evt in candidates:
-        if random.random() < (evt["weight"] / denominator):
+        if random.random() < (evt["weight"] / denominator) * scale:
             on_event_accessed(store, evt["id"])
             add_to_session(evt["id"])
             return evt
@@ -188,19 +213,20 @@ def build_faded_directory(
     return lines
 
 
-def build_memory_context(store: EventStore) -> str:
+def build_memory_context(store: EventStore, emotion_index: float = 0.0) -> str:
     """Build the complete episodic memory context for the system prompt.
 
     This is the primary entry point. Call once per conversation turn
     (typically from fetchSkillsContext in the renderer, via a new
-    /api/events/context endpoint).
+    /api/events/context endpoint). ``emotion_index`` shapes the flashback
+    layer (冷静收敛/开心频发).
     """
     reset_session()
 
     top_events = load_top_events(store)
     top_ids = {e["id"] for e in top_events}
 
-    flashback = pick_flashback(store, top_ids)
+    flashback = pick_flashback(store, top_ids, emotion_index)
     if flashback:
         top_ids.add(flashback["id"])
 

@@ -2159,8 +2159,13 @@ async def _stream_chat_provider(
 
     # ── LingLing: inject episodic memory + mood + resonance ──────────
     try:
-        # 1. Episodic memory context (top-5 + flashback + faded directory)
-        episodic_ctx = _loader_module.build_memory_context(event_store)
+        # 1. Episodic memory context (top-5 + mood-modulated flashback +
+        #    faded directory). Emotion index shapes the subconscious:
+        #    冷静 → 高权重被过滤、闪现少；开心 → 闪现频发.
+        episodic_ctx = _loader_module.build_memory_context(
+            event_store,
+            emotion_index=mood_store.emotion_index if mood_store is not None else 0.0,
+        )
         if episodic_ctx and event_store.event_count() > 0:
             system = (system or "") + "\n\n" + episodic_ctx
 
