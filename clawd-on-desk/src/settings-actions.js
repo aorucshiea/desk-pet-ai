@@ -825,12 +825,16 @@ function setThemeSelection(payload, deps) {
     status: "ok",
     commit: { theme: themeId, themeVariant: nextVariantMap },
   };
-  // Side-effect: map the new theme to its assistant bucket in the chat
-  // renderer. Each animation theme = its own conversation history.
+  // Theme switch = body switch = soul switch: hot-swap the sidecar's
+  // soul-layer memory (events/identity/mood) to this theme, and push the
+  // change to the chat renderer so it reloads this theme's history.
   try {
     const chat = deps && typeof deps.getMinicpmChat === "function" ? deps.getMinicpmChat() : null;
-    if (chat && typeof chat.setActiveAssistant === "function") {
-      chat.setActiveAssistant(themeId);
+    if (chat && typeof chat.switchMemoryTheme === "function") {
+      void chat.switchMemoryTheme(themeId);
+    }
+    if (chat && typeof chat.notifyThemeChanged === "function") {
+      chat.notifyThemeChanged(themeId);
     }
   } catch {}
   return result;

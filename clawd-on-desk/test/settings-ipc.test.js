@@ -471,7 +471,7 @@ test("settings IPC opens the user themes directory", async () => {
   assert.deepStrictEqual(openCalls, ["C:\\Users\\Example\\AppData\\Roaming\\Clawd\\themes"]);
 });
 
-test("settings IPC imports MiniCPM Desk Pet user theme zip packages", async () => {
+test("settings IPC imports Desk Pet user theme zip packages", async () => {
   const root = makeTempDir();
   try {
     const userThemesDir = path.join(root, "user-themes");
@@ -525,7 +525,7 @@ test("settings IPC imports MiniCPM Desk Pet user theme zip packages", async () =
     });
     assert.deepStrictEqual(dialogParent, { id: "parent", sender: "sender-web-contents" });
     assert.deepStrictEqual(dialogOptions.properties, ["openFile"]);
-    assert.deepStrictEqual(dialogOptions.filters, [{ name: "MiniCPM Desk Pet theme zip", extensions: ["zip"] }]);
+    assert.deepStrictEqual(dialogOptions.filters, [{ name: "Desk Pet theme zip", extensions: ["zip"] }]);
     assert.strictEqual(
       fs.readFileSync(path.join(userThemesDir, "pixel-cat", "theme.json"), "utf8"),
       JSON.stringify(themeJson)
@@ -669,11 +669,10 @@ test("settings IPC serves agent/about/update/external and remove-theme dialog he
     ]);
     assert.deepStrictEqual(await ipcMain.invoke("settings:get-about-info"), {
       version: "1.2.3",
-      appName: "MiniCPM Desk Pet",
-      repoUrl: "https://github.com/OpenBMB/MiniCPM-Desk-Pet",
-      modelRepoUrl: "https://huggingface.co/openbmb/MiniCPM5-1B-GGUF",
+      appName: "deskpt",
+      repoUrl: "https://github.com/rullerzhou-afk/clawd-on-desk",
       license: "AGPL-3.0-only",
-      copyright: "\u00a9 2026 OpenBMB",
+      copyright: "\u00a9 2026",
       upstreamRepoUrl: "https://github.com/rullerzhou-afk/clawd-on-desk",
       upstreamLabel: "clawd-on-desk",
       heroSvgContent: "<svg id=\"hero\"></svg>",

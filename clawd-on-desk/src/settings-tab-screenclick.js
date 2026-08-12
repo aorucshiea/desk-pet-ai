@@ -68,6 +68,39 @@
     } catch(e) { console.warn("screenclick: makeToggle error", e); return el("div"); }
   }
 
+  // "总是允许查看屏幕" — binds screenObserveConsent (always/deny) and
+  // pushes the change to the live sidecar so it takes effect immediately.
+  function makeConsentToggle(label, desc) {
+    try {
+      var val = read("screenObserveConsent", "deny") === "always";
+      var cb = el("input", {
+        type: "checkbox", className: "toggle-input",
+        checked: val ? "checked" : undefined,
+        onchange: function() {
+          var next = cb.checked ? "always" : "deny";
+          try {
+            if (window.settingsAPI && typeof window.settingsAPI.update === "function") {
+              window.settingsAPI.update("screenObserveConsent", next);
+            }
+            if (window.settingsAPI && typeof window.settingsAPI.syncScreenConsent === "function") {
+              window.settingsAPI.syncScreenConsent(next);
+            }
+          } catch (err) { console.warn("screenclick: consent save failed", err); }
+        },
+      });
+      var card = el("div", { style: { background: "var(--panel-bg)", borderRadius: "8px", padding: "16px", marginTop: "12px", border: "1px solid var(--border)" } });
+      var row = el("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center" } },
+        el("div", null,
+          el("div", { style: { fontSize: "14px", fontWeight: "500", marginBottom: "4px" } }, label),
+          desc ? el("div", { style: { fontSize: "12px", color: "var(--text-secondary)" } }, desc) : null,
+        ),
+        el("label", { className: "toggle-switch" }, cb, el("span", { className: "toggle-slider" })),
+      );
+      card.appendChild(row);
+      return card;
+    } catch(e) { console.warn("screenclick: makeConsentToggle error", e); return el("div"); }
+  }
+
   function makeSelect(key, label, desc, options, fallback) {
     try {
       var val = read(key, fallback);
@@ -138,6 +171,7 @@
       parent.appendChild(el("h3", { style: { margin: "20px 0 4px 0", fontSize: "15px", fontWeight: "600" } }, t("screenclickSectionGeneral")));
       parent.appendChild(makeToggle("screenclick_enabled", t("screenclickEnabled"), t("screenclickEnabledDesc")));
       parent.appendChild(makeToggle("screenclick_clickEnabled", t("screenclickClickEnabled"), t("screenclickClickEnabledDesc")));
+      parent.appendChild(makeConsentToggle(t("screenclickAlwaysAllow"), t("screenclickAlwaysAllowDesc")));
 
       parent.appendChild(el("h3", { style: { margin: "20px 0 4px 0", fontSize: "15px", fontWeight: "600" } }, t("screenclickSectionOcr")));
       parent.appendChild(makeSelect("screenclick_ocrMode", t("screenclickOcrMode"), t("screenclickOcrModeDesc"), {

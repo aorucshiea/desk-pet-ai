@@ -101,6 +101,10 @@ contextBridge.exposeInMainWorld("settingsAPI", {
   detectAgentInstallations: () => ipcRenderer.invoke("settings:detect-agent-installations"),
   getAboutInfo: () => ipcRenderer.invoke("settings:get-about-info"),
   checkForUpdates: () => ipcRenderer.invoke("settings:check-for-updates"),
+  // Screen consent sync + Memory viewer — used by the Screen Click and
+  // Memory tabs (settingsAPI surface, not minicpmSettings).
+  syncScreenConsent: (value) => ipcRenderer.invoke("settings:sync-screen-consent", value),
+  getMemoryView: () => ipcRenderer.invoke("settings:get-memory-view"),
   getHardwareBuddyStatus: () => ipcRenderer.invoke("settings:get-hardware-buddy-status"),
   testHardwareBuddyApproval: () => ipcRenderer.invoke("settings:test-hardware-buddy-approval"),
   getQuickCommandPresets: () => ipcRenderer.invoke("settings:get-quick-command-presets"),
@@ -185,6 +189,17 @@ contextBridge.exposeInMainWorld("minicpmSettings", {
   openLogsDir: () => ipcRenderer.invoke("minicpm-settings:open-logs-dir"),
   getResources: () => ipcRenderer.invoke("minicpm-settings:get-resources"),
   openModelDir: () => ipcRenderer.invoke("minicpm-settings:open-model-dir"),
+  // llama.cpp engine (binary) self-update — Settings → Model tab.
+  engineLocalVersion: () => ipcRenderer.invoke("settings:engine-local-version"),
+  engineUpdateCheck: () => ipcRenderer.invoke("settings:engine-update-check"),
+  engineUpdateApply: () => ipcRenderer.invoke("settings:engine-update-apply"),
+  engineUpdateApplyDir: () => ipcRenderer.invoke("settings:engine-update-apply-dir"),
+  onEngineUpdateProgress: (cb) => {
+    if (typeof cb !== "function") return () => {};
+    const handler = (_e, p) => { try { cb(p || {}); } catch {} };
+    ipcRenderer.on("minicpm:engine-update-progress", handler);
+    return () => ipcRenderer.removeListener("minicpm:engine-update-progress", handler);
+  },
   getAdapterDir: () => ipcRenderer.invoke("minicpm-settings:get-adapter-dir"),
   openAdapterDir: () => ipcRenderer.invoke("minicpm-settings:open-adapter-dir"),
   getAdapterManifest: () => ipcRenderer.invoke("minicpm-settings:get-adapter-manifest"),
@@ -200,21 +215,7 @@ contextBridge.exposeInMainWorld("minicpmSettings", {
     ipcRenderer.invoke("minicpm:mcp-execute", { serverName, toolName, args }),
   getProviderPrefs: () => ipcRenderer.invoke("minicpm:get-provider-prefs"),
   getChatHistory: () => ipcRenderer.invoke("minicpm:get-chat-history"),
-  // Read another assistant's bucket directly without switching the live
-  // chat — used by the Settings → Context panel when showing history
-  // for any assistant (defaults to the live one).
-  getChatHistoryFor: (assistant) => ipcRenderer.invoke("minicpm:get-chat-history-for", { assistant }),
-  // Clear a specific assistant's bucket without touching the live chat.
-  clearChatHistoryFor: (assistant) => ipcRenderer.invoke("minicpm:clear-history-for", { assistant }),
-  setActiveAssistant: (assistant) => ipcRenderer.invoke("minicpm:set-active-assistant", { assistant }),
   clearChatHistory: () => ipcRenderer.invoke("minicpm:clear-chat-history"),
-  // Cherry-Studio style assistant/topic management. All calls route
-  // through a single whitelisted executor on the main process that
-  // invokes safe `window.__*` helpers inside the chat renderer.
-  execRenderer: (fn, args) => ipcRenderer.invoke("minicpm-settings:exec-renderer", {
-    fn,
-    args: args === undefined ? [] : args,
-  }),
   saveProvidersConfig: (providers) => ipcRenderer.invoke("minicpm:save-providers-config", { providers }),
   mcpGetConfig: () => ipcRenderer.invoke("minicpm:mcp-get-config"),
   mcpSaveConfig: (servers) => ipcRenderer.invoke("minicpm:mcp-save-config", { servers }),

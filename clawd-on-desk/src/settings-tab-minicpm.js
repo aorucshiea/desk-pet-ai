@@ -400,6 +400,14 @@
     box.appendChild(section);
   }
 
+  // Engine-update check result cache: { at, text, hasUpdate }. Reused
+  // across health-tick rebuilds so the version line doesn't flicker.
+  let engineCheckCache = null;
+  // While an engine update is running, the health tick must NOT rebuild
+  // the section — that would destroy the live progress bar mid-download
+  // and reset the buttons (leading to a spurious "另一个更新正在进行").
+  let engineUpdating = false;
+
   function pickLabelFromPath(p) {
     if (!p) return t("minicpmModelPathUnset");
     const m = String(p).match(/([^\\/]+?)(?:\.gguf)?$/i);
@@ -628,6 +636,289 @@
     rows.appendChild(pathRow);
 
     box.appendChild(section);
+  }
+
+  // ── Engine (llama.cpp binary) section ─────────────────────────────────
+  // One-click self-update of the inference engine: check the official
+  // GitHub release, then apply (download → swap → auto-restart). The
+  // sidecar endpoints live in gateway/sidecar_updater.py.
+  function renderEngineSection(box, ctx) {
+    // Never rebuild while an update is in flight — the health tick
+    // calls this repeatedly and would tear down the live progress bar.
+    if (engineUpdating && box.firstChild) return;
+    // Must clear before painting — refreshAll + the health tick both call
+    // this, and without the reset each pass appended a duplicate section.
+    box.innerHTML = "";
+    box.appendChild(sectionTitle(t("minicpmSectionEngine")));
+    const engSection = helpers.buildSection("", []);
+    const engRows = engSection.querySelector(".section-rows");
+
+    const engInfoRow = el("div", { className: "row minicpm-info-row" });
+    const engInfoText = el("div", { className: "row-text" });
+    engInfoText.appendChild(el("span", { className: "row-label" }, t("minicpmRowEngineVersion")));
+    engInfoText.appendChild(el("span", { className: "row-desc" }, t("minicpmEngineSectionDesc")));
+    engInfoRow.appendChild(engInfoText);
+    const engInfoVal = el("div", {
+      className: "row-control minicpm-info-value",
+    }, t("minicpmEngineUnchecked"));
+    engInfoRow.appendChild(engInfoVal);
+    engRows.appendChild(engInfoRow);
+
+    const engBtnRow = el("div", { className: "row" });
+    const engBtnCtl = el("div", { className: "row-control minicpm-path-actions" });
+
+    // Live download progress bar (hidden until an update starts).
+    const progRow = el("div", { style: { display: "none", margin: "10px 0 0 0" } });
+    const progTrack = el("div", {
+      style: {
+        height: "6px", borderRadius: "3px",
+        background: "rgba(128,128,128,0.25)", overflow: "hidden",
+      },
+    });
+    const progFill = el("div", {
+      style: {
+        height: "100%", width: "0%",
+        background: "var(--accent, #4a9eff)",
+        transition: "width .15s ease",
+      },
+    });
+    const progText = el("div", {
+      style: {
+        fontSize: "11px", color: "var(--text-secondary, #8899b0)",
+        marginTop: "4px",
+      },
+    });
+    progTrack.appendChild(progFill);
+    progRow.appendChild(progTrack);
+    progRow.appendChild(progText);
+    engRows.appendChild(progRow);
+
+    const updateBtn = softBtn(t("minicpmEngineUpdateButton"), async () => {
+      if (updateBtn.disabled) return;
+      updateBtn.disabled = true;
+      checkBtn.disabled = true;
+      updateBtn.textContent = t("minicpmEngineUpdateBusy");
+      engInfoVal.textContent = "…";
+      progRow.style.display = "";
+      progFill.style.width = "0%";
+      progText.textContent = "…";
+      engineUpdating = true;
+      // Speed calculation: delta bytes / delta time between transfers,
+      // smoothed with an EMA so it doesn't jump, and shown in adaptive
+      // units (MB/s or KB/s — a raw toFixed(1) on MB/s shows "0.0" for
+      // anything under ~50 KB/s even while the download is progressing).
+      let lastDone = 0;
+      let lastAt = 0;
+      let emaSpeed = 0;
+      const fmtSpeed = (bps) => {
+        if (bps >= 1024 * 1024) return `${(bps / 1048576).toFixed(1)} MB/s`;
+        if (bps >= 1024) return `${Math.round(bps / 1024)} KB/s`;
+        return `${Math.round(bps)} B/s`;
+      };
+      // Live progress from the sidecar SSE stream (start / transfer /
+      // swap / complete / error).
+      const unsub = window.minicpmSettings.onEngineUpdateProgress((ev) => {
+        if (ev.phase === "start") {
+          progFill.style.width = "0%";
+          progText.textContent = t("minicpmEngineCheckBusy");
+          lastDone = 0;
+          lastAt = 0;
+          emaSpeed = 0;
+        } else if (ev.phase === "transfer") {
+          const done = ev.bytes_done || 0;
+          const total = ev.bytes_total || 0;
+          const pct = total > 0 ? Math.min(95, Math.round((done / total) * 100)) : 0;
+          progFill.style.width = pct + "%";
+          const now = Date.now();
+          let speed = "";
+          if (lastAt > 0 && done > lastDone) {
+            const secs = (now - lastAt) / 1000;
+            if (secs > 0) {
+              const inst = ((done - lastDone) / secs);
+              emaSpeed = emaSpeed > 0 ? emaSpeed * 0.7 + inst * 0.3 : inst;
+              speed = `  ·  ${fmtSpeed(emaSpeed)}`;
+            }
+          }
+          lastDone = done;
+          lastAt = now;
+          progText.textContent = `${formatSize(done)} / ${formatSize(total)}${speed}`;
+        } else if (ev.phase === "swap") {
+          progFill.style.width = "97%";
+          progText.textContent = t("minicpmEngineUpdateBusy");
+        } else if (ev.phase === "complete" || ev.phase === "reloaded") {
+          progFill.style.width = "100%";
+        } else if (ev.phase === "error") {
+          progText.textContent = (ev.message || t("minicpmEngineUpdateFailed"));
+        }
+      });
+      try {
+        const ret = await window.minicpmSettings.engineUpdateApply();
+        if (ret && ret.status === "ok") {
+          engInfoVal.textContent = t("minicpmEngineUpdateDone");
+          progText.textContent = "✓ " + t("minicpmEngineUpdateDone");
+          engineCheckCache = null; // local build changed — re-check next render
+        } else {
+          const msg = t("minicpmEngineUpdateFailed") + ((ret && ret.message) || "");
+          engInfoVal.textContent = msg;
+          progText.textContent = msg;
+        }
+        updateBtn.disabled = true;
+      } finally {
+        if (typeof unsub === "function") unsub();
+        updateBtn.textContent = t("minicpmEngineUpdateButton");
+        checkBtn.disabled = false;
+        engineUpdating = false;
+        // Collapse the progress row a couple seconds after finishing.
+        setTimeout(() => { progRow.style.display = "none"; }, 2500);
+      }
+    }, { accent: true });
+    updateBtn.disabled = true;
+
+    // Offline update: install the engine from a folder the user picked
+    // (a copy of an official release someone else downloaded — useful on
+    // slow networks). The folder must contain a llama-server newer than
+    // the installed one; it is copied, never modified.
+    const dirBtn = softBtn(t("minicpmEngineUpdateDirButton"), async () => {
+      if (dirBtn.disabled) return;
+      dirBtn.disabled = true;
+      checkBtn.disabled = true;
+      updateBtn.disabled = true;
+      dirBtn.textContent = t("minicpmEngineCheckBusy");
+      progRow.style.display = "";
+      progFill.style.width = "0%";
+      progText.textContent = "…";
+      engineUpdating = true;
+      const unsub = window.minicpmSettings.onEngineUpdateProgress((ev) => {
+        if (ev.phase === "start") {
+          progText.textContent = t("minicpmEngineUpdateDirVerifying");
+        } else if (ev.phase === "verify") {
+          progFill.style.width = "50%";
+          progText.textContent = `build ${ev.build}`;
+        } else if (ev.phase === "swap") {
+          progFill.style.width = "90%";
+          progText.textContent = t("minicpmEngineUpdateBusy");
+        } else if (ev.phase === "complete" || ev.phase === "reloaded") {
+          progFill.style.width = "100%";
+        } else if (ev.phase === "error") {
+          progText.textContent = (ev.message || t("minicpmEngineUpdateFailed"));
+        }
+      });
+      try {
+        const ret = await window.minicpmSettings.engineUpdateApplyDir();
+        if (ret && ret.status === "canceled") {
+          progRow.style.display = "none";
+          return;
+        }
+        if (ret && ret.status === "ok") {
+          engInfoVal.textContent = t("minicpmEngineUpdateDone");
+          progText.textContent = "✓ " + t("minicpmEngineUpdateDone");
+          engineCheckCache = null;
+        } else {
+          const msg = t("minicpmEngineUpdateFailed") + ((ret && ret.message) || "");
+          engInfoVal.textContent = msg;
+          progText.textContent = msg;
+        }
+      } finally {
+        if (typeof unsub === "function") unsub();
+        dirBtn.textContent = t("minicpmEngineUpdateDirButton");
+        dirBtn.disabled = false;
+        checkBtn.disabled = false;
+        engineUpdating = false;
+        setTimeout(() => { progRow.style.display = "none"; }, 2500);
+      }
+    });
+
+    const checkBtn = softBtn(t("minicpmEngineCheckButton"), async () => {
+      if (checkBtn.disabled) return;
+      await runEngineCheck();
+    });
+
+    // Auto-check on every render so the user always sees which engine
+    // build is installed — no need to click anything first.
+    //
+    // Two steps: the LOCAL build comes from llama-server --version
+    // directly (works even when the sidecar is down); the REMOTE check
+    // goes through the sidecar + GitHub and only upgrades the line.
+    let localBuild = null;
+    async function fetchLocalVersion() {
+      try {
+        const ret = await window.minicpmSettings.engineLocalVersion();
+        if (ret && ret.status === "ok" && ret.build != null) {
+          localBuild = ret.build;
+          return true;
+        }
+      } catch {}
+      return false;
+    }
+
+    async function runEngineCheck() {
+      // 1. Local build first — fast, no sidecar needed.
+      const haveLocal = await fetchLocalVersion();
+      if (haveLocal) {
+        engInfoVal.textContent = `build ${localBuild}`;
+        updateBtn.disabled = true;
+      }
+      // 2. Remote check (sidecar + GitHub) upgrades the line.
+      checkBtn.disabled = true;
+      checkBtn.textContent = t("minicpmEngineCheckBusy");
+      try {
+        const ret = await window.minicpmSettings.engineUpdateCheck();
+        if (!ret || ret.status !== "ok" || !ret.info) {
+          // Surface the actual reason (connection refused / timeout) so
+          // the user can tell "sidecar not running" apart from GitHub
+          // being unreachable.
+          const reason = (ret && ret.message) || (ret && ret.error) || "";
+          if (haveLocal) {
+            engInfoVal.textContent = `build ${localBuild}（${t("minicpmEngineUnreachable")}${reason ? `: ${reason}` : ""}）`;
+          } else {
+            engInfoVal.textContent = t("minicpmEngineUnreachable") + (reason ? `（${reason}）` : "");
+          }
+          return;
+        }
+        const info = ret.info;
+        let text;
+        let hasUpdate = false;
+        // NOTE: settings t() is a plain dict lookup (no {param} support) —
+        // substitute placeholders manually.
+        const localLabel = String(info.local_build ?? localBuild ?? "?");
+        if (info.error) {
+          // Remote check failed (e.g. GitHub unreachable). Show the
+          // local build + the reason — never a silent "up to date".
+          text = `build ${localLabel}（${info.error}）`;
+        } else if (info.available) {
+          text = t("minicpmEngineUpdateAvailable")
+            .replace("{remote}", info.remote_tag || "?")
+            .replace("{local}", localLabel);
+          hasUpdate = true;
+        } else {
+          text = t("minicpmEngineUpToDate").replace("{local}", localLabel);
+        }
+        engInfoVal.textContent = text;
+        updateBtn.disabled = !hasUpdate;
+        engineCheckCache = { at: Date.now(), text, hasUpdate };
+      } finally {
+        checkBtn.disabled = false;
+        checkBtn.textContent = t("minicpmEngineCheckButton");
+      }
+    }
+
+    engBtnCtl.appendChild(checkBtn);
+    engBtnCtl.appendChild(updateBtn);
+    engBtnCtl.appendChild(dirBtn);
+    engBtnRow.appendChild(engBtnCtl);
+    engRows.appendChild(engBtnRow);
+
+    box.appendChild(engSection);
+
+    // Auto-check result is cached for a minute: the health tick rebuilds
+    // this section repeatedly, and re-hitting the GitHub API every tick
+    // would flicker "…" and spam the network.
+    if (engineCheckCache && Date.now() - engineCheckCache.at < 60000) {
+      engInfoVal.textContent = engineCheckCache.text;
+      updateBtn.disabled = !engineCheckCache.hasUpdate;
+    } else {
+      void runEngineCheck();
+    }
   }
 
   // ── Adapter (LoRA) section ────────────────────────────────────────────
@@ -1077,6 +1368,7 @@
     syncStatusPill(ctx);
     await renderBehaviorSection(ctx.behaviorBox, ctx);
     renderModelSection(ctx.modelBox, ctx);
+    renderEngineSection(ctx.engineBox, ctx);
     await renderAdapterSection(ctx.adapterBox, ctx);
     renderAdvancedSection(ctx.advancedBox, ctx);
   }
@@ -1102,6 +1394,7 @@
       // Path may have switched after a load-model — keep the model card
       // honest, but never re-render Behavior/Advanced (would lose focus).
       renderModelSection(ctx.modelBox, ctx);
+      renderEngineSection(ctx.engineBox, ctx);
       if (!ctx.everHealthy && ctx.fastAttemptsLeft > 0) ctx.fastAttemptsLeft -= 1;
       if (!wasHealthy && ctx.everHealthy) ctx.fastAttemptsLeft = 0;
       healthTimer = setTimeout(tick, nextHealthDelay(ctx));
@@ -1121,6 +1414,7 @@
       headerBox: el("div", {}),
       behaviorBox: el("div", { className: "minicpm-section-box" }),
       modelBox: el("div", { className: "minicpm-section-box" }),
+      engineBox: el("div", { className: "minicpm-section-box" }),
       adapterBox: el("div", { className: "minicpm-section-box" }),
       advancedBox: el("div", { className: "minicpm-section-box" }),
       statusPillSlot: null,
@@ -1155,6 +1449,7 @@
     parent.appendChild(ctx.headerBox);
     parent.appendChild(ctx.behaviorBox);
     parent.appendChild(ctx.modelBox);
+    parent.appendChild(ctx.engineBox);
     parent.appendChild(ctx.adapterBox);
     parent.appendChild(ctx.advancedBox);
 

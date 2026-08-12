@@ -25,7 +25,7 @@
 // has no torch / transformers / peft dependency and ships as a single
 // binary per platform alongside llama-server.
 
-const { BrowserWindow, ipcMain, screen, shell, Menu, app } = require("electron");
+const { BrowserWindow, ipcMain, screen, shell, Menu, app, dialog } = require("electron");
 const { spawn, execFile } = require("child_process");
 const { promisify } = require("util");
 const execFileAsync = promisify(execFile);
@@ -146,6 +146,15 @@ function triplet() {
   if (process.platform === "win32")  return "win-"   + arch;
   if (process.platform === "linux")  return "linux-" + arch;
   return process.platform + "-" + arch;
+}
+
+// mmproj-*.gguf files are vision-projector weights (--mmproj), NOT main
+// models — loading one as --model fails with "unsupported model
+// architecture: 'clip'". They must never appear in model discovery or
+// be selectable as a model.
+function isMainModelFile(name) {
+  const lower = String(name || "").toLowerCase();
+  return lower.endsWith(".gguf") && !lower.startsWith("mmproj");
 }
 
 // ── Adapter manifest pure helpers ──────────────────────────────────────
@@ -504,6 +513,22 @@ class Sidecar {
     } catch { return null; }
   }
 
+  async switchMemoryTheme(themeId) {
+    // Theme switch = body switch = soul switch: tell the sidecar to load
+    // this theme's soul-layer memory (events/identity/mood/vectors).
+    try {
+      const r = await httpJson(
+        "POST",
+        `${this.baseUrl()}/api/memory/switch`,
+        { theme: String(themeId || "default") },
+        8000
+      );
+      return r && r.json ? r.json : { ok: false };
+    } catch (err) {
+      return { ok: false, error: String(err && err.message || err) };
+    }
+  }
+
   async loadModel(p, opts) {
     // Pass an optional explicit mmproj through to the gateway. When omitted,
     // the gateway looks up a sibling `mmproj-*.gguf` automatically.
@@ -578,6 +603,22 @@ class Sidecar {
       MINICPM_PARENT_PID: String(process.pid),
       // Phase 2: provider API keys from prefs (any OpenAI-compatible provider)
       ...this._providerKeysToEnv(),
+      // Boot-time screen consent: "always" → sidecar starts with full
+      // permission; "deny" (default) → per-action authorization dialogs
+      // (AI-agent style).
+      MINICPM_SCREEN_CONSENT: (() => {
+        try {
+          const snap = typeof ctx.getSettingsSnapshot === "function" ? ctx.getSettingsSnapshot() : {};
+          return (snap && snap.screenObserveConsent) || "deny";
+        } catch { return "deny"; }
+      })(),
+      // Boot-time theme: the sidecar loads THIS theme's soul-layer memory
+      // (换身体 = 换灵魂). Theme ids are ASCII slugs already.
+      MINICPM_THEME: (() => {
+        try {
+          return (typeof ctx.getActiveThemeId === "function" && ctx.getActiveThemeId()) || "default";
+        } catch { return "default"; }
+      })(),
     };
 
     // Strip proxy environment variables to avoid socksio dependency issues.
@@ -1387,7 +1428,7 @@ module.exports = function initMinicpmChat(ctx) {
     top_p: 0.95,
     top_k: 0,                  // 0 = disabled
     repetition_penalty: 1.05,
-    thinking: false,           // default off (LoRA usually wasn't trained on <think>)
+    thinking: true,            // 思考默认开启 — 用户可在设置里关掉
   };
   const CHAT_PARAM_KEYS = Object.keys(DEFAULT_CHAT_PARAMS);
 
@@ -1485,7 +1526,7 @@ module.exports = function initMinicpmChat(ctx) {
       const entries = fs.readdirSync(dir, { withFileTypes: true });
       // Direct hit first
       const here = entries
-        .filter((e) => e.isFile() && e.name.toLowerCase().endsWith(".gguf"))
+        .filter((e) => e.isFile() && isMainModelFile(e.name))
         .map((e) => path.join(dir, e.name));
       if (here.length) return here[0];
       // One level deep (Onboarding may have nested by repo name)
@@ -1494,7 +1535,7 @@ module.exports = function initMinicpmChat(ctx) {
         const sub = path.join(dir, e.name);
         try {
           const inner = fs.readdirSync(sub)
-            .filter((n) => n.toLowerCase().endsWith(".gguf"));
+            .filter((n) => isMainModelFile(n));
           if (inner.length) return path.join(sub, inner[0]);
         } catch {}
       }
@@ -1930,11 +1971,56 @@ module.exports = function initMinicpmChat(ctx) {
   const EVENT_MERGE_MS = 700;
   const eventBuffers = new Map();  // sessionId → { data, score, timer }
 
+  // MiniCPM per-action screen permission (AI-agent style): the sidecar
+  // asks "may the pet look at / operate the screen?" — show a Yes/No
+  // dialog (plus "always allow") and reply via /api/screen/permission-
+  // respond so the sidecar's pending tool call resolves.
+  function handleMiniCpmPermissionRequest(data) {
+    const requestId = String(data.request_id || "");
+    const tool = String(data.tool || "使用屏幕");
+    const description = String(data.description || "");
+    if (!requestId) return;
+    const parentWin = (bubble && !bubble.isDestroyed()) ? bubble : null;
+    dialog.showMessageBox(parentWin, {
+      type: "question",
+      title: "桌宠请求屏幕权限",
+      message: `桌宠想${tool}`,
+      detail: description,
+      buttons: ["允许一次", "拒绝", "总是允许"],
+      defaultId: 0,
+      cancelId: 1,
+      noLink: true,
+    }).then(({ response }) => {
+      const allow = response === 0;
+      const remember = response === 2;
+      if (remember) {
+        try {
+          if (typeof ctx.setPref === "function") {
+            ctx.setPref("screenObserveConsent", "always");
+          }
+        } catch {}
+      }
+      httpJson(
+        "POST",
+        `${sidecar.baseUrl()}/api/screen/permission-respond`,
+        { request_id: requestId, allow, remember },
+        5000
+      ).catch(() => {});
+    }).catch(() => {});
+  }
+
   function onStateEvent(data) {
-    if (!narrationEnabled) return;
-    if (bubbleEditing) return;  // Don't intrude while the user is positioning the bubble.
     if (!data || typeof data !== "object") return;
     const event = String(data.event || "");
+    // Per-action screen permission from the sidecar (AI-agent style):
+    // show the authorization dialog, then reply to the sidecar's
+    // pending request. Handled BEFORE the narrator pipeline.
+    if (event === "MiniCPMPermission") {
+      handleMiniCpmPermissionRequest(data);
+      return;
+    }
+    if (!narrationEnabled) return;
+    if (bubbleEditing) return;  // Don't intrude while the user is positioning the bubble.
     const sessionId = String(data.session_id || "");
     if (!NARRATE_EVENTS.has(event)) return;
     if (sessionId.startsWith(NARRATE_IGNORE_SESSION_PREFIX)) return;
@@ -2240,6 +2326,41 @@ module.exports = function initMinicpmChat(ctx) {
     });
   }
 
+  async function applyEngineUpdate(onProgress) {
+    // llama.cpp engine (binary) self-update — same SSE phase contract as
+    // applyUpdate, different endpoint.
+    return new Promise((resolve) => {
+      const u = new URL(`${sidecar.baseUrl()}/api/engine-update-apply`);
+      const req = http.request({
+        hostname: u.hostname,
+        port: u.port || 80,
+        path: u.pathname,
+        method: "POST",
+        headers: { "content-type": "application/json", "content-length": 0 },
+        timeout: 0,
+      }, (res) => {
+        let buf = "";
+        res.setEncoding("utf8");
+        res.on("data", (chunk) => {
+          buf += chunk;
+          let idx;
+          while ((idx = buf.indexOf("\n\n")) >= 0) {
+            const block = buf.slice(0, idx);
+            buf = buf.slice(idx + 2);
+            if (!block.startsWith("data:")) continue;
+            try {
+              const ev = JSON.parse(block.slice(5).trim());
+              try { onProgress && onProgress(ev); } catch {}
+            } catch {}
+          }
+        });
+        res.on("end", () => resolve({ ok: true }));
+      });
+      req.on("error", (err) => resolve({ ok: false, error: err.message }));
+      req.end();
+    });
+  }
+
   // ── Context menu (right-click on bubble) ───────────────────────────────
 
   async function openContextMenu() {
@@ -2383,6 +2504,17 @@ module.exports = function initMinicpmChat(ctx) {
       await refreshUpdateStatus();
       return { ...result, status: updateStatus };
     },
+    "minicpm:engine-update-apply": async () => {
+      // llama.cpp engine (binary) self-update. Same SSE phase contract
+      // as the model updater, same progress channel — the renderer's
+      // showUpdateProgress consumes both.
+      const result = await applyEngineUpdate((ev) => {
+        if (bubble && !bubble.isDestroyed()) {
+          bubble.webContents.send("minicpm:update-applying", ev);
+        }
+      });
+      return result;
+    },
     "minicpm:list-skills": async () => {
       const snapshot = typeof ctx.getSettingsSnapshot === "function" ? ctx.getSettingsSnapshot() : {};
       const skillsPref = (snapshot && snapshot.skills) || {};
@@ -2485,87 +2617,6 @@ module.exports = function initMinicpmChat(ctx) {
         } catch { return []; }
       }
       return [];
-    },
-    "minicpm:get-chat-history-for": async (_e, { assistant } = {}) => {
-      // Read-only: pull the named assistant's bucket WITHOUT activating it.
-      // The Context settings panel can refresh every few seconds; we must
-      // not steal the live chat bubble's persona from a user mid-type.
-      const name = (typeof assistant === "string" && assistant) ? assistant : "default";
-      if (!bubble || bubble.isDestroyed()) return [];
-      try {
-        const json = JSON.stringify(name);
-        return await bubble.webContents.executeJavaScript(
-          `window.__getChatHistoryFor ? window.__getChatHistoryFor(${json}) : []`
-        );
-      } catch { return []; }
-    },
-    "minicpm:clear-history-for": async (_e, { assistant } = {}) => {
-      const name = (typeof assistant === "string" && assistant) ? assistant : "default";
-      if (!bubble || bubble.isDestroyed()) return { ok: false };
-      try {
-        const json = JSON.stringify(name);
-        const ok = await bubble.webContents.executeJavaScript(
-          `window.__clearChatHistoryFor ? window.__clearChatHistoryFor(${json}) : false`
-        );
-        return { ok: !!ok, assistant: name };
-      } catch { return { ok: false, assistant: name }; }
-    },
-    "minicpm:set-active-assistant": async (_e, { assistant } = {}) => {
-      const name = (typeof assistant === "string" && assistant) ? assistant : "default";
-      api.setActiveAssistant(name);
-      return { ok: true, assistant: name };
-    },
-    // Sandbox executor: lets the settings panel call read-only / mutating
-    // helpers that live in the chat renderer. The function name MUST be
-    // on the allow-list below — bare `window.foo()` is rejected so a
-    // malicious caller can't invoke arbitrary renderer code. Disabled
-    // when the chat bubble isn't open.
-    "minicpm-settings:exec-renderer": async (_e, payload) => {
-      // Ensure the bubble exists (hidden is fine) so renderer globals are
-      // available even when the user hasn't opened the chat yet. This
-      // lets the Settings → Context panel create assistants / topics /
-      // list history without requiring the chat bubble to be visible.
-      ensureBubble();
-      if (!bubble || bubble.isDestroyed()) return { ok: false, error: "chat bubble unavailable" };
-      // Wait for the renderer to finish loading before executing JS.
-      try {
-        if (bubble.webContents.isLoading()) {
-          await new Promise((r) => {
-            const done = () => { r(); };
-            bubble.webContents.once("did-finish-load", done);
-            setTimeout(done, 5000); // timeout fallback
-          });
-        }
-      } catch {}
-      const fn = payload && typeof payload.fn === "string" ? payload.fn : "";
-      const argsJson = (payload && typeof payload.args === "string")
-        ? payload.args
-        : JSON.stringify(payload && payload.args !== undefined ? payload.args : []);
-      const ALLOWED = new Set([
-        "__getChatHistoryFor",
-        "__clearChatHistoryFor",
-        "__listTopicsFor",
-        "__listAssistants",
-        "__getActiveAssistant",
-        "__createAssistant",
-        "__deleteAssistant",
-        "__createTopic",
-        "__renameTopic",
-        "__deleteTopic",
-        "__setActiveTopic",
-      ]);
-      if (!ALLOWED.has(fn)) return { ok: false, error: "fn not allowed" };
-      try {
-        // Two-step dance: build the args array literal inside the
-        // sandbox so we don't leak user JSON via string concat that
-        // could break out of the call site.
-        const result = await bubble.webContents.executeJavaScript(
-          `(window.${fn} ? window.${fn}.apply(null, ${argsJson}) : Promise.resolve({ ok: false, error: "missing fn" }))`
-        );
-        return result || { ok: false };
-      } catch (err) {
-        return { ok: false, error: String(err && err.message || err) };
-      }
     },
     "minicpm:clear-chat-history": async () => {
       if (bubble && !bubble.isDestroyed()) {
@@ -2986,13 +3037,13 @@ module.exports = function initMinicpmChat(ctx) {
             if (st.isFile()) {
               const dir = path.dirname(s);
               for (const entry of fs.readdirSync(dir)) {
-                if (entry.toLowerCase().endsWith(".gguf")) {
+                if (isMainModelFile(entry)) {
                   push(path.join(dir, entry));
                 }
               }
             } else if (st.isDirectory()) {
               for (const entry of fs.readdirSync(s)) {
-                if (entry.toLowerCase().endsWith(".gguf")) {
+                if (isMainModelFile(entry)) {
                   push(path.join(s, entry));
                 }
               }
@@ -3004,7 +3055,7 @@ module.exports = function initMinicpmChat(ctx) {
         for (const folder of getModelFolders()) {
           try {
             for (const entry of fs.readdirSync(folder)) {
-              if (entry.toLowerCase().endsWith(".gguf")) push(path.join(folder, entry));
+              if (isMainModelFile(entry)) push(path.join(folder, entry));
             }
           } catch {}
         }
@@ -3075,11 +3126,24 @@ module.exports = function initMinicpmChat(ctx) {
     },
     "minicpm-settings:pick-model-dir": async () => {
       const { dialog } = require("electron");
+      // Windows quirk: openFile + openDirectory together only shows the
+      // "Select Folder" button, so the user can never pick a single .gguf.
+      // On Windows use a pure file picker (directories go through the
+      // "add model folder" flow); elsewhere keep both modes.
+      const isWin = process.platform === "win32";
+      const currentDir = (() => {
+        const cur = getEffectiveModelDir();
+        try {
+          const st = fs.statSync(cur);
+          return st.isFile() ? path.dirname(cur) : cur;
+        } catch { return cur; }
+      })();
       const ret = await dialog.showOpenDialog({
-        title: "选择本地 MiniCPM 模型 (.gguf 文件或包含 .gguf 的目录)",
-        properties: ["openFile", "openDirectory"],
+        title: isWin ? "选择本地模型 (.gguf 文件)" : "选择本地模型 (.gguf 文件或包含 .gguf 的目录)",
+        properties: isWin ? ["openFile"] : ["openFile", "openDirectory"],
         filters: [{ name: "GGUF model", extensions: ["gguf"] }],
-        message: "可以是单个 .gguf 文件，或包含 .gguf 的目录",
+        defaultPath: currentDir,
+        message: isWin ? "请选择主模型 .gguf 文件（mmproj-* 不是模型）" : "可以是单个 .gguf 文件，或包含 .gguf 的目录",
       });
       if (ret.canceled || !ret.filePaths.length) return { ok: false, canceled: true };
       const picked = ret.filePaths[0];
@@ -3088,13 +3152,18 @@ module.exports = function initMinicpmChat(ctx) {
         const st = fs.statSync(picked);
         if (st.isDirectory()) {
           const entries = fs.readdirSync(picked)
-            .filter((n) => n.toLowerCase().endsWith(".gguf"));
+            .filter((n) => isMainModelFile(n));
           if (!entries.length) {
-            return { ok: false, error: `所选目录不包含 .gguf：\n${picked}` };
+            return { ok: false, error: `所选目录不包含 .gguf 主模型：\n${picked}` };
           }
           target = path.join(picked, entries[0]);
         } else if (!picked.toLowerCase().endsWith(".gguf")) {
           return { ok: false, error: `请选择 .gguf 文件：\n${picked}` };
+        } else if (!isMainModelFile(picked)) {
+          return {
+            ok: false,
+            error: `mmproj-* 是视觉投影文件，不能作为主模型。\n请选择同目录里的主模型 .gguf（如 Qwen3.5-4B-Q4_K_M.gguf）：\n${picked}`,
+          };
         }
       } catch (err) {
         return { ok: false, error: String(err && err.message || err) };
@@ -3533,13 +3602,12 @@ module.exports = function initMinicpmChat(ctx) {
     restartSidecar,
     ensureSidecarReady,
     sendI18n,
-    // Push an active-assistant update (driven by theme switch). The chat
-    // renderer keeps a per-assistant history bucket so each theme has its
-    // own conversation, like Cherry Studio's "Default Assistant / Cyber Cat
-    // / Calico / ..." pattern.
-    setActiveAssistant(assistantName) {
+    // Theme switched (换身体 = 换灵魂): tell the chat renderer so it
+    // reloads this theme's history and refreshes its memory/skills
+    // context. Safe to call even if the bubble is closed.
+    notifyThemeChanged(themeId) {
       if (!bubble || bubble.isDestroyed()) return;
-      bubble.webContents.send("minicpm:set-active-assistant", { assistant: String(assistantName || "default") });
+      bubble.webContents.send("minicpm:theme-changed", { theme: String(themeId || "default") });
     },
     // Push a proactive-chat policy update to the chat renderer ("off",
     // "free", or "interval:<N>" seconds). Safe to call even if the

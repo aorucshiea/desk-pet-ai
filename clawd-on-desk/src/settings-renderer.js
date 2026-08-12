@@ -15,10 +15,10 @@ const SIDEBAR_TABS = [
   { id: "remote-ssh", labelKey: "sidebarRemoteSsh", available: true },
   { id: "skills", labelKey: "sidebarSkills", available: true },
   { id: "screenclick", labelKey: "sidebarScreenClick", available: true },
-  { id: "context", labelKey: "sidebarContext", available: true },
   { id: "providers", labelKey: "sidebarProviders", available: true },
   { id: "mcp", labelKey: "sidebarMcp", available: true },
   { id: "evolve", labelKey: "sidebarEvolve", available: true },
+  { id: "memory", labelKey: "sidebarMemory", available: true },
   { id: "telegram-approval", labelKey: "sidebarTelegramApproval", available: true },
   { id: "mobile", labelKey: "sidebarMobile", available: true },
   { id: "about", labelKey: "sidebarAbout", available: true },
@@ -102,10 +102,10 @@ if (globalThis.ClawdSettingsTabMobile) globalThis.ClawdSettingsTabMobile.init(co
 if (globalThis.ClawdSettingsTabMinicpm) globalThis.ClawdSettingsTabMinicpm.init(core);
 if (globalThis.ClawdSettingsTabScreenClick) globalThis.ClawdSettingsTabScreenClick.init(core);
 if (globalThis.ClawdSettingsTabSkills) globalThis.ClawdSettingsTabSkills.init(core);
-if (globalThis.ClawdSettingsTabContext) globalThis.ClawdSettingsTabContext.init(core);
 if (globalThis.ClawdSettingsTabProviders) globalThis.ClawdSettingsTabProviders.init(core);
 if (globalThis.ClawdSettingsTabMcp) globalThis.ClawdSettingsTabMcp.init(core);
 if (globalThis.ClawdSettingsTabEvolve) globalThis.ClawdSettingsTabEvolve.init(core);
+if (globalThis.ClawdSettingsTabMemory) globalThis.ClawdSettingsTabMemory.init(core);
 
 if (window.settingsAPI && typeof window.settingsAPI.onChanged === "function") {
   window.settingsAPI.onChanged((payload) => core.ops.applyChanges(payload));

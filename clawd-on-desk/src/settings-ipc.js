@@ -2,10 +2,128 @@
 
 const defaultFs = require("fs");
 const defaultPath = require("path");
+const defaultHttp = require("http");
 const { detectAgentInstallations: defaultDetectAgentInstallations } = require("./agent-installation-detector");
 const settingsThemeImporter = require("./settings-theme-importer");
 const productMetadata = require("./product-metadata");
 const { DEFAULT_THEME_ID } = require("./default-theme");
+
+// Sidecar gateway lives on localhost (same constants as minicpm-chat.js:
+// MINICPM_PORT override, else 18765). The settings window uses these to
+// expose the llama.cpp engine self-update (check + apply) without owning
+// the sidecar lifecycle.
+const SIDECAR_HOST = "127.0.0.1";
+const SIDECAR_PORT = Number(process.env.MINICPM_PORT) || 18765;
+
+function sidecarJson(method, pathname, timeoutMs = 3000, body = null) {
+  return new Promise((resolve) => {
+    const payload = body ? JSON.stringify(body) : null;
+    const req = defaultHttp.request(
+      {
+        hostname: SIDECAR_HOST, port: SIDECAR_PORT, path: pathname, method, timeout: timeoutMs,
+        headers: payload
+          ? { "content-type": "application/json", "content-length": Buffer.byteLength(payload) }
+          : undefined,
+      },
+      (res) => {
+        let buf = "";
+        res.setEncoding("utf8");
+        res.on("data", (c) => { buf += c; });
+        res.on("end", () => {
+          try { resolve({ ok: true, json: JSON.parse(buf) }); }
+          catch { resolve({ ok: true, json: null }); }
+        });
+      }
+    );
+    req.on("error", (err) => resolve({ ok: false, error: err.message }));
+    req.on("timeout", () => { req.destroy(); resolve({ ok: false, error: "timeout" }); });
+    if (payload) req.write(payload);
+    req.end();
+  });
+}
+
+function platformTriple() {
+  const arch = process.arch === "arm64" ? "arm64" : process.arch === "x64" ? "x64" : process.arch;
+  if (process.platform === "darwin") return "mac-" + arch;
+  if (process.platform === "win32") return "win-" + arch;
+  if (process.platform === "linux") return "linux-" + arch;
+  return process.platform + "-" + arch;
+}
+
+// Locate the installed llama-server binary WITHOUT the sidecar running —
+// the local engine version must be visible even when the gateway is
+// down. Priority: packaged sidecar-bin → dev bin/<triple>/ → backend
+// subdir (vulkan/cuda).
+function locateLlamaServer() {
+  const ext = process.platform === "win32" ? ".exe" : "";
+  const name = "llama-server" + ext;
+  const triple = platformTriple();
+  const candidates = [];
+  try {
+    if (process.resourcesPath) {
+      candidates.push(defaultPath.join(process.resourcesPath, "sidecar-bin", name));
+      candidates.push(defaultPath.join(process.resourcesPath, "sidecar-bin", triple, name));
+    }
+  } catch {}
+  const devRoot = defaultPath.join(__dirname, "..", "..", "minicpm-sidecar", "bin", triple);
+  candidates.push(defaultPath.join(devRoot, name));
+  for (const backend of ["vulkan", "cuda", "metal"]) {
+    candidates.push(defaultPath.join(devRoot, "backends", backend, name));
+  }
+  for (const c of candidates) {
+    try { if (defaultFs.statSync(c).isFile()) return c; } catch {}
+  }
+  return null;
+}
+
+function sidecarEngineApply(timeoutMs = 0, onPhase = null, opts = null) {
+  // POST /api/engine-update-apply[(-dir)] streams SSE phases (start/
+  // transfer/swap/verify/complete/error/reloaded). Collect them all AND
+  // forward each one through onPhase so the settings UI can paint a live
+  // progress bar instead of waiting blind. opts = { path, body } for the
+  // offline apply-from-dir variant.
+  return new Promise((resolve) => {
+    const pathname = (opts && opts.path) || "/api/engine-update-apply";
+    const body = (opts && opts.body) ? JSON.stringify(opts.body) : null;
+    const req = defaultHttp.request(
+      {
+        hostname: SIDECAR_HOST, port: SIDECAR_PORT, path: pathname,
+        method: "POST", timeout: timeoutMs,
+        headers: body
+          ? { "content-type": "application/json", "content-length": Buffer.byteLength(body) }
+          : { "content-type": "application/json", "content-length": 0 },
+      },
+      (res) => {
+        let buf = "";
+        const phases = [];
+        res.setEncoding("utf8");
+        res.on("data", (chunk) => {
+          buf += chunk;
+          let idx;
+          while ((idx = buf.indexOf("\n\n")) >= 0) {
+            const block = buf.slice(0, idx);
+            buf = buf.slice(idx + 2);
+            if (!block.startsWith("data:")) continue;
+            try {
+              const ev = JSON.parse(block.slice(5).trim());
+              phases.push(ev);
+              if (typeof onPhase === "function") {
+                try { onPhase(ev); } catch {}
+              }
+            } catch {}
+          }
+        });
+        res.on("end", () => {
+          const last = phases[phases.length - 1] || {};
+          resolve({ ok: true, phases, error: last.message || null });
+        });
+      }
+    );
+    req.on("error", (err) => resolve({ ok: false, error: err.message }));
+    if (body) req.write(body);
+    req.end();
+  });
+}
 
 const SOUND_OVERRIDE_ASSET_EXTS = new Set([".mp3", ".wav", ".ogg", ".m4a", ".aac", ".flac"]);
 const SOUND_OVERRIDE_DIALOG_STRINGS = {
@@ -522,7 +640,7 @@ function registerSettingsIpc(options = {}) {
     try {
       result = await dialog.showOpenDialog(getDialogParent(event), {
         properties: ["openFile"],
-        filters: [{ name: "MiniCPM Desk Pet theme zip", extensions: ["zip"] }],
+        filters: [{ name: "Desk Pet theme zip", extensions: ["zip"] }],
       });
     } catch (err) {
       return { status: "error", message: `theme zip picker failed: ${err && err.message}` };
@@ -613,7 +731,6 @@ function registerSettingsIpc(options = {}) {
       version: app.getVersion(),
       appName: productMetadata.appDisplayName,
       repoUrl: productMetadata.repoUrl,
-      modelRepoUrl: productMetadata.modelRepoUrl,
       license: productMetadata.licenseId,
       copyright: productMetadata.copyrightLine,
       upstreamRepoUrl: productMetadata.upstreamRepoUrl,
@@ -632,6 +749,99 @@ function registerSettingsIpc(options = {}) {
       return { status: "error", message: (err && err.message) || String(err) };
     }
   });
+
+  handle("settings:engine-local-version", async () => {
+    // Local engine build WITHOUT the sidecar: runs llama-server --version
+    // directly. Used so the settings UI can always show the installed
+    // engine version even when the gateway is down.
+    const bin = locateLlamaServer();
+    if (!bin) return { status: "error", message: "llama-server not found" };
+    try {
+      const { execFile } = require("child_process");
+      const out = await new Promise((resolve, reject) => {
+        execFile(bin, ["--version"], { timeout: 5000 }, (err, stdout, stderr) => {
+          if (err) reject(err);
+          else resolve(String(stdout || stderr));
+        });
+      });
+      const m = out.match(/version:\s*(\d+)/);
+      return {
+        status: "ok",
+        build: m ? Number(m[1]) : null,
+        raw: out.slice(0, 200),
+      };
+    } catch (err) {
+      return { status: "error", message: err && err.message || String(err) };
+    }
+  });
+
+  handle("settings:engine-update-check", async () => {
+    const r = await sidecarJson("GET", "/api/engine-update-check", 3000);
+    if (!r.ok) return { status: "error", message: r.error || "sidecar unreachable" };
+    return { status: "ok", info: r.json || {} };
+  });
+
+  handle("settings:get-memory-view", async () => {
+    // Settings → Memory viewer: identity notes + episodic events +
+    // mood for the CURRENT theme (换身体 = 换灵魂).
+    const [mem, events, mood] = await Promise.all([
+      sidecarJson("GET", "/api/memory", 4000),
+      sidecarJson("GET", "/api/events/list", 4000),
+      sidecarJson("GET", "/api/mood", 4000),
+    ]);
+    return {
+      status: "ok",
+      identity: (mem && mem.json) || null,
+      events: (events && events.json) || null,
+      mood: (mood && mood.json) || null,
+    };
+  });
+
+  handle("settings:sync-screen-consent", async (_event, value) => {
+    // Push the "always allow screen" setting to the live sidecar (its
+    // consent_state is process memory; the persisted pref is the truth).
+    const consent = value === "always" ? "always" : "deny";
+    const r = await sidecarJson("POST", "/api/screen/consent-status", 3000, { consent });
+    if (!r.ok) return { status: "error", message: r.error || "sidecar unreachable" };
+    return { status: "ok", current: r.json && r.json.current_consent };
+  });
+
+  handle("settings:engine-update-apply", async (event) => {
+    // Forward every SSE phase to the settings window in real time so the
+    // Model tab can paint download progress.
+    return engineUpdateApplyCommon(event);
+  });
+
+  handle("settings:engine-update-apply-dir", async (event) => {
+    // Offline update: pick a folder containing an engine copy (e.g.
+    // someone else's downloaded release). Folder is copied, never moved.
+    const parent = getSettingsDialogParent(event, { BrowserWindow, getSettingsWindow });
+    const ret = await dialog.showOpenDialog(parent, {
+      title: "选择引擎文件夹（含 llama-server 的官方发布包解压内容）",
+      properties: ["openDirectory"],
+      message: "选择包含 llama-server 的文件夹（官方 release 解压后的内容）",
+    });
+    if (ret.canceled || !ret.filePaths.length) {
+      return { status: "canceled" };
+    }
+    return engineUpdateApplyCommon(event, { source_dir: ret.filePaths[0] });
+  });
+
+  async function engineUpdateApplyCommon(event, body) {
+    // Forward every SSE phase to the settings window in real time so the
+    // Model tab can paint progress.
+    const r = await sidecarEngineApply(0, (ev) => {
+      try {
+        const win = getSettingsWindow();
+        if (win && !win.isDestroyed()) {
+          win.webContents.send("minicpm:engine-update-progress", ev);
+        }
+      } catch {}
+    }, body ? { path: "/api/engine-update-apply-dir", body } : null);
+    if (!r.ok) return { status: "error", message: r.error || "sidecar unreachable" };
+    if (r.error) return { status: "error", message: r.error };
+    return { status: "ok", phases: r.phases };
+  }
 
   handle("settings:get-hardware-buddy-status", () => getHardwareBuddyStatus());
   handle("settings:test-hardware-buddy-approval", () => testHardwareBuddyApproval());
