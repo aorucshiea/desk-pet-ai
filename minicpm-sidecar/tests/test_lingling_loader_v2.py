@@ -74,12 +74,14 @@ class TestFadedDirectoryLabels:
         # weight 800 → visible = 5 × 0.8 = 4 chars, prefixed with [疲惫]
         assert any("[疲惫]" in ln and len(ln) < len("加班到凌晨") + 20 for ln in lines)
 
-    def test_very_low_weight_vanishes_from_directory_only(self, store):
-        """用户: 只有非常非常低才从目录消失（短期记忆），数据仍在。"""
+    def test_very_low_weight_shows_fuzzy_placeholder(self, store):
+        """用户: 非常非常低只显示（已模糊）占位，标题消失但记录仍在，
+        数据仍在（recall 可达并可复活）。"""
         evt = store.add_event(title="几乎忘了", content="c", weight=20)
         evt["weight"] = 20.0  # below MIN_DIRECTORY_WEIGHT
         store.save()
         lines = loader.build_faded_directory(store, exclude_ids=set())
+        assert any("已模糊" in ln for ln in lines)
         assert all("几乎忘了" not in ln for ln in lines)
         # 数据仍在 — recall/search 仍可达
         assert store.get_event(evt["id"])["weight"] == 20.0

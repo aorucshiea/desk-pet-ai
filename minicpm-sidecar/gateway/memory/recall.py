@@ -107,6 +107,11 @@ RECALL_RETRY_BONUS = 0.06
 # readily. A weight-100 core event starts at 50% instead of 10%.
 CORE_RECALL_BONUS = 0.40
 
+# A nearly-forgotten memory (weight below this, shows as （已模糊） in the
+# directory) that luckily surfaces via recall gets RESTORED to this
+# weight — 复活: 侥幸想起来 = 重新成为一条普通记忆.
+RECALL_RESTORE_WEIGHT = 100
+
 _recall_attempts: Dict[str, int] = {}
 
 
@@ -135,6 +140,11 @@ def _sample_recall(store: EventStore, candidates: List[Dict[str, Any]]) -> List[
         attempts = _recall_attempts.get(evt["id"], 0)
         p = min(1.0, base + attempts * RECALL_RETRY_BONUS)
         if p >= 1.0 or random.random() < p:
+            # 复活: a nearly-forgotten memory (（已模糊）) that luckily
+            # surfaced is restored to a normal weight — it stops being a
+            # ghost and becomes an ordinary memory again.
+            if evt.get("weight", 0) < RECALL_RESTORE_WEIGHT:
+                evt["weight"] = RECALL_RESTORE_WEIGHT
             on_event_accessed(store, evt["id"])
             loader.add_to_session(evt["id"])
             _recall_attempts.pop(evt["id"], None)

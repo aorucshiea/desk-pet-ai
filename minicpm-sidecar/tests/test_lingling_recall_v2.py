@@ -137,17 +137,34 @@ class TestCoreRecallBonus:
     @pytest.mark.asyncio
     async def test_core_event_gets_bonus_probability(self, store, monkeypatch):
         monkeypatch.setattr(rc, "_event_store", store)
-        evt = store.add_event(title="T", content="c（平静）", weight=10, core=True)
+        evt = store.add_event(title="T", content="c（平静）", weight=100, core=True)
         loader.reset_session()
-        # base = 0.01 + 0.40 = 0.41 → roll 0.3 hits, roll 0.5 misses.
+        # base = 0.10 + 0.40 = 0.50 → roll 0.3 hits, roll 0.5 misses.
         monkeypatch.setattr(random, "random", lambda: 0.3)
         out = await rc.recall_tool_handler({"keyword": "平静"})
         assert "你想起来了" in out["content"][0]["text"]
 
+        # Reset weight to baseline (first hit consolidated +2 → 102 which
+        # would push base to 0.502 > 0.5).
         loader.reset_session()
+        store.get_event(evt["id"])["weight"] = 100
+        store.save()
         monkeypatch.setattr(random, "random", lambda: 0.5)
         out = await rc.recall_tool_handler({"keyword": "平静"})
         assert "抓不住" in out["content"][0]["text"]
+
+    @pytest.mark.asyncio
+    async def test_fuzzy_memory_restored_on_recall(self, store, monkeypatch):
+        """复活: （已模糊）记忆被侥幸想起 → 权重恢复到 RECALL_RESTORE_WEIGHT."""
+        monkeypatch.setattr(rc, "_event_store", store)
+        evt = store.add_event(title="T", content="c（平静）", weight=10)
+        loader.reset_session()
+        # weight-10 → 1% base, force a hit with roll 0.0.
+        monkeypatch.setattr(random, "random", lambda: 0.0)
+        out = await rc.recall_tool_handler({"keyword": "平静"})
+        assert "你想起来了" in out["content"][0]["text"]
+        # Restored to 100 + consolidation +2.
+        assert store.get_event(evt["id"])["weight"] == rc.RECALL_RESTORE_WEIGHT + 2
 
     @pytest.mark.asyncio
     async def test_non_core_event_no_bonus(self, store, monkeypatch):

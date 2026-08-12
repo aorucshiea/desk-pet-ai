@@ -157,9 +157,13 @@ def build_faded_directory(
         if evt["id"] in _session_loaded_ids:
             continue
 
-        # Only VERY low weights vanish from the directory (短期记忆的"真忘了"
-        # — the event data stays, recall/resonance can still reach it).
+        # VERY low weights keep only a ghost placeholder in the directory
+        # (短期记忆的"真忘了") — the title itself is gone, but the record
+        # stays visible as （已模糊）. recall can still reach the event and
+        # restore its weight (复活).
         if evt["weight"] < MIN_DIRECTORY_WEIGHT:
+            when = human_time_ago(evt.get("created_at", ""))
+            lines.append(f"- {when}的事 （已模糊）")
             continue
 
         ratio = evt["weight"] / 1000.0
