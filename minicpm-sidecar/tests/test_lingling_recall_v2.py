@@ -114,17 +114,21 @@ class TestHumanTimeAgo:
         return (datetime.now(timezone.utc) - timedelta(hours=hours_ago)).isoformat()
 
     def test_phrases(self):
-        assert rc.human_time_ago(self._iso(0.5)) == "刚才"
-        assert rc.human_time_ago(self._iso(6)) == "今天"
-        assert rc.human_time_ago(self._iso(20)) == "昨天"
-        assert rc.human_time_ago(self._iso(50)) == "前天"
-        assert rc.human_time_ago(self._iso(4 * 24)) == "4天前"
-        assert rc.human_time_ago(self._iso(3 * 7 * 24)) == "3周前"
-        assert rc.human_time_ago(self._iso(2 * 30 * 24)) == "2个月前"
-        assert rc.human_time_ago(self._iso(400 * 24)) == "很久以前"
+        # 负数偏移：距现在过去了多久（不与'昨天/今天'混淆）
+        from datetime import datetime, timedelta, timezone
+        just = (datetime.now(timezone.utc) - timedelta(seconds=30)).isoformat()
+        assert rc.human_time_ago(just) == "-刚刚"
+        assert rc.human_time_ago(self._iso(0.5)) == "-30分钟"
+        assert rc.human_time_ago(self._iso(6)) == "-6小时"
+        assert rc.human_time_ago(self._iso(20)) == "-20小时"
+        assert rc.human_time_ago(self._iso(50)) == "-2天"
+        assert rc.human_time_ago(self._iso(4 * 24)) == "-4天"
+        assert rc.human_time_ago(self._iso(3 * 7 * 24)) == "-21天"
+        assert rc.human_time_ago(self._iso(2 * 30 * 24)) == "-2个月"
+        assert rc.human_time_ago(self._iso(400 * 24)) == "-很久"
 
     def test_garbage_falls_back(self):
-        assert rc.human_time_ago("not-a-date") == "很久以前"
+        assert rc.human_time_ago("not-a-date") == "-很久"
 
 
 class TestCoreRecallBonus:

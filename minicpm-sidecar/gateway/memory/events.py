@@ -39,9 +39,15 @@ CONTENT_MAX_CHARS = 500
 
 
 def human_time_ago(created_at: str) -> str:
-    """Turn a created_at ISO timestamp into a felt time phrase.
+    """Turn a created_at ISO timestamp into a NEGATIVE time offset.
 
-    The model must know how old the memory is — "这是多久以前的自己".
+    Memory timestamps are always "-X分钟/-X小时/-X天/-X个月" — how long
+    ago the event happened relative to now (user: 时间都是负数，表示记忆
+    这个事件的时候距离现在过去了多久). We deliberately do NOT use
+    "昨天/今天" so the label never collides with the model's own use of
+    those words mid-conversation; the now-anchor line in the memory block
+    lets the model convert to absolute dates.
+
     Lives here (not in recall.py) so loader.py can use it without a
     circular import.
     """
@@ -50,27 +56,24 @@ def human_time_ago(created_at: str) -> str:
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
     except (ValueError, TypeError):
-        return "很久以前"
+        return "-很久"
 
-    hours = (datetime.now(timezone.utc) - dt).total_seconds() / 3600.0
-    if hours < 0:
-        return "刚才"
-    if hours < 2:
-        return "刚才"
-    if hours < 12:
-        return "今天"
-    if hours < 30:
-        return "昨天"
-    if hours < 72:
-        return "前天"
-    days = hours / 24.0
-    if days < 7:
-        return f"{int(days)}天前"
+    seconds = (datetime.now(timezone.utc) - dt).total_seconds()
+    if seconds < 60:
+        return "-刚刚"
+    minutes = int(seconds // 60)
+    if minutes < 60:
+        return f"-{minutes}分钟"
+    hours = minutes // 60
+    if hours < 24:
+        return f"-{hours}小时"
+    days = hours // 24
     if days < 30:
-        return f"{int(days // 7)}周前"
-    if days < 365:
-        return f"{int(days // 30)}个月前"
-    return "很久以前"
+        return f"-{days}天"
+    months = days // 30
+    if months < 12:
+        return f"-{months}个月"
+    return "-很久"
 
 
 def aggregate_emotion(content: str) -> str:

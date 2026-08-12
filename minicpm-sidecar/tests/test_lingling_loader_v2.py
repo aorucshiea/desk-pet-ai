@@ -165,31 +165,31 @@ class TestTimeSense:
         ctx = loader.build_memory_context(store)
         assert "现在是" in ctx and "年" in ctx  # (现在是2026年…)
 
-    def test_top_events_carry_aged_label(self, store):
+    def test_top_events_carry_negative_offset(self, store):
         evt = store.add_event(title="老记忆", content="c", weight=900)
         evt["created_at"] = self._evt_aged(48)  # 2 days ago
         store.save()
         loader.reset_session()
         ctx = loader.build_memory_context(store)
-        assert "前天" in ctx and "老记忆" in ctx
+        assert "[-2天]" in ctx and "老记忆" in ctx
 
     def test_aged_label_any_layer(self, store):
-        """The felt age appears on the memory wherever it lands — top
-        layer ([1周前] 标题) or directory (1周前的事 标题)."""
+        """The offset appears wherever the memory lands — top layer
+        ([-8天] 标题) or directory (-8天的事 标题)."""
         evt = store.add_event(title="模糊记忆", content="c", weight=600)
         evt["created_at"] = self._evt_aged(200)  # 8+ days ago
         store.save()
         loader.reset_session()
         ctx = loader.build_memory_context(store)
-        assert "[1周前]" in ctx or "周前的事" in ctx or "1个月前" in ctx
+        assert "[-8天]" in ctx or "-8天的事" in ctx
 
-    def test_flashback_carries_age(self, store, monkeypatch):
+    def test_flashback_carries_negative_offset(self, store, monkeypatch):
         evt = store.add_event(title="闪现", content="c", weight=900)
-        evt["created_at"] = self._evt_aged(5)  # today
+        evt["created_at"] = self._evt_aged(5)  # 5 hours ago
         store.save()
         # Force flashback to pick this event.
         monkeypatch.setattr(loader, "_session_loaded_ids", set())
         monkeypatch.setattr(loader, "pick_flashback", lambda s, ex: store.get_event(evt["id"]))
         loader.reset_session()
         ctx = loader.build_memory_context(store)
-        assert "今天" in ctx and "闪现" in ctx
+        assert "[-5小时]" in ctx and "闪现" in ctx

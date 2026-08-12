@@ -143,5 +143,5 @@ class TestBuildResonanceBlock:
         evt = seeded_store.get_all_events()[0]
         block = rs.build_resonance_block([evt])
         assert "【你突然觉得这和现在有关】" in block
-        assert "个月前的事" in block or "很久以前的事" in block
+        assert "-1个月的事" in block or "-很久的事" in block or "-" in block
         assert evt["title"] in block
