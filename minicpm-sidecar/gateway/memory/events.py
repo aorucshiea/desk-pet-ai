@@ -38,6 +38,41 @@ EMOTION_VOCAB: List[str] = [
 CONTENT_MAX_CHARS = 500
 
 
+def human_time_ago(created_at: str) -> str:
+    """Turn a created_at ISO timestamp into a felt time phrase.
+
+    The model must know how old the memory is — "这是多久以前的自己".
+    Lives here (not in recall.py) so loader.py can use it without a
+    circular import.
+    """
+    try:
+        dt = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+    except (ValueError, TypeError):
+        return "很久以前"
+
+    hours = (datetime.now(timezone.utc) - dt).total_seconds() / 3600.0
+    if hours < 0:
+        return "刚才"
+    if hours < 2:
+        return "刚才"
+    if hours < 12:
+        return "今天"
+    if hours < 30:
+        return "昨天"
+    if hours < 72:
+        return "前天"
+    days = hours / 24.0
+    if days < 7:
+        return f"{int(days)}天前"
+    if days < 30:
+        return f"{int(days // 7)}周前"
+    if days < 365:
+        return f"{int(days // 30)}个月前"
+    return "很久以前"
+
+
 def aggregate_emotion(content: str) -> str:
     """Extract the event-level emotion from an emotion-flow content.
 

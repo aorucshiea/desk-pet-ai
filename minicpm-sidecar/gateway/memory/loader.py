@@ -24,11 +24,12 @@ signal (familiarity via fade ratio, emotion via tag, unfinishedness via
 from __future__ import annotations
 
 import random
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set
 
 from ..log_setup import get_logger
 from .decay import on_event_accessed
-from .events import EventStore
+from .events import EventStore, human_time_ago
 
 logger = get_logger()
 
@@ -165,10 +166,12 @@ def build_faded_directory(
             prefix += f"[{evt['emotion']}] "
         if evt.get("type") == "knowledge":
             prefix += "[知识] "
+        # Felt age anchors the fuzzy title in time ("3天前的事…").
+        when = human_time_ago(evt.get("created_at", ""))
         suffix = ""
         if not evt.get("resolved", True) and evt["weight"] >= 200:
             suffix = "（还没放下）"
-        lines.append(f"- {prefix}{faded}{suffix}")
+        lines.append(f"- {when}的事 {prefix}{faded}{suffix}")
 
     return lines
 
@@ -193,6 +196,11 @@ def build_memory_context(store: EventStore) -> str:
 
     lines: List[str] = []
 
+    # Every memory carries its felt age — the model must know "how long
+    # ago this was" relative to NOW, otherwise it has no time sense.
+    def _aged(evt: Dict[str, Any]) -> str:
+        return f"[{human_time_ago(evt.get('created_at', ''))}] {evt['title']}"
+
     core_events = [e for e in top_events if e.get("core")]
     normal_events = [e for e in top_events if not e.get("core")]
 
@@ -202,7 +210,7 @@ def build_memory_context(store: EventStore) -> str:
     if core_events:
         lines.append("【你一直放在心上的事】")
         for i, evt in enumerate(core_events, 1):
-            lines.append(f"{i}. [{evt['title']}] {evt['content']}")
+            lines.append(f"{i}. {_aged(evt)} {evt['content']}")
 
     # Layer 1: Full memories
     if normal_events:
@@ -210,13 +218,13 @@ def build_memory_context(store: EventStore) -> str:
             lines.append("")
         lines.append("【你记得的事】")
         for i, evt in enumerate(normal_events, 1):
-            lines.append(f"{i}. [{evt['title']}] {evt['content']}")
+            lines.append(f"{i}. {_aged(evt)} {evt['content']}")
 
     # Layer 2: Flashback
     if flashback:
         lines.append("")
         lines.append("【突然浮现在脑海中的事】")
-        lines.append(f"[{flashback['title']}] {flashback['content']}")
+        lines.append(f"{_aged(flashback)} {flashback['content']}")
 
     # Layer 3: Faded directory
     if directory:
@@ -225,6 +233,11 @@ def build_memory_context(store: EventStore) -> str:
         lines.extend(directory)
 
     if lines:
+        # Anchor the model's time sense: every [昨天]/[3天前] label below
+        # is relative to this moment.
+        now = datetime.now(timezone.utc)
+        now_label = now.strftime("%Y年%m月%d日 %H:%M")
+        lines.insert(0, f"（现在是{now_label}。下面的记忆都发生在这一刻之前。）")
         lines.append("")
         lines.append(
             "以上是你记得自己经历过的事。有些你还记得很清楚，有些只剩下一个模糊的影子。"

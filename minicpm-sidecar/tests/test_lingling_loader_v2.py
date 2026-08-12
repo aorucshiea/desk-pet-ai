@@ -133,3 +133,47 @@ class TestMemoryContextV2:
         # for the not-loaded remainder — here nothing is in the directory
         # (only 1 event), so assert the context reads like a memory.
         assert "你记得的事" in ctx or "你的记忆" in ctx
+
+
+class TestTimeSense:
+    """Memories carry felt ages + a now-anchor so the model has a time
+    sense (用户: 记忆要带时间，模型得有时间感)."""
+
+    def _evt_aged(self, hours_ago: float):
+        from datetime import datetime, timedelta, timezone
+        return (datetime.now(timezone.utc) - timedelta(hours=hours_ago)).isoformat()
+
+    def test_now_anchor_injected(self, store):
+        store.add_event(title="T", content="c", weight=900)
+        loader.reset_session()
+        ctx = loader.build_memory_context(store)
+        assert "现在是" in ctx and "年" in ctx  # (现在是2026年…)
+
+    def test_top_events_carry_aged_label(self, store):
+        evt = store.add_event(title="老记忆", content="c", weight=900)
+        evt["created_at"] = self._evt_aged(48)  # 2 days ago
+        store.save()
+        loader.reset_session()
+        ctx = loader.build_memory_context(store)
+        assert "前天" in ctx and "老记忆" in ctx
+
+    def test_aged_label_any_layer(self, store):
+        """The felt age appears on the memory wherever it lands — top
+        layer ([1周前] 标题) or directory (1周前的事 标题)."""
+        evt = store.add_event(title="模糊记忆", content="c", weight=600)
+        evt["created_at"] = self._evt_aged(200)  # 8+ days ago
+        store.save()
+        loader.reset_session()
+        ctx = loader.build_memory_context(store)
+        assert "[1周前]" in ctx or "周前的事" in ctx or "1个月前" in ctx
+
+    def test_flashback_carries_age(self, store, monkeypatch):
+        evt = store.add_event(title="闪现", content="c", weight=900)
+        evt["created_at"] = self._evt_aged(5)  # today
+        store.save()
+        # Force flashback to pick this event.
+        monkeypatch.setattr(loader, "_session_loaded_ids", set())
+        monkeypatch.setattr(loader, "pick_flashback", lambda s, ex: store.get_event(evt["id"]))
+        loader.reset_session()
+        ctx = loader.build_memory_context(store)
+        assert "今天" in ctx and "闪现" in ctx
