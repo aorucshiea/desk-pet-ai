@@ -127,6 +127,34 @@ class TestHumanTimeAgo:
         assert rc.human_time_ago("not-a-date") == "很久以前"
 
 
+class TestCoreRecallBonus:
+    """核心长期记忆 recall 概率 = 普通权重 + 核心加成 (CORE_RECALL_BONUS)."""
+
+    @pytest.mark.asyncio
+    async def test_core_event_gets_bonus_probability(self, store, monkeypatch):
+        monkeypatch.setattr(rc, "_event_store", store)
+        evt = store.add_event(title="T", content="c（平静）", weight=10, core=True)
+        loader.reset_session()
+        # base = 0.01 + 0.40 = 0.41 → roll 0.3 hits, roll 0.5 misses.
+        monkeypatch.setattr(random, "random", lambda: 0.3)
+        out = await rc.recall_tool_handler({"keyword": "平静"})
+        assert "你想起来了" in out["content"][0]["text"]
+
+        loader.reset_session()
+        monkeypatch.setattr(random, "random", lambda: 0.5)
+        out = await rc.recall_tool_handler({"keyword": "平静"})
+        assert "抓不住" in out["content"][0]["text"]
+
+    @pytest.mark.asyncio
+    async def test_non_core_event_no_bonus(self, store, monkeypatch):
+        monkeypatch.setattr(rc, "_event_store", store)
+        store.add_event(title="T", content="c（平静）", weight=10, core=False)
+        loader.reset_session()
+        monkeypatch.setattr(random, "random", lambda: 0.3)
+        out = await rc.recall_tool_handler({"keyword": "平静"})
+        assert "抓不住" in out["content"][0]["text"]  # 0.01 < 0.3 → miss
+
+
 class TestHandler:
     @pytest.mark.asyncio
     async def test_handler_returns_sampled_with_time(self, seeded_store, monkeypatch):

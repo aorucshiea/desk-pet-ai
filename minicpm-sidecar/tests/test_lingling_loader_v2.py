@@ -74,6 +74,22 @@ class TestFadedDirectoryLabels:
         # weight 800 → visible = 5 × 0.8 = 4 chars, prefixed with [疲惫]
         assert any("[疲惫]" in ln and len(ln) < len("加班到凌晨") + 20 for ln in lines)
 
+    def test_very_low_weight_vanishes_from_directory_only(self, store):
+        """用户: 只有非常非常低才从目录消失（短期记忆），数据仍在。"""
+        evt = store.add_event(title="几乎忘了", content="c", weight=20)
+        evt["weight"] = 20.0  # below MIN_DIRECTORY_WEIGHT
+        store.save()
+        lines = loader.build_faded_directory(store, exclude_ids=set())
+        assert all("几乎忘了" not in ln for ln in lines)
+        # 数据仍在 — recall/search 仍可达
+        assert store.get_event(evt["id"])["weight"] == 20.0
+
+    def test_low_but_not_floor_weight_keeps_record(self, store):
+        """权重低但没到地板：目录仍有记录（模糊标题 ≥3 字）。"""
+        evt = store.add_event(title="模糊但还在", content="c", weight=100)
+        lines = loader.build_faded_directory(store, exclude_ids=set())
+        assert any("模糊但还在"[:3] in ln for ln in lines)  # 5×0.1=0→clamp 3字
+
 
 class TestFlashbackDenominator:
     def test_denominator_grows_with_event_count(self, store):

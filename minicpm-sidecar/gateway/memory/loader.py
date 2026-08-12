@@ -45,6 +45,10 @@ FLASHBACK_DILUTION_PER_EVENT = 10
 # Below this, the event doesn't just look fuzzy — it's gone.
 MIN_VISIBLE_CHARS = 3
 
+# Only events with weight below this vanish from the directory (短期记忆
+# 的"真忘了") — the data stays, recall/resonance can still reach them.
+MIN_DIRECTORY_WEIGHT = 30
+
 # Session-level tracking of loaded event IDs. Once loaded, they stay
 # in context for the entire conversation — no "一阵一阵" flickering.
 _session_loaded_ids: Set[str] = set()
@@ -153,14 +157,18 @@ def build_faded_directory(
         if evt["id"] in _session_loaded_ids:
             continue
 
+        # Only VERY low weights vanish from the directory (短期记忆的"真忘了"
+        # — the event data stays, recall/resonance can still reach it).
+        if evt["weight"] < MIN_DIRECTORY_WEIGHT:
+            continue
+
         ratio = evt["weight"] / 1000.0
         title = evt.get("title", "")
         visible = int(len(title) * ratio)
-
         if visible < MIN_VISIBLE_CHARS:
-            continue  # Truly forgotten — not even a ghost in the directory.
-
+            visible = MIN_VISIBLE_CHARS  # 模糊但仍有记录 — never a ghost
         faded = title[:visible]
+
         prefix = ""
         if evt.get("emotion"):
             prefix += f"[{evt['emotion']}] "

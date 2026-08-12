@@ -1021,6 +1021,9 @@ def build_app(
                 # putting something in means it almost never fades, so it
                 # must stay rare.
                 CORE_CAP = 7
+                # Auto-promote events at/above this weight into the core
+                # bank (提取 prompt 的"改变关系的事 800-999"档).
+                CORE_PROMOTE_WEIGHT = 800
                 core_names = data.get("core") or []
                 existing_core = sum(1 for e in event_store.get_all_events() if e.get("core"))
                 if core_names and existing_core < CORE_CAP:
@@ -1037,6 +1040,31 @@ def build_app(
                     if promoted:
                         event_store.save()
                         log.info("Core bank: promoted %d event(s)", promoted)
+
+                # Auto-promote very high-weight events (≥ CORE_PROMOTE_WEIGHT,
+                # "改变关系的事" 档) into the core bank while there's room —
+                # the model's manual core picks still take priority (they run
+                # first above). Core memories decay ~not at all and get a
+                # recall probability bonus (用户: 核心记忆权重掉得非常非常慢，
+                # recall 概率为核心+普通权重联合计算).
+                if existing_core < CORE_CAP:
+                    budget = CORE_CAP - existing_core
+                    auto = 0
+                    for evt in sorted(
+                        event_store.get_all_events(),
+                        key=lambda e: e.get("weight", 0),
+                        reverse=True,
+                    ):
+                        if auto >= budget:
+                            break
+                        if evt.get("core"):
+                            continue
+                        if evt.get("weight", 0) >= CORE_PROMOTE_WEIGHT:
+                            evt["core"] = True
+                            auto += 1
+                    if auto:
+                        event_store.save()
+                        log.info("Core bank: auto-promoted %d high-weight event(s)", auto)
 
                 mood_data = data.get("mood", {})
                 if mood_data:

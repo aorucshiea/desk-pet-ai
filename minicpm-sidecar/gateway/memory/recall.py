@@ -102,6 +102,11 @@ def _search_candidates(store: EventStore, keyword: str, limit: int = 8) -> List[
 # a person: the harder you try, the closer the memory gets.
 RECALL_RETRY_BONUS = 0.06
 
+# Core memories (核心长期记忆) recall at weight + this bonus — they're
+# the things the pet chose to never forget, so they surface far more
+# readily. A weight-100 core event starts at 50% instead of 10%.
+CORE_RECALL_BONUS = 0.40
+
 _recall_attempts: Dict[str, int] = {}
 
 
@@ -123,6 +128,10 @@ def _sample_recall(store: EventStore, candidates: List[Dict[str, Any]]) -> List[
         if loader.is_in_session(evt["id"]):
             continue
         base = evt["weight"] / 1000.0
+        # Core memories recall at 普通权重 + 核心加成 (they're the
+        # things the pet refuses to forget).
+        if evt.get("core"):
+            base += CORE_RECALL_BONUS
         attempts = _recall_attempts.get(evt["id"], 0)
         p = min(1.0, base + attempts * RECALL_RETRY_BONUS)
         if p >= 1.0 or random.random() < p:
