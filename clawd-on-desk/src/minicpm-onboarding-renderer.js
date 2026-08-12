@@ -226,8 +226,11 @@ function paintWarmupRow() {
 }
 
 function updateNextBtn() {
+  // The model step is skippable: only block while a download is actually
+  // in flight. Without a model the wizard still proceeds — the pet runs
+  // and the model can be added later from Settings.
   const nextBtn = el("model-next");
-  nextBtn.disabled = !(modelStatus === "ready" && warmupStatus === "ready");
+  nextBtn.disabled = modelStatus === "downloading";
 }
 
 function paintModelPanel() {
@@ -429,6 +432,9 @@ window.addEventListener("DOMContentLoaded", async () => {
 
   el("model-next").addEventListener("click", () => {
     show("ready");
+    // Remind the user when they skipped the model step.
+    const hint = el("ready-no-model");
+    if (hint) hint.classList.toggle("hidden", modelStatus === "ready");
   });
 
   el("ready-finish").addEventListener("click", async () => {

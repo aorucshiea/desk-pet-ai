@@ -19,6 +19,7 @@ contextBridge.exposeInMainWorld("minicpm", {
   // Updater
   updateStatus: () => ipcRenderer.invoke("minicpm:update-status"),
   updateApply:  () => ipcRenderer.invoke("minicpm:update-apply"),
+  engineUpdateApply: () => ipcRenderer.invoke("minicpm:engine-update-apply"),
 
   // Chat generation parameters (shared with Settings tab)
   getChatParams: () => ipcRenderer.invoke("minicpm:get-chat-params"),
@@ -75,7 +76,7 @@ contextBridge.exposeInMainWorld("minicpm", {
   onCmdReply:       (cb) => ipcRenderer.on("minicpm:cmd-reply",           (_e, p) => cb(p || {})),
   onEditMode:       (cb) => ipcRenderer.on("minicpm:edit-mode",           (_e, p) => cb(p || {})),
   onClearHistory:   (cb) => ipcRenderer.on("minicpm:clear-history",        ()  => cb()),
-  onSetActiveAssistant: (cb) => ipcRenderer.on("minicpm:set-active-assistant", (_e, p) => {
+  onThemeChanged:   (cb) => ipcRenderer.on("minicpm:theme-changed",         (_e, p) => {
     try { cb(p || {}); } catch {}
   }),
   onProactivePolicy: (cb) => ipcRenderer.on("minicpm:set-proactive-policy", (_e, p) => {

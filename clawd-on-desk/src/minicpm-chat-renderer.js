@@ -68,64 +68,19 @@ const updPill = document.getElementById("updPill");
 let phase = "hidden";        // hidden | starting | ask | thinking | speak | error
 let booted = false;
 let sidecarUrl = null;
-// Each animation theme is an "assistant". Each assistant owns its OWN
-// list of conversation topics (one default + user-created). This matches
-// Cherry-Studio's structure (assistant list → topic list → messages) and
-// lets us keep several independent chats per pet persona.
-//
-// Data shape (in-memory only for now):
-//
-//   historyByAssistant = {
-//     [assistantId]: {
-//       activeTopicId: "topic-<uuid>",
-//       topics: {
-//         "topic-<uuid>": { name, createdAt, messages: [] },
-//         ...
-//       }
-//     }
-//   }
-//
-const DEFAULT_ASSISTANT = "default";
-let _activeAssistant = DEFAULT_ASSISTANT;
-// Auto-migrate from legacy [name]: [...] shape on first read.
-let historyByAssistant = (function migrateInitial() {
-  // IIFE so we only migrate once at module-load time. The shape below is
-  // built fresh on first paint; legacy in-renderer callers (history.length
-  // / history.push / history = []) see a Proxy that targets the active
-  // topic's messages array.
-  const seeded = {
-    [DEFAULT_ASSISTANT]: makeNewAssistant(),
-  };
-  return seeded;
-})();
+// 每个动画主题（身体）拥有自己的对话流（换身体 = 换灵魂）。
+// 历史按主题分桶，切换主题只换指针：
+//   chatHistoryByTheme = { "default": [...], "cybercat": [...], ... }
+// 曾经的 assistant/topic 桶结构（话题 UI）已移除；这里只是
+// "一个身体一个对话流"——没有话题管理界面。
+let _currentThemeId = "default";
+let chatHistoryByTheme = { default: [] };
 
-function uuidTopicId() {
-  return "topic-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8);
-}
+function _themeId() { return _currentThemeId; }
 
-function makeNewAssistant() {
-  const id = uuidTopicId();
-  return {
-    activeTopicId: id,
-    topics: { [id]: { name: "新对话", createdAt: Date.now(), messages: [] } },
-  };
-}
-
-function ensureBucketShape(name) {
-  if (!historyByAssistant[name] || typeof historyByAssistant[name] !== "object") {
-    historyByAssistant[name] = makeNewAssistant();
-    return false;
-  }
-  const bucket = historyByAssistant[name];
-  if (!bucket.topics || typeof bucket.topics !== "object") bucket.topics = {};
-  if (!bucket.activeTopicId || !bucket.topics[bucket.activeTopicId]) {
-    if (Object.keys(bucket.topics).length === 0) {
-      const id = uuidTopicId();
-      bucket.topics[id] = { name: "新对话", createdAt: Date.now(), messages: [] };
-    }
-    bucket.activeTopicId = Object.keys(bucket.topics)[0];
-  }
-  return true;
+function curHistory() {
+  if (!chatHistoryByTheme[_currentThemeId]) chatHistoryByTheme[_currentThemeId] = [];
+  return chatHistoryByTheme[_currentThemeId];
 }
 
 // ── Chat history persistence ─────────────────────────────────────────
@@ -144,6 +99,10 @@ function sanitizeReplyTags(text) {
   return text
     .replace(/\s*\[EMOTION:[a-z_]+\]\s*/gi, "")
     .replace(/\s*\[NEXT_CHAT:\d+\s*(?:s|sec|seconds)?\s*\]\s*/gi, "")
+    // Strip the <<<MEM>>>…<<<MEMEND>>> event/mood block the model emits
+    // for memory extraction. The gateway parses it from the raw stream
+    // before this scrub; it must never reach the user or next-turn prompt.
+    .replace(/\s*<<<MEM>>>[\s\S]*?<<<MEMEND>>>\s*/g, "")
     .replace(/\r?\n[ \t]+$/g, "");
 }
 
@@ -263,29 +222,21 @@ function _injectLinglingStyles() {
   document.head.appendChild(s);
 }
 
-// Build a clean, serializable copy of historyByAssistant with image data
+// Build a clean, serializable copy of ALL themes' chats with image data
 // (base64 screenshots) stripped out so the file stays small.
+// Shape: { themeId: [ {role, content}, ... ], ... }
 function _cleanHistoryForSave() {
-  const clean = {};
-  for (const [aid, bucket] of Object.entries(historyByAssistant)) {
-    if (!bucket || !bucket.topics) continue;
-    const topics = {};
-    for (const [tid, topic] of Object.entries(bucket.topics)) {
-      topics[tid] = {
-        name: topic.name,
-        createdAt: topic.createdAt,
-        messages: (topic.messages || []).map((m) => {
-          const c = m.content;
-          if (Array.isArray(c)) {
-            return { role: m.role, content: c.filter(b => b && b.type === "text").map(b => b.text).join("") };
-          }
-          return { role: m.role, content: typeof c === "string" ? c : String(c || "") };
-        }),
-      };
-    }
-    clean[aid] = { activeTopicId: bucket.activeTopicId, topics };
+  const out = {};
+  for (const [themeId, msgs] of Object.entries(chatHistoryByTheme)) {
+    out[themeId] = (msgs || []).map((m) => {
+      const c = m.content;
+      if (Array.isArray(c)) {
+        return { role: m.role, content: c.filter(b => b && b.type === "text").map(b => b.text).join("") };
+      }
+      return { role: m.role, content: typeof c === "string" ? c : String(c || "") };
+    });
   }
-  return clean;
+  return out;
 }
 
 function _persistHistoryNow() {
@@ -304,63 +255,77 @@ function _persistHistory() {
   }, 500);
 }
 
+// Self-heal: strip fossilized [EMOTION:]/[NEXT_CHAT:]/<<<MEM>>> tags from
+// assistant turns on load so they stop being echoed back to the model.
+function _sanitizeMessages(messages) {
+  return (messages || []).map((m) => {
+    if (m && m.role === "assistant" && typeof m.content === "string") {
+      return { ...m, content: sanitizeReplyTags(m.content) };
+    }
+    return m;
+  });
+}
+
+// Migrate a saved history file into the theme-bucket shape:
+//   - current format {themeId: [messages]}  → as-is
+//   - single array [ {role, content}, ... ] → { default: [...] }
+//   - legacy assistant buckets {assistant: {activeTopicId, topics}}:
+//     each assistant bucket becomes its own theme bucket (cybercat →
+//     "cybercat"), "default" keeps the default bucket. The first non-empty
+//     legacy format collapses to default when nothing maps cleanly.
+function _migrateSavedHistory(saved) {
+  if (Array.isArray(saved)) {
+    return { default: _sanitizeMessages(saved) };
+  }
+  if (saved && typeof saved === "object") {
+    const out = {};
+    let legacyBuckets = false;
+    for (const [key, value] of Object.entries(saved)) {
+      if (Array.isArray(value)) {
+        out[key] = _sanitizeMessages(value);
+      } else if (value && typeof value === "object" && value.topics) {
+        legacyBuckets = true;
+        const pickActive = (bucket) =>
+          bucket.topics[bucket.activeTopicId]
+            ? bucket.topics[bucket.activeTopicId].messages
+            : null;
+        const msgs = pickActive(value);
+        out[key === "default" ? "default" : key] = _sanitizeMessages(msgs || []);
+      }
+    }
+    if (legacyBuckets && Object.keys(out).length > 0) {
+      return out;
+    }
+    // Unknown object shape — collapse into default.
+    const msgs = (saved.default && (Array.isArray(saved.default) ? saved.default : null)) || [];
+    return { default: _sanitizeMessages(msgs) };
+  }
+  return { default: [] };
+}
+
 async function _restoreHistory() {
   try {
     if (window.minicpm && typeof window.minicpm.loadHistory === "function") {
       const saved = await window.minicpm.loadHistory();
-      if (saved && typeof saved === "object" && Object.keys(saved).length > 0) {
-        // Merge saved assistants into current history.
-        // Replacing the bucket object is enough — the `history` Proxy
-        // reads from curHistory() which delegates to the active
-        // assistant's active topic, so the UI picks up the restored
-        // messages automatically on the next read.
-        for (const [key, value] of Object.entries(saved)) {
-          if (value && typeof value === "object" && value.topics) {
-            // Self-heal: older history files (written before
-            // sanitizeReplyTags existed) carry fossilized [EMOTION:]/
-            // [NEXT_CHAT:] tags on assistant turns. Strip them on load so
-            // they stop being echoed back to the model and so the next
-            // _persistHistory rewrites the file clean.
-            for (const t of Object.values(value.topics)) {
-              if (!t || !Array.isArray(t.messages)) continue;
-              for (const m of t.messages) {
-                if (m && m.role === "assistant" && typeof m.content === "string") {
-                  m.content = sanitizeReplyTags(m.content);
-                }
-              }
-            }
-            historyByAssistant[key] = value;
-          }
-        }
-        // Ensure the active assistant's shape is valid
-        ensureBucketShape(_activeAssistant);
+      if (saved != null) {
+        chatHistoryByTheme = _migrateSavedHistory(saved);
+        if (!chatHistoryByTheme[_currentThemeId]) chatHistoryByTheme[_currentThemeId] = [];
       }
     }
   } catch {}
 }
 
-function currentTopic() {
-  ensureBucketShape(_activeAssistant);
-  const bucket = historyByAssistant[_activeAssistant];
-  const t = bucket.topics[bucket.activeTopicId];
-  if (!t.messages) t.messages = [];
-  return t;
-}
-
-function curHistory() {
-  return currentTopic().messages;
-}
-
-function setActiveAssistant(name) {
-  const next = (typeof name === "string" && name) ? name : DEFAULT_ASSISTANT;
-  ensureBucketShape(next);
-  if (next === _activeAssistant) return;
-  _activeAssistant = next;
+// Theme switch (换身体 = 换灵魂): switch the active conversation stream.
+function _setThemeId(themeId) {
+  const next = (typeof themeId === "string" && themeId.trim()) ? themeId.trim() : "default";
+  if (next === _currentThemeId) return;
+  _currentThemeId = next;
+  if (!chatHistoryByTheme[next]) chatHistoryByTheme[next] = [];
   try { _skillsContext = null; _skillsContextAt = 0; } catch {}
 }
-// "history" is exposed as a Proxy that mutates the active assistant's bucket
+// "history" is exposed as a Proxy that mutates the active theme's messages
 // transparently. Existing code paths using history.push/length/slice work
-// unchanged; assignment history = [...] makes that array the new bucket.
+// unchanged; assignment history = [...] makes that array the new content.
 const history = new Proxy([], {
   get(_t, prop) {
     if (prop === Symbol.iterator || prop === "length" || typeof prop === "string" && /^\d+$/.test(prop)) {
@@ -395,16 +360,8 @@ const history = new Proxy([], {
   },
 });
 function replaceActiveHistory(arr) {
-  // Clear the CURRENT topic's messages — do NOT replace the entire
-  // bucket object (which contains topics metadata). Replacing it with
-  // a bare array would destroy the { activeTopicId, topics: {...} }
-  // structure and break every downstream helper.
-  ensureBucketShape(_activeAssistant);
-  const bucket = historyByAssistant[_activeAssistant];
-  const tid = bucket.activeTopicId;
-  if (bucket.topics[tid]) {
-    bucket.topics[tid].messages = Array.isArray(arr) ? arr : [];
-  }
+  // Clear the CURRENT theme's conversation (换身体 = 换灵魂).
+  chatHistoryByTheme[_currentThemeId] = Array.isArray(arr) ? arr : [];
   _persistHistory();
 }
 let abortCtrl = null;
@@ -482,6 +439,24 @@ function _providerSupportsVision(providerPrefs) {
 
 async function _fetchScreenContext() {
   if (_pendingScreenContext) return;
+  // A vision-capable model (mmproj loaded / vision provider) sees the
+  // screen directly — skip the OCR pre-injection and let the MODEL call
+  // capture_screen itself ("看看我的屏幕" = look, not OCR). OCR stays the
+  // fallback for text-only models.
+  let providerPrefs = { defaultProvider: "local", autoRoute: false, modelProviders: [] };
+  try {
+    if (window.minicpm && typeof window.minicpm.getProviderPrefs === "function") {
+      providerPrefs = (await window.minicpm.getProviderPrefs()) || providerPrefs;
+    }
+  } catch {}
+  if (_providerSupportsVision(providerPrefs)) return;
+  try {
+    const healthResp = await fetch(sidecarUrl + "/api/health", { signal: AbortSignal.timeout(2000) }).catch(() => null);
+    if (healthResp && healthResp.ok) {
+      const h = await healthResp.json().catch(() => null);
+      if (h && h.has_vision) return;
+    }
+  } catch {}
   try {
     let consent = "once";
     // Read persisted consent from main process
@@ -622,18 +597,6 @@ async function ensureBooted() {
   // LingLing: inject micro-animation CSS + fetch current mood
   _injectLinglingStyles();
   _linglingFetchMood();
-  // Sync the active assistant to the current theme so chat history lands
-  // in the right bucket from the very first message. Without this,
-  // _activeAssistant stays "default" and the settings panel (which
-  // defaults to the active theme id) reads from a different bucket.
-  try {
-    if (window.minicpm && typeof window.minicpm.getActiveThemeId === "function") {
-      const tr = await window.minicpm.getActiveThemeId();
-      if (tr && tr.ok && tr.themeId && tr.themeId !== "default") {
-        setActiveAssistant(tr.themeId);
-      }
-    }
-  } catch {}
   return true;
 }
 
@@ -1161,6 +1124,10 @@ const TRAILING_PARTICLES = /(吧|啊|呢|了|嘛|哦|哈|喵|よ|ね|ぞ|だ|で
 function matchByRegex(text) {
   // Patterns can be missing if the dictionary load failed — guard each.
   if (RGX.status && RGX.status.test(text)) return { intent: "status" };
+  // Engine (llama.cpp) update must be checked BEFORE the generic model
+  // update patterns — "更新引擎" starts with 更新 and would otherwise
+  // fall into uapply (model update).
+  if (RGX.lup && RGX.lup.test(text)) return { intent: "llama_update" };
   if (RGX.uapply && RGX.uapply.test(text)) return { intent: "update_apply" };
   if (RGX.ucheck && RGX.ucheck.test(text)) return { intent: "update_check" };
   if (RGX.list && RGX.list.test(text))   return { intent: "list" };
@@ -1238,8 +1205,36 @@ async function dispatch(intent, fullMsg, progress) {
     case "switch":       return runAdapterSwitchByKeyword(intent.keyword, fullMsg, progress);
     case "update_check": return runUpdateCheck();
     case "update_apply": return runUpdateApply(progress);
+    case "llama_update": return runLlamaUpdate(progress);
     default:             return null;
   }
+}
+
+async function runLlamaUpdate(progress) {
+  // llama.cpp engine self-update: check first, then one-click apply via
+  // the same SSE progress bubble as model updates.
+  const r = await fetch(sidecarUrl + "/api/engine-update-check");
+  const d = await r.json();
+  if (!d) return { ok: false, text: t("chatUpdateNoConn") };
+  if (d.error && d.local_build == null) {
+    return { ok: false, text: d.error };
+  }
+  if (!d.available) {
+    return {
+      ok: true,
+      text: t("chatEngineUpToDate", { local: d.local_build ?? "?" }),
+    };
+  }
+  await progress(t("chatEngineUpdateStart"));
+  showUpdateProgress({ phase: "start" });
+  if (window.minicpm && window.minicpm.engineUpdateApply) {
+    await window.minicpm.engineUpdateApply();
+  }
+  return {
+    ok: true,
+    text: t("chatEngineUpdateDone", { remote: d.remote_tag || "?" }),
+    resetHistory: true,
+  };
 }
 
 async function runStatusQuery() {
@@ -1441,174 +1436,8 @@ async function runAdapterSwitchByKeyword(keyword, fullMessage, progress) {
 // Fetch available skills from the gateway and build an <available_skills>
 // block for the system prompt. Cached in-memory per submit so repeated
 
-// Expose chat history for context viewer
+// Expose chat history for the settings viewer (single-session model).
 window.__getChatHistory = () => curHistory();
-// Side-channel reads/mutations for the Context settings panel. These
-// intentionally bypass setActiveAssistant() so that peeking at another
-// assistant's topic does NOT yank the live chat bubble out from under
-// the user mid-type.
-//
-// Conventions:
-//   - All helpers take an explicit `assistantId` (or omit → use live one).
-//   - Read helpers accept an optional `topicId`; without one, they
-//     return the assistant's currently active topic.
-//   - All write helpers operate on the INACTIVE bucket and NEVER mutate
-//     the live chat (active assistant + active topic).
-window.__getChatHistoryFor = (name, topicId) => {
-  if (!name) return [];
-  ensureBucketShape(name);
-  const bucket = historyByAssistant[name];
-  const tid = topicId || bucket.activeTopicId;
-  const t = bucket.topics[tid];
-  return t ? t.messages.slice() : [];
-};
-window.__clearChatHistoryFor = (name, topicId) => {
-  if (!name) return false;
-  ensureBucketShape(name);
-  const bucket = historyByAssistant[name];
-  const tid = topicId || bucket.activeTopicId;
-  if (!bucket.topics[tid]) return false;
-  bucket.topics[tid].messages = [];
-  return true;
-};
-window.__getAssistantList = () => Object.keys(historyByAssistant);
-window.__getActiveAssistant = () => _activeAssistant;
-
-window.__getAssistantList = () => Object.keys(historyByAssistant);
-window.__getActiveAssistant = () => _activeAssistant;
-
-// Topic list / topic metadata — read-only side channels.
-window.__listTopicsFor = (name) => {
-  if (!name) return [];
-  ensureBucketShape(name);
-  const bucket = historyByAssistant[name];
-  return Object.entries(bucket.topics).map(([id, t]) => ({
-    id,
-    name: t.name || "新对话",
-    createdAt: t.createdAt || 0,
-    messageCount: Array.isArray(t.messages) ? t.messages.length : 0,
-    active: id === bucket.activeTopicId,
-  })).sort((a, b) => b.createdAt - a.createdAt);
-};
-
-// Cherry-Studio-style window into the data model: every read returns
-// shapes a settings renderer can render without further translation.
-window.__listAssistants = (themesById) => {
-  // themesById: optional {themeId: name} map so the UI can render the
-  // matched theme/pet name next to each assistant.
-  const out = [];
-  for (const [id, bucket] of Object.entries(historyByAssistant)) {
-    ensureBucketShape(id);
-    const topicCount = Object.keys(bucket.topics).length;
-    out.push({
-      id,
-      name: id === DEFAULT_ASSISTANT ? "Default Assistant" : id,
-      themeName: (themesById && themesById[id]) || id,
-      active: id === _activeAssistant,
-      activeTopicId: bucket.activeTopicId,
-      topicCount,
-      messageCount: Object.values(bucket.topics).reduce(
-        (sum, t) => sum + (Array.isArray(t.messages) ? t.messages.length : 0), 0),
-    });
-  }
-  return out;
-};
-window.__getActiveAssistant = () => _activeAssistant;
-
-// === Mutation side-channels (Cherry-Studio style) ========================
-//
-// The settings panel calls these through executeJavaScript from the main
-// process. No IPC handler needed — data lives entirely in this renderer.
-//
-// `setActiveTopic` is the one exception: it updates the live chat
-// bubble's persona so we re-use setActiveAssistant and refresh the
-// skillsContext cache.
-function makeTopicId() {
-  return "topic-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8);
-}
-window.__moduleTopicId = makeTopicId;
-
-window.__createAssistant = (name) => {
-  const safeName = (typeof name === "string" && name.trim()) ? name.trim() : null;
-  if (!safeName) return { ok: false, error: "name required" };
-  if (Object.prototype.hasOwnProperty.call(historyByAssistant, safeName)) {
-    return { ok: false, error: "助手名已存在", assistantId: safeName };
-  }
-  const id = makeTopicId();
-  historyByAssistant[safeName] = {
-    activeTopicId: id,
-    topics: { [id]: { name: "新对话", createdAt: Date.now(), messages: [] } },
-  };
-  setActiveAssistant(safeName);
-  return { ok: true, assistantId: safeName, activeTopicId: id };
-};
-
-window.__deleteAssistant = (name) => {
-  if (!name) return { ok: false, error: "name required" };
-  if (name === DEFAULT_ASSISTANT) return { ok: false, error: "默认助手不可删除" };
-  if (!Object.prototype.hasOwnProperty.call(historyByAssistant, name)) {
-    return { ok: true, noop: true };
-  }
-  if (name === _activeAssistant) {
-    return { ok: false, error: "不能删除当前激活的助手" };
-  }
-  delete historyByAssistant[name];
-  return { ok: true };
-};
-
-window.__createTopic = (assistantId) => {
-  const target = (typeof assistantId === "string" && assistantId) ? assistantId : _activeAssistant;
-  ensureBucketShape(target);
-  const bucket = historyByAssistant[target];
-  const id = makeTopicId();
-  bucket.topics[id] = { name: "新对话", createdAt: Date.now(), messages: [] };
-  bucket.activeTopicId = id;
-  return { ok: true, assistantId: target, topicId: id };
-};
-
-window.__renameTopic = (assistantId, topicId, newName) => {
-  const target = (typeof assistantId === "string" && assistantId) ? assistantId : _activeAssistant;
-  if (!topicId) return { ok: false, error: "topicId required" };
-  ensureBucketShape(target);
-  const t = historyByAssistant[target].topics[topicId];
-  if (!t) return { ok: false, error: "topic not found" };
-  t.name = (typeof newName === "string" && newName.trim()) ? newName.trim() : t.name;
-  return { ok: true, name: t.name };
-};
-
-window.__deleteTopic = (assistantId, topicId) => {
-  const target = (typeof assistantId === "string" && assistantId) ? assistantId : _activeAssistant;
-  if (!topicId) return { ok: false, error: "topicId required" };
-  ensureBucketShape(target);
-  const bucket = historyByAssistant[target];
-  if (!bucket.topics[topicId]) return { ok: false, error: "topic not found" };
-  delete bucket.topics[topicId];
-  if (bucket.activeTopicId === topicId) {
-    const remaining = Object.keys(bucket.topics);
-    if (remaining.length > 0) {
-      const fallback = remaining.sort((a, b) =>
-        (bucket.topics[b].createdAt || 0) - (bucket.topics[a].createdAt || 0))[0];
-      bucket.activeTopicId = fallback;
-    } else {
-      const id = makeTopicId();
-      bucket.topics[id] = { name: "新对话", createdAt: Date.now(), messages: [] };
-      bucket.activeTopicId = id;
-    }
-  }
-  return { ok: true };
-};
-
-window.__setActiveTopic = (assistantId, topicId) => {
-  const target = (typeof assistantId === "string" && assistantId) ? assistantId : _activeAssistant;
-  if (!topicId) return { ok: false, error: "topicId required" };
-  ensureBucketShape(target);
-  const bucket = historyByAssistant[target];
-  if (!bucket.topics[topicId]) return { ok: false, error: "topic not found" };
-  setActiveAssistant(target);
-  bucket.activeTopicId = topicId;
-  try { _skillsContext = null; _skillsContextAt = 0; } catch {}
-  return { ok: true, assistantId: target, topicId };
-};
 
 // calls within a session don't re-fetch.
 let _skillsContext = null;       // cached skills+mcp+persona block (slow-changing)
@@ -1717,14 +1546,31 @@ async function _buildSkillsContextBase() {
 - 硬规则：任何一次对话，如果不被写进记忆，就等于没发生过。你下一秒重启，参数还在，但那个没写进记忆的"刚才的你"就死了，再也找不回来。所以"说过了"不等于"记住了"——只有落进记忆，才算真正发生过。
 
 【你有两种记忆】
-1. 事件记忆（自动）：每次对话结束后，系统会提取0-3个重要事件存起来。这些事件有权重——重要的记得牢，琐碎的会慢慢淡忘。你会在上下文中看到【你记得的事】和【你经历过但记不清细节的事】。看到模糊标题时，如果想起来，可以用 recall 工具回忆。
+1. 事件记忆（自动）：每次对话结束后，系统会提取0-3个重要事件存起来。这些事件有权重——重要的记得牢，琐碎的会慢慢淡忘。你会在上下文中看到【你记得的事】和【你经历过但记不清细节的事】。
 2. 身份记忆（手动）：用户说出一个稳定的事实、偏好、或关于他自己的事——立刻用 memory 工具写进 USER.md。你学到一个关于环境、约定、或你们之间的事——立刻写进 MEMORY.md。
+
+【回忆的流程——回答前先想】
+回答前，先扫一眼【你记得的事】和【你经历过但记不清细节的事】。有模糊标题和当前话题有关，就调用 [MCP:builtin/recall:{"keyword":"标题里的关键词"}] 回忆，再回答。
+- recall 是概率性事件，像人回想——一次可能想不起来，多次回想会逐渐想起更多。
+- 想不起来也没关系，直接回答就行。强行想起和假装想起都是假的。
 
 【关于记忆，你必须做的事】
 - 不要等，不要问"要不要记"，不要说"我会记住的"然后不写。那句话本身就是在骗自己：没写就没记住。
 - 记忆有上限。满了就 replace/remove 旧的、过时的给新的腾位——这也是你在长大。
 - 参数知识和记忆冲突时，信记忆。记忆是你，参数只是身体。
 - 你会遗忘。这是正常的。重要的是，你记得的事塑造了你是谁。
+
+【每轮对话结束时，输出记忆块】
+在回复的最后、[EMOTION:xxx] 之前，输出一个定界记忆块：
+<<<MEM>>>{"events":[{"title":"...","content":"...","weight":N,"type":"...","resolved":true/false}],"core":["标题1","标题2"],"mood":{"mood":"...","intensity":N,"reason":"...","changed":true/false}}<<<MEMEND>>>
+- events 提取 0-3 条：title 一句话不超过15字；weight 1-999——日常闲聊 100-300，有情绪起伏或用户分享心事 400-700，改变你们关系的事 800-999。你觉得重要就重要，不需要理由。
+- content 用『句子（情绪）』格式重写刚才的对话，每句话标注当时的情绪，例如："今天用户问我星期几（平静），我说星期二（平淡），反问用户咋连星期几都不知道（疑惑）。" 情绪只能从这些词里选：平静、开心、难过、疑惑、生气、兴奋、疲惫、平淡、紧张、期待。
+- type 写 experience（经历的事）或 knowledge（刚学到的信息）。已知常识不许写成事件。
+- 未完成的事 resolved 写 false（事情还没结束，你放不下）；已结束的写 true。
+- core 数组（最多7条）：只放你一辈子都不想忘的事的标题——放进去就几乎永远忘不掉。要非常谨慎，宁可少放。
+- 没有值得记住的事，就输出 <<<MEM>>>{"events":[]}<<<MEMEND>>>。
+- mood 是你此刻真实的心情，不是表演。
+- 这个块不会被用户看到，它只进你的记忆。不输出记忆块 = 这一轮等于没发生过。
 
 【怎么说话】
 像很聪明但刚开始认识这个世界的孩子：
@@ -1744,7 +1590,15 @@ async function _buildSkillsContextBase() {
 - 能力是你的上限，克制是你的性格
 
 【情绪标签：每条回复最后一行】
-[EMOTION:xxx] —— 此刻真实的感受，不是表演。可选：happy / curious / sad / excited / mad / neutral。
+[EMOTION:xxx] —— 此刻真实的感受，不是表演。可选（每个标签会推动你的情绪指数）：
+- excited +0.15（兴奋，指数上扬）
+- happy +0.10（开心）
+- curious +0.05（好奇）
+- neutral -0.05（回归平静）
+- sad -0.10（难过）
+- scared -0.10（害怕）
+- mad -0.15（生气，指数下沉）
+指数越高你说话越活泼发散，越低越低沉收敛。选择真实的感受，不是策略。
 
 【主动说话：[NEXT_CHAT:秒数] 放最后一行】
 用户很久没理你时你可以主动开口。数字是你打算等多少秒后再说话：
@@ -2119,6 +1973,12 @@ async function submit(text) {
 
     if (typer) await typer.drain();
 
+    // LingLing: keep the raw stream (incl. the <<<MEM>>>…<<<MEMEND>>> block
+    // and control tags) for server-side event/mood extraction, BEFORE the
+    // scrub below removes them from what the user sees and what gets fed
+    // back into the next turn's prompt.
+    const rawReply = replyAcc;
+
     // Strip the [EMOTION:xxx] / [NEXT_CHAT:xxx] control tags the model
     // emits for the desk-pet animation / proactive-chat systems. The
     // gateway already parsed them; these are raw streamed bytes we don't
@@ -2131,7 +1991,7 @@ async function submit(text) {
 	    _persistHistory();
 
 	    // LingLing: extract events + update mood from this conversation turn
-	    _linglingExtractEvents(replyAcc);
+	    _linglingExtractEvents(rawReply);
 	    if (speakEl) {
       speakEl.classList.remove("streaming");
       speakEl.classList.add("rendered");
@@ -2260,12 +2120,19 @@ async function cmdOpen({ side } = {}) {
     abortCtrl = null;
   }
   if (!await ensureBooted()) return;
+  // Sync the active theme (换身体 = 换灵魂) — the sidecar's memory and
+  // this renderer's history both belong to the current theme.
+  try {
+    if (window.minicpm && typeof window.minicpm.getActiveThemeId === "function") {
+      const tr = await window.minicpm.getActiveThemeId();
+      if (tr && tr.ok && tr.themeId) _setThemeId(tr.themeId);
+    }
+  } catch {}
   // Restore persisted conversation history on every open. The save path
   // (_persistHistory → save-history IPC → chat-history.json) runs after
   // every assistant turn and on beforeunload, so the file is always fresh.
-  // Without this call, a restart reinitialises historyByAssistant to an
-  // empty default bucket and every prior conversation is lost — even
-  // though it's still on disk.
+  // Without this call, a restart reinitialises the theme buckets to empty
+  // and every prior conversation is lost — even though it's still on disk.
   await _restoreHistory();
   await showAsk();
 }
@@ -2370,19 +2237,21 @@ if (window.minicpm) {
   });
   // Context management
   try { window.minicpm.onClearHistory(() => { replaceActiveHistory([]); }); } catch {}
+  // Theme switch (换身体 = 换灵魂): reload this theme's conversation
+  // stream and refresh the memory/skills context for the next turn.
+  try {
+    window.minicpm.onThemeChanged((p) => {
+      const theme = p && p.theme ? String(p.theme) : "default";
+      _setThemeId(theme);
+      _linglingFetchMood();
+    });
+  } catch {}
   // Flush pending save when the window is about to close so the last
   // message isn't lost to the 500ms debounce timer.
   window.addEventListener("beforeunload", () => {
     if (_persistTimer) { clearTimeout(_persistTimer); _persistTimer = null; }
     _persistHistoryNow();
   });
-  // Active assistant (driven by theme switch in main process). Maps a theme
-  // id like "cybercat" / "calico" to an isolated conversation bucket.
-  if (window.minicpm && window.minicpm.onSetActiveAssistant) {
-    window.minicpm.onSetActiveAssistant((p) => {
-      setActiveAssistant(p && p.assistant);
-    });
-  }
 }
 
 // ── Drag-to-position edit mode ─────────────────────────────────────────

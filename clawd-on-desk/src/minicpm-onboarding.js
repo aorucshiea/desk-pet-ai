@@ -133,20 +133,10 @@ module.exports = function initOnboarding(ctx) {
     if (!s || s.complete !== true) return true;
     // Future-proof: a schema bump invalidates older sentinels.
     if (typeof s.version === "number" && s.version < CURRENT_VERSION) return true;
-    // API providers are configured — skip model presence check
-    try {
-      const chat = ctx && ctx.getChat && ctx.getChat();
-      if (chat && typeof chat.hasApiProviders === "function" && chat.hasApiProviders()) {
-        return false;
-      }
-    } catch {}
-    // Fall through: without API providers, check local model presence
-    try {
-      const chat = ctx && ctx.getChat && ctx.getChat();
-      if (chat && typeof chat.isModelPresent === "function" && !chat.isModelPresent()) {
-        return true;
-      }
-    } catch {}
+    // No model-required gate: finishing the wizard once is enough.
+    // A missing model must NOT re-open onboarding on every launch —
+    // the user can add one anytime from Settings. (API providers and
+    // MINICPM_BACKEND already bypass the wizard entirely.)
     return false;
   }
   function reset() {
@@ -376,26 +366,39 @@ module.exports = function initOnboarding(ctx) {
       // The llama.cpp backend takes a single .gguf file, but for back-
       // compat with users who pre-staged HF directories we accept a
       // directory too (the gateway picks the first .gguf inside).
+      // Windows quirk: openFile + openDirectory only shows "Select
+      // Folder" — use a pure file picker there (directories can be
+      // added later from Settings).
+      const isWin = process.platform === "win32";
       const ret = await dialog.showOpenDialog({
         title: t("onboardingPickerDialogTitle"),
-        properties: ["openFile", "openDirectory"],
+        properties: isWin ? ["openFile"] : ["openFile", "openDirectory"],
         filters: [{ name: "GGUF model", extensions: ["gguf"] }],
         message: t("onboardingPickerDialogMessage"),
       });
       if (ret.canceled || !ret.filePaths.length) return { ok: false, canceled: true };
       const picked = ret.filePaths[0];
       let target = picked;
+      const isMainModelFile = (name) => {
+        const lower = String(name || "").toLowerCase();
+        return lower.endsWith(".gguf") && !lower.startsWith("mmproj");
+      };
       try {
         const st = fs.statSync(picked);
         if (st.isDirectory()) {
           const entries = fs.readdirSync(picked)
-            .filter((n) => n.toLowerCase().endsWith(".gguf"));
+            .filter((n) => isMainModelFile(n));
           if (!entries.length) {
             return { ok: false, error: t("onboardingPickerInvalidDir", { path: picked }) };
           }
           target = path.join(picked, entries[0]);
         } else if (!picked.toLowerCase().endsWith(".gguf")) {
           return { ok: false, error: t("onboardingPickerInvalidFile", { path: picked }) };
+        } else if (!isMainModelFile(picked)) {
+          return {
+            ok: false,
+            error: "mmproj-* 是视觉投影文件，不能作为主模型。\n请选择同目录里的主模型 .gguf。",
+          };
         }
       } catch (err) {
         return { ok: false, error: String(err && err.message || err) };
