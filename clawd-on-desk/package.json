@@ -1,7 +1,7 @@
 {
-  "name": "minicpm-desk-pet",
+  "name": "deskpt",
   "version": "0.10.0",
-  "description": "MiniCPM Desk Pet — local-first desktop pet powered by MiniCPM5-0.9B. Forked from clawd-on-desk.",
+  "description": "Desk Pet — local-first desktop pet powered by MiniCPM5-0.9B. Forked from clawd-on-desk.",
   "main": "src/main.js",
   "scripts": {
     "start": "node launch.js",
@@ -63,19 +63,18 @@
     "electron",
     "claude-code"
   ],
-  "author": "OpenBMB",
+  "author": "",
   "license": "AGPL-3.0-only",
   "repository": {
     "type": "git",
-    "url": "https://github.com/OpenBMB/MiniCPM-Desk-Pet.git"
+    "url": "https://github.com/rullerzhou-afk/clawd-on-desk.git"
   },
-  "homepage": "https://github.com/OpenBMB/MiniCPM-Desk-Pet",
   "upstreamRepository": "https://github.com/rullerzhou-afk/clawd-on-desk",
   "type": "commonjs",
   "build": {
-    "appId": "com.openbmb.deskpt",
+    "appId": "com.deskpt.app",
     "productName": "deskpt",
-    "copyright": "Copyright © 2026 OpenBMB. Based on clawd-on-desk by rullerzhou-afk (AGPL-3.0-only).",
+    "copyright": "Copyright © 2026. Based on clawd-on-desk by rullerzhou-afk (AGPL-3.0-only).",
     "protocols": [
       {
         "name": "Clawd Import Protocol",

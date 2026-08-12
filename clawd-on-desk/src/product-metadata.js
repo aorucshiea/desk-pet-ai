@@ -4,7 +4,6 @@ const pkg = require("../package.json");
 
 const DEFAULT_UPSTREAM_LABEL = "clawd-on-desk";
 const DEFAULT_UPSTREAM_URL = "https://github.com/rullerzhou-afk/" + DEFAULT_UPSTREAM_LABEL;
-const MODEL_REPO_URL = "https://huggingface.co/openbmb/MiniCPM5-1B-GGUF";
 
 function normalizeRepoUrl(url) {
   if (!url || typeof url !== "string") return null;
@@ -20,17 +19,19 @@ function parseGitHubRepo(url) {
 }
 
 function extractCopyrightShort(copyright) {
-  if (!copyright) return "\u00a9 2026 OpenBMB";
+  // No OpenBMB branding \u2014 the copyright line is whatever the package
+  // declares, or a bare year.
+  if (!copyright) return "\u00a9 2026";
   const match = String(copyright).match(/Copyright\s*\u00a9?\s*(\d{4})\s+([^.\n]+)/i);
   if (match) return `\u00a9 ${match[1]} ${match[2].trim()}`;
-  return "\u00a9 2026 OpenBMB";
+  return "\u00a9 2026";
 }
 
 const repoUrl = normalizeRepoUrl(pkg.homepage) || normalizeRepoUrl(pkg.repository && pkg.repository.url);
 const githubRepo = parseGitHubRepo(repoUrl);
 const upstreamRepoUrl = normalizeRepoUrl(pkg.upstreamRepository) || DEFAULT_UPSTREAM_URL;
 const upstreamMatch = parseGitHubRepo(upstreamRepoUrl);
-const productName = (pkg.build && pkg.build.productName) || "MiniCPM Desk Pet";
+const productName = (pkg.build && pkg.build.productName) || "Desk Pet";
 const userAgent = productName.replace(/\s+/g, "-");
 
 module.exports = {
@@ -38,7 +39,6 @@ module.exports = {
   licenseId: pkg.license || "AGPL-3.0-only",
   copyrightLine: extractCopyrightShort(pkg.build && pkg.build.copyright),
   repoUrl,
-  modelRepoUrl: MODEL_REPO_URL,
   releasesLatestUrl: repoUrl ? `${repoUrl}/releases/latest` : null,
   githubOwner: githubRepo ? githubRepo.owner : null,
   githubRepo: githubRepo ? githubRepo.repo : null,

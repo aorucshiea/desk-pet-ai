@@ -146,7 +146,7 @@ describe("Mobile Preview Server", () => {
   it("serves PWA static files", async () => {
     const res = await httpGet(port, "/mobile/");
     assert.strictEqual(res.status, 200);
-    assert.ok(res.body.includes("MiniCPM Desk Pet Mobile"));
+    assert.ok(res.body.includes("Desk Pet Mobile"));
     assert.ok(res.headers["content-type"].includes("text/html"));
   });
 

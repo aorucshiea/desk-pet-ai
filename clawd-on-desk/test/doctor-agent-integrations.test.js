@@ -1184,7 +1184,7 @@ describe("checkAgentIntegrations", () => {
     fs.writeFileSync(path.join(pluginDir, "index.js"), "export default { id: 'clawd-on-desk', register() {} };\n", "utf8");
     writeJson(path.join(pluginDir, "openclaw.plugin.json"), {
       id: "clawd-on-desk",
-      name: "MiniCPM Desk Pet",
+      name: "Desk Pet",
       description: "test",
       activation: { onStartup: true },
       configSchema: { type: "object", additionalProperties: false, properties: {} },

@@ -1,7 +1,7 @@
 <p align="center">
-  <img src="assets/tray-icon.png" width="128" alt="MiniCPM Desk Pet">
+  <img src="assets/tray-icon.png" width="128" alt="Desk Pet">
 </p>
-<h1 align="center">MiniCPM Desk Pet</h1>
+<h1 align="center">Desk Pet</h1>
 <p align="center">
   <a href="README.md">English</a>
   ·
@@ -12,13 +12,13 @@
   <a href="README.ja-JP.md">日本語</a>
 </p>
 <p align="center">
-  <a href="https://github.com/OpenBMB/MiniCPM-Desk-Pet/releases"><img src="https://img.shields.io/github/v/release/OpenBMB/MiniCPM-Desk-Pet" alt="Version"></a>
+  <a href="https://github.com/rullerzhou-afk/clawd-on-desk/releases"><img src="https://img.shields.io/github/v/release/rullerzhou-afk/clawd-on-desk" alt="Version"></a>
   <img src="https://img.shields.io/badge/model-MiniCPM5--1B--GGUF-blue" alt="Model">
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey" alt="Platform">
   <img src="https://img.shields.io/badge/license-AGPL--3.0--only-green" alt="License">
 </p>
 
-MiniCPM Desk Pet 是一个由 MiniCPM 驱动的本地优先 AI 桌宠。它把桌面宠物、本地 MiniCPM 聊天气泡、首次启动模型引导，以及 AI 编程 Agent 状态反馈整合到同一个应用里。
+Desk Pet 是一个由 MiniCPM 驱动的本地优先 AI 桌宠。它把桌面宠物、本地 MiniCPM 聊天气泡、首次启动模型引导，以及 AI 编程 Agent 状态反馈整合到同一个应用里。
 
 本分支保留 MiniCPM 的产品身份、默认主题、模型引导、打包资源、sidecar 路径和 adapter 路径。0.8 到 0.10 的迁移集中在 Electron 前端、设置、Agent hook、状态管理、打包配置和测试上；inframodel 推理侧代码保持不改。
 
@@ -51,7 +51,7 @@ state-only 集成只上报状态，不接管权限。网络和人控能力首次
 
 ## 快速开始
 
-从 [OpenBMB MiniCPM Desk Pet Releases](https://github.com/OpenBMB/MiniCPM-Desk-Pet/releases) 下载预构建安装包。
+从 [OpenBMB Desk Pet Releases](https://github.com/rullerzhou-afk/clawd-on-desk/releases) 下载预构建安装包。
 
 - **macOS**：`MiniCPM-Desk-Pet-<version>-<arch>.dmg`
 - **Windows**：`MiniCPM-Desk-Pet-Setup-<version>-<arch>.exe`
@@ -60,7 +60,7 @@ state-only 集成只上报状态，不接管权限。网络和人控能力首次
 开发或测试时从源码运行：
 
 ```bash
-git clone https://github.com/OpenBMB/MiniCPM-Desk-Pet.git
+git clone https://github.com/rullerzhou-afk/clawd-on-desk.git
 cd MiniCPM-Desk-Pet/clawd-on-desk
 npm install
 npm start
@@ -83,4 +83,4 @@ npm start
 
 ## 致谢
 
-MiniCPM Desk Pet 使用 OpenBMB MiniCPM 模型资源，并在 [NOTICE.md](NOTICE.md) 中保留上游桌宠 UI 基础的归属说明。模型权重与第三方资源遵循各自许可证。
+Desk Pet 使用 OpenBMB MiniCPM 模型资源，并在 [NOTICE.md](NOTICE.md) 中保留上游桌宠 UI 基础的归属说明。模型权重与第三方资源遵循各自许可证。

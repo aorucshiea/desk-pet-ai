@@ -18,13 +18,15 @@ function readReadme(filename) {
   return fs.readFileSync(path.join(ROOT, filename), "utf8");
 }
 
-test("README files keep MiniCPM Desk Pet as the product identity", () => {
+test("README files keep Desk Pet as the product identity", () => {
   for (const filename of ALL_READMES) {
     const markdown = readReadme(filename);
-    assert.match(markdown, /<h1 align="center">MiniCPM Desk Pet<\/h1>/, `${filename} should use the MiniCPM product title`);
-    assert.ok(markdown.includes("assets/tray-icon.png"), `${filename} should use the MiniCPM tray icon asset`);
+    assert.match(markdown, /<h1 align="center">Desk Pet<\/h1>/, `${filename} should use the Desk Pet product title`);
+    assert.ok(markdown.includes("assets/tray-icon.png"), `${filename} should use the Desk Pet tray icon asset`);
     assert.ok(markdown.includes("MiniCPM5-1B-GGUF"), `${filename} should describe the MiniCPM model`);
-    assert.ok(markdown.includes("OpenBMB/MiniCPM-Desk-Pet"), `${filename} should link to the OpenBMB repository or releases`);
+    // No OpenBMB product branding: the upstream repo link is the fork
+    // source (clawd-on-desk), not an OpenBMB product page.
+    assert.ok(!markdown.includes("OpenBMB/MiniCPM-Desk-Pet"), `${filename} must not link to the OpenBMB product repo`);
   }
 });
 

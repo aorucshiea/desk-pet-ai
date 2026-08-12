@@ -1,7 +1,7 @@
 <p align="center">
-  <img src="assets/tray-icon.png" width="128" alt="MiniCPM Desk Pet">
+  <img src="assets/tray-icon.png" width="128" alt="Desk Pet">
 </p>
-<h1 align="center">MiniCPM Desk Pet</h1>
+<h1 align="center">Desk Pet</h1>
 <p align="center">
   <a href="README.md">English</a>
   ·
@@ -12,13 +12,13 @@
   <a href="README.ko-KR.md">한국어</a>
 </p>
 <p align="center">
-  <a href="https://github.com/OpenBMB/MiniCPM-Desk-Pet/releases"><img src="https://img.shields.io/github/v/release/OpenBMB/MiniCPM-Desk-Pet" alt="Version"></a>
+  <a href="https://github.com/rullerzhou-afk/clawd-on-desk/releases"><img src="https://img.shields.io/github/v/release/rullerzhou-afk/clawd-on-desk" alt="Version"></a>
   <img src="https://img.shields.io/badge/model-MiniCPM5--1B--GGUF-blue" alt="Model">
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey" alt="Platform">
   <img src="https://img.shields.io/badge/license-AGPL--3.0--only-green" alt="License">
 </p>
 
-MiniCPM Desk Pet は MiniCPM で動くローカルファーストの AI デスクトップペットです。デスクトップ上のペット、ローカル MiniCPM チャットバブル、初回起動時のモデルセットアップ、AI コーディング Agent の状態反応を 1 つのアプリにまとめています。
+Desk Pet は MiniCPM で動くローカルファーストの AI デスクトップペットです。デスクトップ上のペット、ローカル MiniCPM チャットバブル、初回起動時のモデルセットアップ、AI コーディング Agent の状態反応を 1 つのアプリにまとめています。
 
 このブランチでは MiniCPM の製品名、既定テーマ、モデルオンボーディング、同梱 sidecar リソース、adapter パスを維持します。0.8 から 0.10 への移行は Electron フロントエンド、設定、Agent hook、状態管理、パッケージ設定、テストに限定し、inframodel 推論側のコードは変更しません。
 
@@ -51,7 +51,7 @@ state-only 連携は状態だけを報告し、権限を引き継ぎません。
 
 ## クイックスタート
 
-[OpenBMB MiniCPM Desk Pet Releases](https://github.com/OpenBMB/MiniCPM-Desk-Pet/releases) からビルド済みパッケージをダウンロードします。
+[OpenBMB Desk Pet Releases](https://github.com/rullerzhou-afk/clawd-on-desk/releases) からビルド済みパッケージをダウンロードします。
 
 - **macOS**: `MiniCPM-Desk-Pet-<version>-<arch>.dmg`
 - **Windows**: `MiniCPM-Desk-Pet-Setup-<version>-<arch>.exe`
@@ -60,7 +60,7 @@ state-only 連携は状態だけを報告し、権限を引き継ぎません。
 開発やテストではソースから実行します。
 
 ```bash
-git clone https://github.com/OpenBMB/MiniCPM-Desk-Pet.git
+git clone https://github.com/rullerzhou-afk/clawd-on-desk.git
 cd MiniCPM-Desk-Pet/clawd-on-desk
 npm install
 npm start
@@ -83,4 +83,4 @@ npm start
 
 ## 謝辞
 
-MiniCPM Desk Pet は OpenBMB MiniCPM モデルリソースを使用し、上流デスクトップペット UI 基盤への帰属を [NOTICE.md](NOTICE.md) に保持しています。モデル重みと第三者アセットはそれぞれのライセンスに従います。
+Desk Pet は OpenBMB MiniCPM モデルリソースを使用し、上流デスクトップペット UI 基盤への帰属を [NOTICE.md](NOTICE.md) に保持しています。モデル重みと第三者アセットはそれぞれのライセンスに従います。

@@ -6,16 +6,16 @@ const electron = require("electron");
 const productMetadata = require("./product-metadata");
 
 const RELEASES_LATEST_URL = productMetadata.releasesLatestUrl
-  || "https://github.com/OpenBMB/MiniCPM-Desk-Pet/releases/latest";
+  || "https://github.com/rullerzhou-afk/clawd-on-desk/releases/latest";
 const GITHUB_RELEASES_API_PATH = productMetadata.githubReleasesApiPath
-  || "/repos/OpenBMB/MiniCPM-Desk-Pet/releases/latest";
+  || "/repos/rullerzhou-afk/clawd-on-desk/releases/latest";
 const GITHUB_RELEASES_WEB_PATH = (() => {
-  const repo = productMetadata.repoUrl || "https://github.com/OpenBMB/MiniCPM-Desk-Pet";
+  const repo = productMetadata.repoUrl || "https://github.com/rullerzhou-afk/clawd-on-desk";
   try {
     const u = new URL(repo);
     return `${u.pathname.replace(/\/$/, "")}/releases/latest`;
   } catch {
-    return "/OpenBMB/MiniCPM-Desk-Pet/releases/latest";
+    return "/rullerzhou-afk/clawd-on-desk/releases/latest";
   }
 })();
 const UPDATE_USER_AGENT = productMetadata.userAgent || "MiniCPM-Desk-Pet";
@@ -394,7 +394,7 @@ function initUpdater(ctx, deps = {}) {
     return showInfoBubble(
       "up-to-date",
       t("updateNotAvailable", "You're Up to Date"),
-      t("updateNotAvailableMsg", "MiniCPM Desk Pet v{version} is the latest version.").replace("{version}", displayVersion),
+      t("updateNotAvailableMsg", "Desk Pet v{version} is the latest version.").replace("{version}", displayVersion),
       {
         version,
         actions: [{ id: "dismiss", label: t("dismiss", "Dismiss"), variant: "secondary" }],
@@ -795,7 +795,7 @@ function initUpdater(ctx, deps = {}) {
       title: t("nativeArm64Available", "Native ARM64 Build Available"),
       message: t(
         "nativeArm64AvailableMsg",
-        "MiniCPM Desk Pet v{version} has a native Windows ARM64 installer. Install it for better performance and battery life?"
+        "Desk Pet v{version} has a native Windows ARM64 installer. Install it for better performance and battery life?"
       ).replace("{version}", displayVersion),
       version,
       actions: [
@@ -875,7 +875,7 @@ function initUpdater(ctx, deps = {}) {
 
     await showSuccessBubble({
       title: t("updateReady", "Update Ready"),
-      message: t("gitUpdateRestarting", "Update complete. Restarting MiniCPM Desk Pet now..."),
+      message: t("gitUpdateRestarting", "Update complete. Restarting Desk Pet now..."),
     });
     await new Promise((resolve) => setTimeout(resolve, 1200));
     hideBubble();

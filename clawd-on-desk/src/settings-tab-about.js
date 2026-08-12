@@ -188,7 +188,7 @@
 
     const title = document.createElement("h2");
     title.className = "about-title";
-    title.textContent = "MiniCPM Desk Pet";
+    title.textContent = "Desk Pet";
 
     const tagline = document.createElement("p");
     tagline.className = "about-tagline";
