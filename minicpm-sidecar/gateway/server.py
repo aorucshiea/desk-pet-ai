@@ -2028,6 +2028,8 @@ MAX_TOOL_ITERATIONS = 5
 # gateway and pushed to the pet via ClawdBridge so the pet can pick an
 # emotion-tagged animation. Never shown to the user (renderer strips it).
 _EMOTION_RE = re.compile(r"\[EMOTION:\s*([a-z_]+)\]", re.IGNORECASE)
+# Matches the memory block's live now-anchor line ("（现在是2026年…。").
+_NOW_ANCHOR_RE = re.compile(r"（现在是\s*[^）]*。")
 
 
 def _sanitize(s: str) -> str:
@@ -2196,6 +2198,14 @@ async def _stream_chat_provider(
     accumulated_full_text: list[str] = []
     full_text = ""
 
+    # The now-anchor must stay LIVE — the model sees "现在是…" refreshed to
+    # THIS moment every time it is about to speak, including after long
+    # reasoning and each tool-call iteration (用户: 时间一定是实时会变化，
+    # 变化就在模型进行说话的时候).
+    def _refresh_now_anchor(sys_text: str) -> str:
+        now = datetime.now(timezone.utc).strftime("%Y年%m月%d日 %H:%M:%S")
+        return _NOW_ANCHOR_RE.sub(f"（现在是{now}。", sys_text, count=1)
+
     while iteration < MAX_TOOL_ITERATIONS:
         iteration += 1
         tool_occurred = False
@@ -2214,6 +2224,11 @@ async def _stream_chat_provider(
         # API providers (not local) need >=8192 for tool calls + long replies
         if provider.name != "local":
             effective_max = max(effective_max, 8192)
+        # Live now-anchor: refreshed right before the model speaks (every
+        # iteration), so after long reasoning / tool calls the model still
+        # knows what time it is right now.
+        system = _refresh_now_anchor(system or "")
+
         chat_kwargs = {
             "messages": messages,
             "system": system,
