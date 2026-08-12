@@ -129,8 +129,22 @@ def _search_candidates(store: EventStore, keyword: str, limit: int = 8) -> List[
     return emotion_hits + text_hits
 
 
+# Per-session recall attempt count per event: every miss nudges the
+# probability up so "多试几次" actually works — a weight-100 event starts
+# at 10% and climbs ~6pp per failed attempt (10% → 16% → 22% → …). Like
+# a person: the harder you try, the closer the memory gets.
+RECALL_RETRY_BONUS = 0.06
+
+_recall_attempts: Dict[str, int] = {}
+
+
+def _reset_recall_attempts() -> None:
+    _recall_attempts.clear()
+
+
 def _sample_recall(store: EventStore, candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Independently roll each candidate: P(surface) = weight / 1000.
+    """Independently roll each candidate: P(surface) = weight / 1000,
+    boosted by failed attempts on the same event this session.
 
     Weight-900 events come back ~90% of the time; weight-10 events 1%.
     Session-loaded events are skipped (no double-remembering). Only
@@ -141,11 +155,16 @@ def _sample_recall(store: EventStore, candidates: List[Dict[str, Any]]) -> List[
     for evt in candidates:
         if loader.is_in_session(evt["id"]):
             continue
-        p = evt["weight"] / 1000.0
+        base = evt["weight"] / 1000.0
+        attempts = _recall_attempts.get(evt["id"], 0)
+        p = min(1.0, base + attempts * RECALL_RETRY_BONUS)
         if p >= 1.0 or random.random() < p:
             on_event_accessed(store, evt["id"])
             loader.add_to_session(evt["id"])
+            _recall_attempts.pop(evt["id"], None)
             sampled.append(evt)
+        else:
+            _recall_attempts[evt["id"]] = attempts + 1
         if len(sampled) >= 3:
             break
     return sampled
@@ -173,13 +192,30 @@ async def recall_tool_handler(args: dict) -> Dict[str, Any]:
     sampled = _sample_recall(store, candidates)
 
     if not sampled:
+        # Distinguish WHY nothing came back so the model knows what to do:
+        #   - no candidates at all        → try another keyword
+        #   - candidates but all missed   → probabilistic — try again
+        #   - everything already recalled → don't keep fishing
+        session_only = candidates and all(loader.is_in_session(e["id"]) for e in candidates)
+        if not candidates:
+            text = (
+                "你努力想了想，但回忆里没有找到任何和「{kw}」相关的事。"
+                "也许这件事根本没发生过，或者换个说法再想想。"
+            ).format(kw=keyword)
+            summary = f"recall '{keyword}': no candidates."
+        elif session_only:
+            text = "这件事你刚才已经想起来了。不用再想它了。"
+            summary = f"recall '{keyword}': all candidates already in session."
+        else:
+            text = (
+                "这个记忆太难想起来了——你努力回想，但那个模糊的影子怎么也抓不住。"
+                "别急，多试几次，也许能想起来。"
+            )
+            summary = f"recall '{keyword}': probabilistic miss ({len(candidates)} candidate(s))."
         return {
-            "content": [{
-                "type": "text",
-                "text": "你努力想了想，但那个模糊的影子怎么也抓不住……也许这件事已经快忘了。",
-            }],
+            "content": [{"type": "text", "text": text}],
             "is_error": False,
-            "summary": f"recall '{keyword}': nothing surfaced (probabilistic miss).",
+            "summary": summary,
         }
 
     lines = ["你想起来了："]

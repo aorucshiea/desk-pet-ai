@@ -53,6 +53,13 @@ def reset_session() -> None:
     """Clear the session loaded set. Call at conversation start."""
     global _session_loaded_ids
     _session_loaded_ids = set()
+    # Recall attempt counters live per session too (probabilistic misses
+    # boost the next try within the same conversation).
+    try:
+        from .recall import _reset_recall_attempts
+        _reset_recall_attempts()
+    except Exception:
+        pass
 
 
 def add_to_session(event_id: str) -> None:

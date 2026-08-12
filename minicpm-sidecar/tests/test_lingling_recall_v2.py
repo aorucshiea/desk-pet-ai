@@ -145,9 +145,33 @@ class TestHandler:
         store.add_event(title="T", content="c（平静）", weight=1)
         # Deterministic miss: every roll loses (weight-1 event, P=0.1%).
         monkeypatch.setattr(random, "random", lambda: 0.99)
+        # Isolate: event ids collide across stores (same date+seq), which
+        # would otherwise put this event in the session from an earlier test.
+        loader.reset_session()
         out = await rc.recall_tool_handler({"keyword": "平静"})
         assert out["is_error"] is False
         assert "抓不住" in out["content"][0]["text"]
+
+    @pytest.mark.asyncio
+    async def test_handler_no_candidates_tells_model_why(self, store, monkeypatch):
+        monkeypatch.setattr(rc, "_event_store", store)
+        loader.reset_session()
+        out = await rc.recall_tool_handler({"keyword": "不存在的词"})
+        assert out["is_error"] is False
+        assert "没有找到" in out["content"][0]["text"]
+
+    @pytest.mark.asyncio
+    async def test_handler_retry_bonus_makes_miss_followed_by_hit(self, store, monkeypatch):
+        monkeypatch.setattr(rc, "_event_store", store)
+        store.add_event(title="T", content="c（平静）", weight=10)
+        loader.reset_session()
+        # Force miss first (P=1%), then force hit (attempt bonus pushes p to 1.0).
+        monkeypatch.setattr(random, "random", lambda: 0.999)
+        out1 = await rc.recall_tool_handler({"keyword": "平静"})
+        assert "抓不住" in out1["content"][0]["text"]
+        monkeypatch.setattr(random, "random", lambda: 0.0)  # always roll low → hit
+        out2 = await rc.recall_tool_handler({"keyword": "平静"})
+        assert "你想起来了" in out2["content"][0]["text"]
 
     @pytest.mark.asyncio
     async def test_handler_no_store(self, monkeypatch):
