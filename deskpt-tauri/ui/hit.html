@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8" />
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; background: transparent; overflow: hidden; user-select: none; cursor: default; }
+</style>
+</head>
+<body>
+<script>
+  // hit window: the pet's INPUT surface (the render window is click-
+  // through, same two-window model as the Electron original). Handles
+  // drag (moving both windows), click bursts → reactions, right-click →
+  // the original styled menu, and 身体感受 reporting.
+  const { invoke } = window.__TAURI__.core;
+  const { emit } = window.__TAURI__.event;
+
+  let drag = null;
+  let clickCount = 0;
+  let clickTimer = null;
+
+  window.addEventListener("mousedown", (e) => {
+    if (e.button !== 0) return;
+    drag = { startX: e.screenX, startY: e.screenY, lastX: e.screenX, lastY: e.screenY, startT: Date.now(), moved: false };
+  });
+
+  window.addEventListener("mousemove", (e) => {
+    if (!drag) return;
+    const dx = e.screenX - drag.startX;
+    const dy = e.screenY - drag.startY;
+    if (!drag.moved && Math.abs(dx) + Math.abs(dy) > 5) {
+      drag.moved = true;
+      emit("pet-reaction", { kind: "drag" });
+    }
+    if (drag.moved) {
+      invoke("pet_move_by", { dx: e.screenX - drag.lastX, dy: e.screenY - drag.lastY }).catch(() => {});
+    }
+    drag.lastX = e.screenX;
+    drag.lastY = e.screenY;
+  });
+
+  window.addEventListener("mouseup", (e) => {
+    if (!drag) return;
+    const d = drag;
+    drag = null;
+    if (d.moved) {
+      const dist = Math.round(Math.hypot(e.screenX - d.startX, e.screenY - d.startY));
+      invoke("report_touch", { kind: "drag", clicks: 0, distancePx: dist, durationMs: Date.now() - d.startT }).catch(() => {});
+      emit("pet-reaction", { kind: "drag-end" });
+      return;
+    }
+    // settled click burst (260ms window) — same accumulator as the original
+    clickCount++;
+    clearTimeout(clickTimer);
+    clickTimer = setTimeout(() => {
+      const n = clickCount;
+      clickCount = 0;
+      invoke("report_touch", { kind: "click", clicks: n, distancePx: 0, durationMs: 0 }).catch(() => {});
+      if (n >= 2) {
+        // original semantics: annoyed 50% of the time, otherwise poke
+        emit("pet-reaction", { kind: Math.random() < 0.5 ? "annoyed" : "poke" });
+      }
+    }, 260);
+  });
+
+  window.addEventListener("contextmenu", (e) => {
+    e.preventDefault();
+    invoke("menu_show", { x: e.screenX, y: e.screenY }).catch(() => {});
+  });
+</script>
+</body>
+</html>

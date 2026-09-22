@@ -1,0 +1,35 @@
+[package]
+name = "deskpt-tauri"
+version = "0.1.0"
+description = "Desk pet shell (Tauri/Rust rewrite prototype) — brain stays in the Python gateway"
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Native folder/file pickers for the Settings model-management flows
+# (添加模型文件夹 / 选择模型 / Upload LoRA — the Electron original used
+# Electron's dialog module; this is the same OS dialog).
+rfd = "0.15"
+
+# Virtual desktop support (documented IVirtualDesktopManager COM API):
+# duplicate-pet fix + [WALK_DESKTOP] body hopping.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+# Small binary: size-optimized release profile (the "更小" pitch).
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true
+codegen-units = 1
+panic = "abort"

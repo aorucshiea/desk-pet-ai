@@ -1,0 +1,16 @@
+{
+  "identifier": "default",
+  "description": "deskpt pet shell: window manipulation for drag + chat bubble, event listen",
+  "windows": ["pet-render", "pet-hit", "chat", "menu", "settings"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-start-dragging",
+    "core:window:allow-set-position",
+    "core:window:allow-outer-position",
+    "core:window:allow-outer-size",
+    "core:window:allow-show",
+    "core:window:allow-hide",
+    "core:window:allow-set-focus",
+    "core:window:allow-scale-factor"
+  ]
+}

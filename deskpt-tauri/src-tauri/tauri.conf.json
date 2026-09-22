@@ -1,0 +1,96 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "deskpt-tauri",
+  "version": "0.1.0",
+  "identifier": "com.deskpt.dev",
+  "build": {
+    "frontendDist": "../ui"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "label": "pet-render",
+        "url": "pet-render.html",
+        "title": "Desk Pet",
+        "width": 280,
+        "height": 280,
+        "x": 900,
+        "y": 300,
+        "transparent": true,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "resizable": false,
+        "shadow": false,
+        "focus": false
+      },
+      {
+        "label": "pet-hit",
+        "url": "hit.html",
+        "title": "deskpt",
+        "width": 135,
+        "height": 157,
+        "x": 922,
+        "y": 311,
+        "transparent": true,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "resizable": false,
+        "shadow": false
+      },
+      {
+        "label": "chat",
+        "url": "minicpm-chat.html",
+        "title": "MiniCPM",
+        "width": 300,
+        "height": 140,
+        "visible": false,
+        "transparent": true,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "resizable": false,
+        "shadow": false
+      },
+      {
+        "label": "menu",
+        "url": "menu.html",
+        "title": "",
+        "width": 240,
+        "height": 460,
+        "visible": false,
+        "transparent": true,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "resizable": false,
+        "shadow": false
+      },
+      {
+        "label": "settings",
+        "url": "settings.html",
+        "title": "Settings",
+        "width": 1480,
+        "height": 960,
+        "minWidth": 980,
+        "minHeight": 640,
+        "visible": false,
+        "decorations": true,
+        "transparent": false,
+        "resizable": true,
+        "theme": "Dark"
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' http://127.0.0.1:18765 http://localhost:18765; img-src 'self' data:"
+    }
+  },
+  "bundle": {
+    "active": false,
+    "icon": [
+      "icons/icon.ico"
+    ]
+  }
+}

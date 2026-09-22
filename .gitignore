@@ -66,3 +66,7 @@ adapters/.manifest.json
 
 # uv lock — keep
 # (don't ignore uv.lock; it's needed for reproducible installs)
+
+# Tauri rewrite build outputs
+deskpt-tauri/src-tauri/target/
+deskpt-tauri/src-tauri/gen/

@@ -322,6 +322,9 @@ MiniCPM 设置页支持：
 
 #### 开发环境
 
+```bat
+:: 最简单的方式：双击 deskpt-dev.bat（自动以正确策略调用 deskpt-dev.ps1）
+:: 注意：.ps1 文件本身无法双击运行 —— Windows 会弹"选择打开方式"并可能卡死
 ```powershell
 # 启动 OmniParser（必须先启动）
 cd D:\omniparser-lite

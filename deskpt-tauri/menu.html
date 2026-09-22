@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; user-select: none; }
+  html, body { background: transparent; overflow: hidden; }
+  #menu {
+    background: rgba(24, 25, 34, 0.96);
+    backdrop-filter: blur(24px) saturate(140%);
+    -webkit-backdrop-filter: blur(24px) saturate(140%);
+    border: 1px solid rgba(255, 255, 255, 0.09);
+    border-radius: 12px;
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    padding: 5px;
+    opacity: 0;
+    transform: scale(0.97) translateY(-2px);
+    transition: opacity 110ms ease, transform 110ms ease;
+    min-width: 200px;
+  }
+  #menu.show { opacity: 1; transform: scale(1) translateY(0); }
+  .item {
+    display: flex; align-items: center; gap: 8px;
+    padding: 7px 12px;
+    border-radius: 8px;
+    font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+    font-size: 13px;
+    color: #d5d9e6;
+    cursor: default;
+    white-space: nowrap;
+  }
+  .item:hover:not(.disabled) { background: rgba(124, 108, 247, 0.22); color: #ffffff; }
+  .item.danger:hover:not(.disabled) { background: rgba(235, 90, 90, 0.2); color: #ff9a9a; }
+  .item.disabled { opacity: 0.38; }
+  .item .icon { font-size: 13px; width: 18px; text-align: center; flex: 0 0 auto; }
+  .item .label { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; }
+  .item .check { color: #8f7bff; font-weight: 600; flex: 0 0 auto; }
+  .sep { height: 1px; background: rgba(255, 255, 255, 0.08); margin: 4px 8px; }
+</style>
+</head>
+<body>
+<div id="menu"></div>
+<script>
+  // Original context-menu.html markup/CSS, with the Electron bridge
+  // swapped for Tauri invokes. Item list mirrors showPetContextMenu()
+  // (menu.js) in the original; items whose features are not ported in
+  // this shell close the menu (marked in ACTIONS below).
+  const { invoke } = window.__TAURI__.core;
+  const menu = document.getElementById("menu");
+
+  const ITEMS = [
+    { label: "极简模式", narrate: true, icon: "🐾", act: null },
+    { type: "separator" },
+    { label: "休眠（免打扰）", narrate: true, icon: "🌙", act: null },
+    { type: "separator" },
+    { label: "自动驾驶（危险）", narrate: true, icon: "🛞", danger: true, act: null },
+    { type: "separator" },
+    { label: "MiniCPM Chat", icon: "💬", act: "open_chat" },
+    { label: "打开 Dashboard", narrate: true, icon: "📊", act: null },
+    { type: "separator" },
+    { label: "设置...", icon: "⚙️", act: "open_settings" },
+    { label: "检查更新", narrate: true, icon: "⬆️", act: null },
+    { type: "separator" },
+    { label: "隐藏桌宠", icon: "👁️", act: "hide_pet" },
+    { type: "separator" },
+    { label: "退出", icon: "⏻", danger: true, act: "quit_app" },
+  ];
+
+  function render() {
+    menu.innerHTML = "";
+    for (const it of ITEMS) {
+      if (it.type === "separator") {
+        const s = document.createElement("div");
+        s.className = "sep";
+        menu.appendChild(s);
+        continue;
+      }
+      const row = document.createElement("div");
+      row.className = "item" + (it.danger ? " danger" : "");
+      if (it.icon) {
+        const ic = document.createElement("span");
+        ic.className = "icon";
+        ic.textContent = it.icon;
+        row.appendChild(ic);
+      }
+      const label = document.createElement("span");
+      label.className = "label";
+      label.textContent = it.label;
+      row.appendChild(label);
+      row.addEventListener("click", async () => {
+        try { await invoke("debug_log", { msg: "row click: " + it.label + " act=" + it.act }); } catch {}
+        if (it.act === "quit_app") { invoke("quit_app"); return; }
+        if (it.act === "unported" || it.narrate) {
+          // honest feedback via the ORIGINAL renderer's narration path
+          invoke("narrate_unported", { label: it.label });
+          invoke("menu_hide");
+          return;
+        }
+        if (it.act) { try { await invoke(it.act); } catch {} }
+        invoke("menu_hide");
+      });
+      menu.appendChild(row);
+    }
+    requestAnimationFrame(() => {
+      invoke("menu_resize", { width: menu.offsetWidth, height: menu.offsetHeight });
+      menu.classList.add("show");
+    });
+  }
+
+  // ── blur-to-close, with the ORIGINAL's menuEverFocused guard ──────
+  // WebView2 fires a spurious blur right after show()+set_focus() in
+  // some focus flows — a naked blur listener hid the menu instantly and
+  // every click "did nothing" (the same bug the Electron
+  // context-menu-window.js solves with menuEverFocused + idle timeout).
+  let everFocused = false;
+  window.addEventListener("focus", () => { everFocused = true; });
+  window.addEventListener("blur", () => {
+    if (everFocused) invoke("menu_hide");
+  });
+  // never-focused fallback (remote session / refused activation): close
+  // after 4s so the menu can't linger invisibly.
+  setTimeout(() => { if (!everFocused) invoke("menu_hide"); }, 4000);
+
+  window.addEventListener("keydown", (e) => { if (e.key === "Escape") invoke("menu_hide"); });
+  render();
+</script>
+</body>
+</html>
