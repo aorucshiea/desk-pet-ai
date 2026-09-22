@@ -70,3 +70,6 @@ adapters/.manifest.json
 # Tauri rewrite build outputs
 deskpt-tauri/src-tauri/target/
 deskpt-tauri/src-tauri/gen/
+
+# LFS pointer stub without a real object (weights fetch from HF at build time)
+adapters/**/*.safetensors
