@@ -3,6 +3,7 @@
 const { app, BrowserWindow, screen, Menu, Tray, nativeImage, dialog } = require("electron");
 const path = require("path");
 const { keepOutOfTaskbar } = require("./taskbar");
+const { showContextMenu } = require("./context-menu-window");
 
 const isMac = process.platform === "darwin";
 const isWin = process.platform === "win32";
@@ -463,6 +464,64 @@ module.exports = function initMenu(ctx) {
   function showPetContextMenu() {
     if (!ctx.win || ctx.win.isDestroyed()) return;
     buildContextMenu();
+    // 持续自我存在 UI: render the styled HTML menu (custom window) and
+    // keep the native popup as a fallback if the custom one fails.
+    try {
+      const auto = buildAutoApproveMenuItem();
+      const data = [];
+      const mini = buildMiniModeMenuItem();
+      data.push({ label: mini.label, icon: "🐾", disabled: mini.enabled === false, click: mini.click });
+      data.push({ type: "separator" });
+      data.push({
+        label: ctx.doNotDisturb ? t("wake") : t("sleep"),
+        icon: "🌙",
+        click: () => ctx.doNotDisturb ? ctx.disableDoNotDisturb() : ctx.enableDoNotDisturb(),
+      });
+      data.push({ type: "separator" });
+      data.push({
+        label: auto.label,
+        icon: "🛞",
+        checked: !!ctx.autoApproveAllPermissions,
+        danger: !ctx.autoApproveAllPermissions,
+        click: () => auto.click({ checked: !ctx.autoApproveAllPermissions }),
+      });
+      data.push({ type: "separator" });
+      if (typeof ctx.openMinicpmChat === "function") {
+        data.push({ label: t("menuMinicpmChat"), icon: "💬", click: () => ctx.openMinicpmChat() });
+      }
+      if (typeof ctx.openDashboard === "function") {
+        data.push({ label: t("openDashboard"), icon: "📊", click: () => ctx.openDashboard() });
+      }
+      const displays = screen.getAllDisplays();
+      if (displays.length > 1 && !ctx.getMiniMode()) {
+        data.push({ type: "separator" });
+        const entries = buildDisplaySubmenu(displays);
+        for (const entry of entries) {
+          data.push({
+            label: entry.label,
+            icon: "📺",
+            disabled: entry.enabled === false,
+            click: entry.click,
+          });
+        }
+      }
+      data.push({ type: "separator" });
+      data.push({ label: t("settings"), icon: "⚙️", click: () => ctx.openSettingsWindow() });
+      if (typeof ctx.getUpdateMenuItem === "function") {
+        const upd = ctx.getUpdateMenuItem();
+        if (upd) data.push({ label: upd.label, icon: "⬆️", disabled: upd.enabled === false, click: upd.click });
+      }
+      data.push({ type: "separator" });
+      data.push({
+        label: ctx.petHidden ? t("showPet") : t("hidePet"),
+        icon: "👁️",
+        click: () => ctx.togglePetVisibility(),
+      });
+      data.push({ type: "separator" });
+      data.push({ label: t("quit"), icon: "⏻", danger: true, click: () => requestAppQuit() });
+      showContextMenu(data).catch(() => popupMenuAt(ctx.contextMenu));
+      return;
+    } catch {}
     popupMenuAt(ctx.contextMenu);
   }
 

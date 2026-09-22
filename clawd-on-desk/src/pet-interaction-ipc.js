@@ -59,6 +59,12 @@ function registerPetInteractionIpc(options = {}) {
   const statPath = requiredDependency(options.statPath, "statPath");
   const openTerminalAt = requiredDependency(options.openTerminalAt, "openTerminalAt");
   const dropLog = options.dropLog || (() => {});
+  // 身体感受上报 (optional): forward touch reports to the gateway via the
+  // chat module. Absent (noop) in tests / when the chat module is off.
+  const reportInteraction = options.reportInteraction || null;
+  // Where the pet sat when the current drag began — drag-end measures the
+  // carry distance from this.
+  let dragStart = null;
   const isMacPlatform = options.isMacPlatform != null
     ? !!options.isMacPlatform
     : process.platform === "darwin";
@@ -89,6 +95,13 @@ function registerPetInteractionIpc(options = {}) {
     if (locked) {
       setMouseOverPet(true);
       beginDragSnapshot();
+      // 身体感受: remember where the pet sat so drag-end can report how
+      // far the user carried it.
+      dragStart = null;
+      try {
+        const b = getPetWindowBounds();
+        dragStart = { x: b.x, y: b.y, at: Date.now() };
+      } catch {}
     } else {
       clearDragSnapshot();
       syncHitWin();
@@ -99,11 +112,35 @@ function registerPetInteractionIpc(options = {}) {
     sendToRenderer("start-drag-reaction", direction === "left" || direction === "right" ? direction : null);
   });
   on("end-drag-reaction", () => sendToRenderer("end-drag-reaction"));
+  // 身体感受: the hit renderer's click accumulator settled a burst
+  // (1 = a tap, 2-3 = poking, 4+ = relentless). Fire-and-forget report.
+  on("pet-interaction:click-burst", (_event, count) => {
+    if (!reportInteraction) return;
+    const n = Math.max(0, Math.min(20, Number(count) || 0));
+    if (n <= 0) return;
+    try {
+      reportInteraction({ kind: "click", clicks: n });
+    } catch {}
+  });
   on("play-click-reaction", (_event, svg, duration) => {
     sendToRenderer("play-click-reaction", svg, duration);
   });
 
   on("drag-end", () => {
+    // 身体感受: the user just carried the pet somewhere. Report the
+    // gesture (carry distance + duration) before the bounds get clamped,
+    // so the next chat knows it physically happened. Never throws.
+    try {
+      if (dragStart && reportInteraction) {
+        const b = getPetWindowBounds();
+        reportInteraction({
+          kind: "drag",
+          distance_px: Math.round(Math.hypot(b.x - dragStart.x, b.y - dragStart.y)),
+          duration_ms: Math.max(0, Date.now() - dragStart.at),
+        });
+      }
+    } catch {}
+    dragStart = null;
     try {
       if (!isMiniMode() && !isMiniTransitioning()) {
         if (!getDisableMiniMode()) checkMiniModeSnap();

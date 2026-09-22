@@ -18,6 +18,16 @@
   let helpers = null;
   let ops = null;
 
+  // Electron's window.notifyError() blocks the MAIN process until dismissed —
+  // while it's open every pet/bubble/settings window ghosts ("未响应",
+  // Windows Application Hang) and the sidecar pipe freezes. Never alert;
+  // toast instead.
+  function notifyError(message) {
+    if (ops && typeof ops.showToast === "function") {
+      ops.showToast(message, { error: true, ttl: 8000 });
+    }
+  }
+
   let healthTimer = null;
   let visibilityHandler = null;
   let mounted = false;
@@ -425,29 +435,21 @@
     const modelDir = snap.modelDir || "";
     const hasPath = !!modelDir;
     const truncated = hasPath ? truncatePath(modelDir, PATH_TRUNCATE_MAX) : t("minicpmModelPathUnset");
-    const currentLabel = hasPath ? pickLabelFromPath(modelDir) : t("minicpmModelPathUnset");
 
     box.appendChild(sectionTitle(t("minicpmSectionModel")));
     const section = helpers.buildSection("", []);
     const rows = section.querySelector(".section-rows");
 
-    // ── Model info row (now reflects the actual selected gguf) ───────
-    const infoRow = el("div", { className: "row minicpm-info-row" });
-    const infoText = el("div", { className: "row-text" });
-    infoText.appendChild(el("span", { className: "row-label" }, t("minicpmRowModelInfo")));
-    infoText.appendChild(el("span", { className: "row-desc" }, t("minicpmModelPickerDesc")));
-    infoRow.appendChild(infoText);
-    const infoVal = el("div", { className: "row-control minicpm-info-value" }, currentLabel);
-    infoRow.appendChild(infoVal);
-    rows.appendChild(infoRow);
-
-    // ── Local-models picker row ──────────────────────────────────
-    // Drop a .gguf anywhere under userData/models and it shows up here
-    // without opening a file picker. Siblings of the active gguf directory
-    // also appear so chat-maintainers can swap quantisations easily.
+    // ── Model picker row (merged) ────────────────────────────────
+    // ONE row for the whole story: the dropdown marks the currently
+    // loaded model with ✓ (a separate read-only info row used to sit
+    // above this one, duplicating the description text and reading like
+    // a second switcher), and any other scanned .gguf is one click away.
+    // Drop a .gguf into a scanned folder and it shows up here without a
+    // file picker.
     const pickerRow = el("div", { className: "row minicpm-model-picker-row" });
     const pickerText = el("div", { className: "row-text" });
-    pickerText.appendChild(el("span", { className: "row-label" }, t("minicpmModelPickerLabel")));
+    pickerText.appendChild(el("span", { className: "row-label" }, t("minicpmRowModelInfo")));
     const pickerDesc = el("span", { className: "row-desc" }, t("minicpmModelPickerDesc"));
     pickerText.appendChild(pickerDesc);
     pickerRow.appendChild(pickerText);
@@ -469,8 +471,8 @@
       pickerBtn.textContent = t("minicpmPickModelBusy");
       try {
         const ret = await window.minicpmSettings.useModelDir(target);
-        if (ret && !ret.ok && ret.error) alert(t("minicpmReloadError") + ret.error);
-        if (ret && ret.ok && ret.reloadError) alert(t("minicpmReloadError") + ret.reloadError);
+        if (ret && !ret.ok && ret.error) notifyError(t("minicpmReloadError") + ret.error);
+        if (ret && ret.ok && ret.reloadError) notifyError(t("minicpmReloadError") + ret.reloadError);
       } finally {
         pickerBtn.disabled = false;
         pickerBtn.textContent = origLabel;
@@ -488,6 +490,7 @@
     if (typeof window.minicpmSettings.listLocalModels === "function") {
       window.minicpmSettings.listLocalModels().then((ret) => {
         const models = (ret && ret.models) || [];
+        const currentPath = ((models.find((m) => m && m.current) || {}).path) || "";
         picker.innerHTML = "";
         if (models.length === 0) {
           picker.appendChild(el("option", { value: "" }, t("minicpmModelPathUnset")));
@@ -501,17 +504,15 @@
             `${m.label}${sizeLabel ? "  ·  " + sizeLabel : ""}${flag}`);
           picker.appendChild(opt);
         }
-        // Selecting an entry enables the Pick button.
+        // Selecting a DIFFERENT entry enables the Pick button.
         picker.addEventListener("change", () => {
-          pickerBtn.disabled = !picker.value;
+          pickerBtn.disabled = !picker.value || picker.value === currentPath;
         });
-        if (models.length === 1) {
-          picker.value = models[0].path;
-          pickerBtn.disabled = false;
-        } else {
-          // Pre-select current model if present, else empty.
-          picker.value = "";
-        }
+        // Pre-select the currently loaded model (its ✓ flag makes the
+        // row double as the old info row) — with nothing to switch to,
+        // the button stays disabled.
+        picker.value = currentPath || "";
+        pickerBtn.disabled = !picker.value || picker.value === currentPath;
       }).catch(() => {
         picker.innerHTML = "";
         picker.appendChild(el("option", { value: "" }, t("minicpmNoAdditionalModels")));
@@ -537,7 +538,7 @@
         const ret = await window.minicpmSettings.addModelFolder();
         if (!ret || ret.canceled) return;
         if (!ret.ok) {
-          alert(t("minicpmModelsFolderAddFailed") + (ret.error || ""));
+          notifyError(t("minicpmModelsFolderAddFailed") + (ret.error || ""));
           return;
         }
         renderFoldersList(ret.folders || []);
@@ -596,7 +597,7 @@
     const ctl = el("div", { className: "row-control minicpm-path-actions" });
     const showBtn = softBtn(modelPathOpenLabel(), async () => {
       const ret = await window.minicpmSettings.openModelDir();
-      if (ret && !ret.ok) alert(ret.error || t("minicpmOpenModelDirFailed"));
+      if (ret && !ret.ok) notifyError(ret.error || t("minicpmOpenModelDirFailed"));
     });
     if (!hasPath) showBtn.disabled = true;
     const changeLabel = t("minicpmChangeModel");
@@ -614,17 +615,17 @@
       try {
         ret = await window.minicpmSettings.pickModelDir();
       } catch (err) {
-        alert(t("minicpmReloadError") + (err && err.message || err));
+        notifyError(t("minicpmReloadError") + (err && err.message || err));
       }
       // refreshAll() rebuilds the model section from scratch (replacing
       // these buttons), so restoring the busy state explicitly is only
       // necessary on the canceled / error paths.
       if (ret && ret.ok) {
-        if (ret.reloadError) alert(t("minicpmReloadError") + ret.reloadError);
+        if (ret.reloadError) notifyError(t("minicpmReloadError") + ret.reloadError);
         void ctx.refreshAll();
         return;
       }
-      if (ret && !ret.canceled && ret.error) alert(ret.error);
+      if (ret && !ret.canceled && ret.error) notifyError(ret.error);
       changeBtn.classList.remove("is-busy");
       changeBtn.textContent = changeLabel;
       changeBtn.disabled = false;
@@ -999,7 +1000,7 @@
           if (ops && typeof ops.showToast === "function") {
             ops.showToast(t("minicpmAdapterSaveFailed") + msg, { error: true });
           } else {
-            alert(t("minicpmAdapterSaveFailed") + msg);
+            notifyError(t("minicpmAdapterSaveFailed") + msg);
           }
           saveBtn.disabled = false;
           cancelBtn.disabled = false;
@@ -1095,7 +1096,7 @@
             if (ops && typeof ops.showToast === "function") {
               ops.showToast(t("minicpmAdapterApplyFailed") + msg, { error: true });
             } else {
-              alert(t("minicpmAdapterApplyFailed") + msg);
+              notifyError(t("minicpmAdapterApplyFailed") + msg);
             }
           }
         } catch (err) {
@@ -1237,7 +1238,7 @@
           if (ops && typeof ops.showToast === "function") {
             ops.showToast(t("minicpmAdapterUploadFailed") + msg, { error: true });
           } else {
-            alert(t("minicpmAdapterUploadFailed") + msg);
+            notifyError(t("minicpmAdapterUploadFailed") + msg);
           }
         }
       } catch (err) {
@@ -1251,9 +1252,9 @@
     actions.appendChild(softBtn(t("minicpmAdapterOpenDir"), async () => {
       try {
         const r = await window.minicpmSettings.openAdapterDir();
-        if (r && !r.ok) alert(r.error || t("minicpmAdapterOpenDirFailed"));
+        if (r && !r.ok) notifyError(r.error || t("minicpmAdapterOpenDirFailed"));
       } catch (err) {
-        alert(t("minicpmAdapterOpenDirFailed") + " " + (err && err.message || ""));
+        notifyError(t("minicpmAdapterOpenDirFailed") + " " + (err && err.message || ""));
       }
     }));
     actions.appendChild(softBtn(t("minicpmAdapterRefresh"), () => {
@@ -1307,7 +1308,7 @@
       desc: t("minicpmActionOpenLogsDesc"),
       onClick: async () => {
         const ret = await window.minicpmSettings.openLogsDir();
-        if (ret && !ret.ok) alert(ret.error || t("minicpmActionOpenLogsFailed"));
+        if (ret && !ret.ok) notifyError(ret.error || t("minicpmActionOpenLogsFailed"));
       },
     }));
 

@@ -39,6 +39,19 @@ function userDataPath(name) {
   catch { return path.join(os.tmpdir(), name); }
 }
 
+// B-5: gateway requires X-MiniCPM-Token on every API call. Read + cache.
+let _gatewayTokenCache = null;
+function gatewayToken() {
+  if (_gatewayTokenCache) return _gatewayTokenCache;
+  try {
+    const p = path.join(os.homedir(), ".minicpm", "gateway-token");
+    _gatewayTokenCache = fs.readFileSync(p, "utf8").trim();
+  } catch {
+    _gatewayTokenCache = "";
+  }
+  return _gatewayTokenCache;
+}
+
 function httpJson(method, urlStr, body, timeoutMs = 4000) {
   return new Promise((resolve, reject) => {
     const u = new URL(urlStr);
@@ -47,7 +60,7 @@ function httpJson(method, urlStr, body, timeoutMs = 4000) {
       port: u.port || 80,
       path: u.pathname + (u.search || ""),
       method,
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", "x-minicpm-token": gatewayToken() },
       timeout: timeoutMs,
     };
     const req = http.request(opts, (res) => {

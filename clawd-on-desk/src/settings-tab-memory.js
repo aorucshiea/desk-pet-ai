@@ -1,6 +1,6 @@
 "use strict";
 
-// Settings → Memory viewer (换身体 = 换灵魂).
+// Settings → Memory viewer (持续自我存在 — same self, only the look changes).
 // Shows the CURRENT theme's soul-layer memory: identity notes
 // (MEMORY.md / USER.md), the episodic event list (weight/emotion/
 // resolved/core), and the mood state. Read-only for now.

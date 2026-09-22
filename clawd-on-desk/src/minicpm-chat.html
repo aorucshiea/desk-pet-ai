@@ -58,6 +58,24 @@
     pointer-events: none;
     overflow: hidden;
   }
+
+  /* 单一滚动权威：面板不再各自限高/滚动，#content 统一承担。
+     max-height = 窗口高 − 外壳留白 — 只有当主进程把窗口顶到工作区
+     上限后这里才出现滚动条；正常长度的回复全部可见，无需滑动。
+     （流式最佳实践：默认锚定底部；用户上滑即暂停自动滚动，
+       滑回底部自动恢复 — 见 renderer 的 _contentStickBottom。） */
+  #content {
+    /* max() guard: in compact ask-mode the window is only ~42 CSS px tall,
+       so calc() goes negative and clamps #content to height 0 — the input
+       collapses to an empty pill and typed text is clipped invisible. */
+    max-height: max(120px, calc(100vh - 58px));
+    overflow-y: auto;
+    overflow-x: hidden;
+    scrollbar-width: thin;
+  }
+  #content::-webkit-scrollbar { width: 5px; }
+  #content::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.14); border-radius: 3px; }
+  #content::-webkit-scrollbar-track { background: transparent; }
   .bubble.show { opacity: 1; transform: translateY(0) scale(1); pointer-events: auto; }
   .bubble.fading { opacity: 0; transform: translateY(2px) scale(0.99); }
 
@@ -102,7 +120,7 @@
     border: none; outline: none; resize: none;
     background: transparent; color: var(--text);
     font: inherit; font-size: 13px;
-    max-height: 120px; min-height: 18px;
+    max-height: 60vh; min-height: 18px;
     user-select: text;
     -webkit-app-region: no-drag;
     display: block;
@@ -114,11 +132,11 @@
     display: flex; flex-direction: column;
     gap: 4px;
   }
-  /* Top region: previous reply, max ~120px then internal scroll. */
+  /* Top region: previous reply. No internal height cap — the bubble grows
+     with content; the only ceiling is the main-process work-area clamp,
+     after which #content (the single scroll authority) takes over. */
   .last-reply-region {
     flex: 0 1 auto;
-    max-height: 120px;
-    overflow-y: auto;
     font-size: 12.5px;
     color: var(--muted);
     line-height: 1.45;
@@ -132,12 +150,13 @@
   }
   .last-reply-region::-webkit-scrollbar { width: 4px; }
   .last-reply-region::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
-  /* Bottom: input grows with typing up to 200px then internally scrolls. */
+  /* Bottom: input grows with typing; 60vh is just a runaway-paste guard —
+     the window itself is clamped by the work area long before this. */
   .ask-input-wrap {
     flex: 0 0 auto;
   }
   .ask-input-wrap textarea {
-    max-height: 200px;
+    max-height: 60vh;
     line-height: 1.5;
   }
   .ask-input-wrap textarea::-webkit-scrollbar { width: 4px; }
@@ -147,11 +166,8 @@
   .speak {
     user-select: text; -webkit-user-select: text;
     white-space: pre-wrap; word-wrap: break-word;
-    max-height: 320px; overflow-y: auto;
     -webkit-app-region: no-drag;
   }
-  .speak::-webkit-scrollbar { width: 5px; }
-  .speak::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
   .speak.streaming::after {
     content: "▍"; color: var(--accent); margin-left: 2px;
     animation: blink 1s steps(1) infinite;
@@ -219,13 +235,9 @@
     user-select: text;
     border-left: 2px solid var(--accent);
     padding-left: 12px;
-    max-height: 280px;
-    overflow-y: auto;
-    overflow-x: hidden;
     -webkit-app-region: no-drag;
     opacity: 0.92;
   }
-  .think-stream::-webkit-scrollbar { width: 4px; }
   .think-stream::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
   .think-stream::after {
     content: " ●";

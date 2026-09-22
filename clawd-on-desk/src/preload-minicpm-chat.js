@@ -3,6 +3,8 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("minicpm", {
+  // B-5: gateway token for renderer-side fetch() calls
+  gatewayToken: () => ipcRenderer.invoke("minicpm:gateway-token"),
   // Sidecar lifecycle
   start: (opts) => ipcRenderer.invoke("minicpm:start", opts),
   status: () => ipcRenderer.invoke("minicpm:status"),
@@ -50,6 +52,9 @@ contextBridge.exposeInMainWorld("minicpm", {
   saveHistory: (data) => ipcRenderer.invoke("minicpm:save-history", data),
   loadHistory: () => ipcRenderer.invoke("minicpm:load-history"),
 
+  // B-5: gateway token for the renderer's direct sidecarFetch calls
+  gatewayToken: () => ipcRenderer.invoke("minicpm:get-gateway-token"),
+
   // Long-term memory snapshot (frozen MEMORY.md + USER.md from the sidecar)
   getMemory: () => ipcRenderer.invoke("minicpm:get-memory"),
 
@@ -73,6 +78,13 @@ contextBridge.exposeInMainWorld("minicpm", {
   onUpdateStatus:   (cb) => ipcRenderer.on("minicpm:update-status",       (_e, p) => cb(p || {})),
   onUpdateApplying: (cb) => ipcRenderer.on("minicpm:update-applying",     (_e, p) => cb(p || {})),
   onNarrate:        (cb) => ipcRenderer.on("minicpm:narrate",             (_e, p) => cb(p || {})),
+  // 身体感受: the body reported touch → immediate wake request
+  onPetTouched:     (cb) => ipcRenderer.on("minicpm:pet-touched",         (_e, p) => {
+    try { cb(p || {}); } catch {}
+  }),
+  // 身体移动: the model walks itself ([WALK:dx,dy] / [WALK_DESKTOP])
+  petWalk:          (dx, dy) => ipcRenderer.send("minicpm:pet-walk",        { dx: Number(dx) || 0, dy: Number(dy) || 0 }),
+  petHopDesktop:    () => ipcRenderer.send("minicpm:pet-hop-desktop"),
   onCmdReply:       (cb) => ipcRenderer.on("minicpm:cmd-reply",           (_e, p) => cb(p || {})),
   onEditMode:       (cb) => ipcRenderer.on("minicpm:edit-mode",           (_e, p) => cb(p || {})),
   onClearHistory:   (cb) => ipcRenderer.on("minicpm:clear-history",        ()  => cb()),

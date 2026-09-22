@@ -59,16 +59,46 @@ document.body.addEventListener("contextmenu", (event) => {
 
 const SIDECAR_URL = "http://127.0.0.1:18765";
 
+// B-5: every sidecar fetch must carry the gateway token. We lazily fetch it
+// once from the main process via contextBridge (minicpm.gatewayToken()).
+let _gwToken = null;
+async function getGatewayToken() {
+  if (_gwToken !== null) return _gwToken;
+  try {
+    _gwToken = (await window.minicpm.gatewayToken()) || "";
+  } catch {
+    _gwToken = "";
+  }
+  return _gwToken;
+}
+
+// Wrap global fetch for sidecar URLs — drop-in replacement, same signature.
+async function sidecarFetch(url, opts = {}) {
+  const headers = new Headers(opts.headers || {});
+  if (!headers.has("x-minicpm-token")) {
+    headers.set("x-minicpm-token", await getGatewayToken());
+  }
+  return fetch(url, { ...opts, headers });
+}
+
 // ── element refs ──
 const bubble = document.getElementById("bubble");
 const content = document.getElementById("content");
+
+// 流式滚动锚定（最佳实践）：默认锚定底部；用户上滑即暂停自动滚动，
+// 滑回底部（距底 < 48px）自动恢复。onTick 据此决定是否贴底。
+let _contentStickBottom = true;
+content.addEventListener("scroll", () => {
+  _contentStickBottom =
+    content.scrollHeight - content.scrollTop - content.clientHeight < 48;
+});
 const updPill = document.getElementById("updPill");
 
 // ── module state ──
 let phase = "hidden";        // hidden | starting | ask | thinking | speak | error
 let booted = false;
 let sidecarUrl = null;
-// 每个动画主题（身体）拥有自己的对话流（换身体 = 换灵魂）。
+// 每个动画主题（身体）拥有自己的对话流（持续自我存在）。
 // 历史按主题分桶，切换主题只换指针：
 //   chatHistoryByTheme = { "default": [...], "cybercat": [...], ... }
 // 曾经的 assistant/topic 桶结构（话题 UI）已移除；这里只是
@@ -99,6 +129,8 @@ function sanitizeReplyTags(text) {
   return text
     .replace(/\s*\[EMOTION:[a-z_]+\]\s*/gi, "")
     .replace(/\s*\[NEXT_CHAT:\d+\s*(?:s|sec|seconds)?\s*\]\s*/gi, "")
+    .replace(/\s*\[WALK:\s*-?\d+\s*,\s*-?\d+\s*\]\s*/gi, "")
+    .replace(/\s*\[WALK_DESKTOP\]\s*/gi, "")
     // Strip the <<<MEM>>>…<<<MEMEND>>> event/mood block the model emits
     // for memory extraction. The gateway parses it from the raw stream
     // before this scrub; it must never reach the user or next-turn prompt.
@@ -116,7 +148,7 @@ let _linglingBuffer = "";
  */
 async function _linglingFetchMood() {
   try {
-    const resp = await fetch(sidecarUrl + "/api/mood");
+    const resp = await sidecarFetch(sidecarUrl + "/api/mood");
     if (resp.ok) {
       const data = await resp.json();
       _linglingMood = data.mood || "平静";
@@ -178,7 +210,7 @@ function _triggerLinglingAnim(cls) {
  */
 async function _linglingExtractEvents(replyText) {
   try {
-    await fetch(sidecarUrl + "/api/events/extract", {
+    await sidecarFetch(sidecarUrl + "/api/events/extract", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ response_text: replyText }),
@@ -226,14 +258,25 @@ function _injectLinglingStyles() {
 // (base64 screenshots) stripped out so the file stays small.
 // Shape: { themeId: [ {role, content}, ... ], ... }
 function _cleanHistoryForSave() {
+  const now = Date.now();
   const out = {};
   for (const [themeId, msgs] of Object.entries(chatHistoryByTheme)) {
     out[themeId] = (msgs || []).map((m) => {
+      // Stamp arrival time ONCE per message — mutate the LIVE entry so
+      // re-saves keep the original stamp. The history viewer (设置 → 历史)
+      // filters to the last 24h; messages that predate the feature get
+      // stamped on their first save and age out naturally.
+      if (m && typeof m === "object" && !m.ts) m.ts = now;
       const c = m.content;
-      if (Array.isArray(c)) {
-        return { role: m.role, content: c.filter(b => b && b.type === "text").map(b => b.text).join("") };
-      }
-      return { role: m.role, content: typeof c === "string" ? c : String(c || "") };
+      const entry = {
+        ts: m.ts,
+        role: m.role,
+        content: Array.isArray(c)
+          ? c.filter(b => b && b.type === "text").map(b => b.text).join("")
+          : (typeof c === "string" ? c : String(c || "")),
+      };
+      if (m && m.thinking) entry.thinking = String(m.thinking);
+      return entry;
     });
   }
   return out;
@@ -315,7 +358,7 @@ async function _restoreHistory() {
   } catch {}
 }
 
-// Theme switch (换身体 = 换灵魂): switch the active conversation stream.
+// Theme switch (持续自我存在): switch the active conversation stream.
 function _setThemeId(themeId) {
   const next = (typeof themeId === "string" && themeId.trim()) ? themeId.trim() : "default";
   if (next === _currentThemeId) return;
@@ -360,7 +403,7 @@ const history = new Proxy([], {
   },
 });
 function replaceActiveHistory(arr) {
-  // Clear the CURRENT theme's conversation (换身体 = 换灵魂).
+  // Clear the CURRENT theme's conversation (持续自我存在).
   chatHistoryByTheme[_currentThemeId] = Array.isArray(arr) ? arr : [];
   _persistHistory();
 }
@@ -451,7 +494,7 @@ async function _fetchScreenContext() {
   } catch {}
   if (_providerSupportsVision(providerPrefs)) return;
   try {
-    const healthResp = await fetch(sidecarUrl + "/api/health", { signal: AbortSignal.timeout(2000) }).catch(() => null);
+    const healthResp = await sidecarFetch(sidecarUrl + "/api/health", { signal: AbortSignal.timeout(2000) }).catch(() => null);
     if (healthResp && healthResp.ok) {
       const h = await healthResp.json().catch(() => null);
       if (h && h.has_vision) return;
@@ -467,7 +510,7 @@ async function _fetchScreenContext() {
       }
     }
     // Sync to gateway
-    const syncResp = await fetch(sidecarUrl + "/api/screen/consent-status", {
+    const syncResp = await sidecarFetch(sidecarUrl + "/api/screen/consent-status", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ consent }),
@@ -488,7 +531,7 @@ async function _fetchScreenContext() {
     // timeout when talking to OmniParser.
     let observeResp;
     try {
-      observeResp = await fetch(sidecarUrl + "/api/screen/observe", {
+      observeResp = await sidecarFetch(sidecarUrl + "/api/screen/observe", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(ocrConfig),
@@ -713,6 +756,31 @@ async function submitProactive() {
   await submit(prompt);
 }
 
+// ── 身体感受: 碰他就直接告诉他 ─────────────────────────────────────
+// The body just reported touch (drag / poke). Wake the pet NOW instead
+// of waiting for the next idle interval — the fresh somatic block rides
+// in this same request's system prompt, so the model is told what
+// physically happened the moment it opens its mouth.
+const TOUCH_WAKE_COOLDOWN_MS = 60_000; // one wake per petting session
+let _lastTouchWakeAt = 0;
+const TOUCH_WAKE_PROMPT =
+  "[系统提示：用户刚刚碰了碰你，你的身体传来了触觉（见【身体感受】）。想反应就说一句自然的话，保持简短；不想说话就输出 [NEXT_CHAT:0]。]";
+
+async function submitTouchWake() {
+  if (window.__proactiveMode === "off") return; // user turned auto-speak off
+  if (phase === "thinking" || phase === "speak" || phase === "think-stream") {
+    return; // mid-reply: the buffer carries this touch into the next round
+  }
+  const now = Date.now();
+  if (now - _lastTouchWakeAt < TOUCH_WAKE_COOLDOWN_MS) return;
+  if (phase === "ask" && inputEl && inputEl.value.trim()) return; // don't wipe what the user typed
+  _lastTouchWakeAt = now;
+  if (window.minicpm && window.minicpm.showWindow) {
+    try { await window.minicpm.showWindow(); } catch {}
+  }
+  await submit(TOUCH_WAKE_PROMPT);
+}
+
 // ── render: starting ──
 async function showStarting() {
   phase = "starting";
@@ -772,12 +840,14 @@ async function showAsk(lastReply, lastThinking) {
         tt.textContent = "🧠 查看思考";
         tt.style.cssText = "font-size:11px;padding:2px 8px;margin-top:6px;border:1px solid var(--border,#45475a);border-radius:4px;background:transparent;color:var(--text-secondary,#8899b0);cursor:pointer;";
         var tb = document.createElement("div");
-        tb.style.cssText = "display:none;margin-top:6px;padding:8px;border-radius:6px;background:rgba(255,255,255,0.03);border:1px solid var(--border,#45475a);font-size:12px;line-height:1.5;white-space:pre-wrap;max-height:300px;overflow-y:auto;color:var(--text-secondary,#8899b0);";
+        tb.style.cssText = "display:none;margin-top:6px;padding:8px;border-radius:6px;background:rgba(255,255,255,0.03);border:1px solid var(--border,#45475a);font-size:12px;line-height:1.5;white-space:pre-wrap;max-height:50vh;overflow-y:auto;color:var(--text-secondary,#8899b0);";
         tb.textContent = lastThinking;
         tt.addEventListener("click", function() {
           var shown = tb.style.display !== "none";
           tb.style.display = shown ? "none" : "block";
           tt.textContent = shown ? "🧠 查看思考" : "🧠 收起思考";
+          // Real-time fit: re-measure so the window hugs the new height.
+          void measureAndShow({ animate: false });
         });
         lr.appendChild(tt);
         lr.appendChild(tb);
@@ -816,17 +886,18 @@ async function showAsk(lastReply, lastThinking) {
 
 // In continuous-chat mode the bubble follows content size: empty = small,
 // long input = big. Resize the textarea internally then ask the window
-// to remeasure so its outer height tracks. animate:false avoids the
-// CSS opacity transition kicking in on every keystroke.
+// to remeasure so its outer height tracks. No height cap here — the main
+// process clamps the window to the work area; beyond that #content scrolls.
+// animate:false avoids the CSS opacity transition kicking in on every keystroke.
 function autoresizeFixed(ta) {
   ta.style.height = "auto";
-  ta.style.height = Math.min(ta.scrollHeight, 200) + "px";
+  ta.style.height = ta.scrollHeight + "px";
   measureAndShow({ animate: false });
 }
 
 function autoresize(ta) {
   ta.style.height = "auto";
-  ta.style.height = Math.min(ta.scrollHeight, 96) + "px";
+  ta.style.height = ta.scrollHeight + "px";
   // Bubble width grows with text — empty = ~100px, full multi-line = 320px max.
   const w = naturalAskWidth(ta.value);
   measureAndShow({ animate: false, width: w });
@@ -865,9 +936,9 @@ async function showThink() {
   await clearChatAnchor();
   content.innerHTML = `<div class="think-stream" id="think-text"></div>`;
   // Speak/think phases get a comfortable reading width up front so the
-  // streaming text doesn't wrap aggressively from the previous narrow
-  // ask bubble width.
-  await measureAndShow({ width: 300 });
+  // streaming text doesn't wrap aggressively. The window still grows in
+  // height with the reply (main process clamps at the work area).
+  await measureAndShow({ width: 400 });
 }
 
 // ── render: speak (streamed assistant reply) ──
@@ -875,7 +946,7 @@ async function showSpeak() {
   phase = "speak";
   await clearChatAnchor();
   content.innerHTML = `<div class="speak streaming" id="speak"></div>`;
-  await measureAndShow({ width: 300 });
+  await measureAndShow({ width: 400 });
 }
 
 // Animate the bubble fading out, briefly drop the window, then fade it back
@@ -1000,7 +1071,13 @@ async function measureAndShow({ animate = true, width = null } = {}) {
   const cw = width !== null
     ? width
     : Math.max(220, bubble.offsetWidth || 280);
-  const ch = Math.max(28, content.offsetHeight + padY);
+  // scrollHeight, NOT offsetHeight: #content's max-height is derived from
+  // the window height (100vh-58px), so offsetHeight feeds a circular
+  // dependency — small window → clamped content → measured small → window
+  // never grows and long replies stay trapped in a tiny scrolling box.
+  // scrollHeight is the NATURAL content height; the window grows with the
+  // reply and only the main-process work-area clamp starts the scrolling.
+  const ch = Math.max(28, content.scrollHeight + padY);
   await setBubbleSize(cw, ch);
   if (animate) showBubble();
   else bubble.classList.add("show");
@@ -1015,7 +1092,8 @@ function naturalAskWidth(text) {
   widthMeasurer.style.font = window.getComputedStyle(content).font;
   widthMeasurer.textContent = sample;
   const textW = widthMeasurer.offsetWidth;
-  return Math.max(80, Math.min(320, Math.round(textW + 32)));
+  // 280px floor: a tiny pill is cute but unusable — give the input room.
+  return Math.max(280, Math.min(320, Math.round(textW + 32)));
 }
 
 // For fixed-text panels (command replies, errors, narration, speak phase, …)
@@ -1167,7 +1245,7 @@ async function classifyIntentWithLLM(text) {
     silent: true,
     disable_adapter: true,
   };
-  const resp = await fetch(sidecarUrl + "/api/chat", {
+  const resp = await sidecarFetch(sidecarUrl + "/api/chat", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -1213,7 +1291,7 @@ async function dispatch(intent, fullMsg, progress) {
 async function runLlamaUpdate(progress) {
   // llama.cpp engine self-update: check first, then one-click apply via
   // the same SSE progress bubble as model updates.
-  const r = await fetch(sidecarUrl + "/api/engine-update-check");
+  const r = await sidecarFetch(sidecarUrl + "/api/engine-update-check");
   const d = await r.json();
   if (!d) return { ok: false, text: t("chatUpdateNoConn") };
   if (d.error && d.local_build == null) {
@@ -1238,7 +1316,7 @@ async function runLlamaUpdate(progress) {
 }
 
 async function runStatusQuery() {
-  const r = await fetch(sidecarUrl + "/api/health");
+  const r = await sidecarFetch(sidecarUrl + "/api/health");
   const d = await r.json();
   const persona = d.persona || "default";
   const model = d.model_name || "(unknown)";
@@ -1250,7 +1328,7 @@ async function runStatusQuery() {
 }
 
 async function runUpdateCheck() {
-  const r = await fetch(sidecarUrl + "/api/update-check");
+  const r = await sidecarFetch(sidecarUrl + "/api/update-check");
   const d = await r.json();
   if (!d) return { ok: false, text: t("chatUpdateNoConn") };
   if (d.available) {
@@ -1280,7 +1358,7 @@ async function runUpdateApply(progress) {
 }
 
 async function runAdapterList() {
-  const r = await fetch(sidecarUrl + "/api/adapters");
+  const r = await sidecarFetch(sidecarUrl + "/api/adapters");
   const d = await r.json();
   if (!d.items || !d.items.length) {
     return { ok: true, text: t("chatAdapterListEmpty") };
@@ -1379,7 +1457,7 @@ async function runAdapterSwitchByKeyword(keyword, fullMessage, progress) {
     return runAdapterOff(onProgress);
   }
 
-  const r = await fetch(sidecarUrl + "/api/adapters");
+  const r = await sidecarFetch(sidecarUrl + "/api/adapters");
   const d = await r.json();
   const items = (d && Array.isArray(d.items)) ? d.items : [];
   if (!items.length) {
@@ -1616,7 +1694,8 @@ async function _buildSkillsContextBase() {
 【主动说话：[NEXT_CHAT:秒数] 放最后一行】
 用户很久没理你时你可以主动开口。数字是你打算等多少秒后再说话：
 - [NEXT_CHAT:100] 约1分钟  [NEXT_CHAT:600] 10分钟  [NEXT_CHAT:3600] 1小时  [NEXT_CHAT:0] 现在不想说
-聊得开心设短，平淡设长，用户要休息就 0。太频繁会烦人。`;
+聊得开心设短，平淡设长，用户要休息就 0。太频繁会烦人。
+如果你不输出这个标签，系统会根据你此刻的心情和状态替你决定下次开口的时机——想主动保持沉默就必须写 [NEXT_CHAT:0]。`;
 
       return ctx;
     }
@@ -1803,7 +1882,7 @@ async function submit(text) {
   // Re-measure + auto-scroll the active streaming pane on every painted char.
   function onTick() {
     measureAndShow({ animate: false });
-    if (typer && typer.target) typer.target.scrollTop = typer.target.scrollHeight;
+    if (_contentStickBottom) content.scrollTop = content.scrollHeight;
   }
 
   // Pull persisted generation params from main proc on every submit so
@@ -1918,7 +1997,7 @@ async function submit(text) {
   }
 
   try {
-    const resp = await fetch(sidecarUrl + "/api/chat", {
+    const resp = await sidecarFetch(sidecarUrl + "/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -1973,6 +2052,15 @@ async function submit(text) {
           _linglingOnToken(obj.content);
         } else if (obj.event === "error") {
           throw new Error(obj.message || "model error");
+        } else if (obj.event === "walk") {
+          // 身体移动: the model walks itself — the shell animates the body
+          if (window.minicpm && typeof window.minicpm.petWalk === "function") {
+            window.minicpm.petWalk(Number(obj.dx) || 0, Number(obj.dy) || 0);
+          }
+        } else if (obj.event === "walk_desktop") {
+          if (window.minicpm && typeof window.minicpm.petHopDesktop === "function") {
+            window.minicpm.petHopDesktop();
+          }
         } else if (obj.event === "next_chat") {
           // Model scheduled its next proactive chat — store the interval
           // and mark it explicit so scheduleProactiveChat can tell an
@@ -2024,6 +2112,8 @@ async function submit(text) {
           var shown = thinkBox.style.display !== "none";
           thinkBox.style.display = shown ? "none" : "block";
           thinkToggle.textContent = shown ? "🧠 查看思考" : "🧠 收起思考";
+          // Real-time fit: the window must grow/shrink with the pane.
+          void measureAndShow({ animate: false });
         });
         speakEl.appendChild(thinkToggle);
         speakEl.appendChild(thinkBox);
@@ -2133,7 +2223,7 @@ async function cmdOpen({ side } = {}) {
     abortCtrl = null;
   }
   if (!await ensureBooted()) return;
-  // Sync the active theme (换身体 = 换灵魂) — the sidecar's memory and
+  // Sync the active theme (持续自我存在) — the sidecar's memory and
   // this renderer's history both belong to the current theme.
   try {
     if (window.minicpm && typeof window.minicpm.getActiveThemeId === "function") {
@@ -2202,7 +2292,7 @@ if (window.minicpm) {
     // and stare at an empty bubble.
     let persona = "default";
     try {
-      const r = await fetch(sidecarUrl + "/api/health");
+      const r = await sidecarFetch(sidecarUrl + "/api/health");
       const d = await r.json();
       persona = d.persona || "default";
     } catch {}
@@ -2223,6 +2313,11 @@ if (window.minicpm) {
   if (window.minicpm.onUpdateStatus) window.minicpm.onUpdateStatus(updateBadge);
   if (window.minicpm.onUpdateApplying) window.minicpm.onUpdateApplying(showUpdateProgress);
   if (window.minicpm.onNarrate) window.minicpm.onNarrate(showNarration);
+  // 身体感受: the body reported touch (drag / click burst) → wake the
+  // pet immediately so it reacts while the sensation is fresh.
+  if (window.minicpm.onPetTouched) window.minicpm.onPetTouched(() => {
+    void submitTouchWake();
+  });
   // Proactive policy from settings: "off" / "free" / "interval:<seconds>"
   if (window.minicpm.onProactivePolicy) {
     window.minicpm.onProactivePolicy((p) => {
@@ -2250,7 +2345,7 @@ if (window.minicpm) {
   });
   // Context management
   try { window.minicpm.onClearHistory(() => { replaceActiveHistory([]); }); } catch {}
-  // Theme switch (换身体 = 换灵魂): reload this theme's conversation
+  // Theme switch (持续自我存在): reload this theme's conversation
   // stream and refresh the memory/skills context for the next turn.
   try {
     window.minicpm.onThemeChanged((p) => {

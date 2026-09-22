@@ -432,7 +432,15 @@ function validateThemeShape(themeId, opts = {}) {
 
 function _validateRequiredAssets(theme) {
   const errors = [];
-  for (const filename of _collectRequiredAssetFiles(theme)) {
+  for (const entry of _collectRequiredAssetFiles(theme)) {
+    // The collector yields strings OR emotion-tagged variant objects
+    // ({file, emotion}) — basename the .file for the existence check
+    // instead of passing the object into path.basename (which threw
+    // ERR_INVALID_ARG_TYPE and crashed the doctor's theme check).
+    const filename = (entry && typeof entry === "object" && typeof entry.file === "string")
+      ? entry.file
+      : entry;
+    if (!filename || typeof filename !== "string") continue;
     const absPath = _resolveAssetPath(theme, filename);
     if (!fs.existsSync(absPath)) {
       errors.push(`missing asset: ${filename} (${absPath})`);

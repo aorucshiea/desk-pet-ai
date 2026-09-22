@@ -144,6 +144,10 @@ const { getAllAgents } = require("../agents/registry");
 // MUST be set before any BrowserWindow is created (before app.whenReady)
 app.commandLine.appendSwitch("autoplay-policy", "no-user-gesture-required");
 
+// 持续自我存在 UI: the app is dark-only — force the native theme so
+// Windows draws dark titlebars (a light system accent paints them blue).
+nativeTheme.themeSource = "dark";
+
 const isMac = process.platform === "darwin";
 const isLinux = process.platform === "linux";
 const isWin = process.platform === "win32";
@@ -1144,6 +1148,47 @@ function setLowPowerIdlePaused(value) {
 function beginDragSnapshot() { return petWindowRuntime.beginDragSnapshot(); }
 function clearDragSnapshot() { return petWindowRuntime.clearDragSnapshot(); }
 function moveWindowForDrag() { return petWindowRuntime.moveWindowForDrag(); }
+
+// ── 身体移动: [WALK:dx,dy] — the model walks its own body ──────────────
+// Step-animates the pet (render + hit windows move together), clamped to
+// the work area; plays the drag reaction while walking. [WALK_DESKTOP]
+// is not ported on the Electron shell yet (virtual-desktop COM lives in
+// the Tauri rewrite) — the message is swallowed gracefully.
+let _petWalkBusy = false;
+ipcMain.on("minicpm:pet-walk", (_event, { dx, dy } = {}) => {
+  try {
+    if (_petWalkBusy) return;
+    const startBounds = getPetWindowBounds();
+    const wa = getNearestWorkArea(
+      startBounds.x + startBounds.width / 2,
+      startBounds.y + startBounds.height / 2,
+    );
+    const targetX = Math.max(wa.x, Math.min(wa.x + wa.width - startBounds.width, startBounds.x + (Number(dx) || 0)));
+    const targetY = Math.max(wa.y, Math.min(wa.y + wa.height - startBounds.height, startBounds.y + (Number(dy) || 0)));
+    const totalX = targetX - startBounds.x;
+    const totalY = targetY - startBounds.y;
+    const steps = Math.max(1, Math.min(60, Math.round((Math.abs(totalX) + Math.abs(totalY)) / 24)));
+    _petWalkBusy = true;
+    let step = 0;
+    const walkTimer = setInterval(() => {
+      step += 1;
+      const f = step / steps;
+      applyPetWindowBounds({
+        x: Math.round(startBounds.x + totalX * f),
+        y: Math.round(startBounds.y + totalY * f),
+        width: startBounds.width,
+        height: startBounds.height,
+      });
+      if (step >= steps) {
+        clearInterval(walkTimer);
+        _petWalkBusy = false;
+      }
+    }, 28);
+  } catch {}
+});
+ipcMain.on("minicpm:pet-hop-desktop", () => {
+  // not ported on the Electron shell — swallowed so the tag never errors
+});
 
 // ── Mini Mode — delegated to src/mini.js ──
 // Initialized after state module (needs applyState, resolveDisplayState, etc.)
@@ -3353,6 +3398,16 @@ function createWindow() {
     statPath: (p) => fs.promises.stat(p),
     openTerminalAt: (dir) => openTerminalAt(dir),
     dropLog: (message) => console.log(`Clawd: ${message}`),
+    // 身体感受: forward drag/click reports to the gateway (via the chat
+    // module, which owns the sidecar client + gateway token). Optional —
+    // silently skipped when the chat module never initialized.
+    reportInteraction: (payload) => {
+      try {
+        if (_minicpmChat && typeof _minicpmChat.reportInteraction === "function") {
+          _minicpmChat.reportInteraction(payload);
+        }
+      } catch {}
+    },
   });
 
   registerPermissionIpc({

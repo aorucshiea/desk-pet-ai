@@ -40,6 +40,8 @@ contextBridge.exposeInMainWorld("hitAPI", {
   startDragReaction: (direction) => ipcRenderer.send("start-drag-reaction", direction),
   endDragReaction: () => ipcRenderer.send("end-drag-reaction"),
   playClickReaction: (svg, duration) => ipcRenderer.send("play-click-reaction", svg, duration),
+  // 身体感受: report a settled click burst so the pet knows it was touched
+  reportClickBurst: (count) => ipcRenderer.send("pet-interaction:click-burst", count),
   // State sync ← main
   onStateSync: (cb) => ipcRenderer.on("hit-state-sync", (_, data) => cb(data)),
   onCancelReaction: (cb) => ipcRenderer.on("hit-cancel-reaction", () => cb()),

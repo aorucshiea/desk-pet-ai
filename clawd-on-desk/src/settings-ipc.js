@@ -15,15 +15,31 @@ const { DEFAULT_THEME_ID } = require("./default-theme");
 const SIDECAR_HOST = "127.0.0.1";
 const SIDECAR_PORT = Number(process.env.MINICPM_PORT) || 18765;
 
+// B-5: gateway requires X-MiniCPM-Token on every API call. Read + cache.
+let _gatewayTokenCache = null;
+function gatewayToken() {
+  if (_gatewayTokenCache) return _gatewayTokenCache;
+  try {
+    const p = defaultPath.join(require("os").homedir(), ".minicpm", "gateway-token");
+    _gatewayTokenCache = defaultFs.readFileSync(p, "utf8").trim();
+  } catch {
+    _gatewayTokenCache = "";
+  }
+  return _gatewayTokenCache;
+}
+
 function sidecarJson(method, pathname, timeoutMs = 3000, body = null) {
   return new Promise((resolve) => {
     const payload = body ? JSON.stringify(body) : null;
+    const headers = { "x-minicpm-token": gatewayToken() };
+    if (payload) {
+      headers["content-type"] = "application/json";
+      headers["content-length"] = Buffer.byteLength(payload);
+    }
     const req = defaultHttp.request(
       {
         hostname: SIDECAR_HOST, port: SIDECAR_PORT, path: pathname, method, timeout: timeoutMs,
-        headers: payload
-          ? { "content-type": "application/json", "content-length": Buffer.byteLength(payload) }
-          : undefined,
+        headers,
       },
       (res) => {
         let buf = "";

@@ -32,6 +32,7 @@ const execFileAsync = promisify(execFile);
 const fs = require("fs");
 const http = require("http");
 const os = require("os");
+const { showContextMenu } = require("./context-menu-window");
 const path = require("path");
 
 const isMac = process.platform === "darwin";
@@ -49,7 +50,7 @@ const DEFAULT_HOST = "127.0.0.1";
 const BUBBLE_GAP = 8;   // pixels between visible pet sprite and bubble
 const EDGE_MARGIN = 8;
 
-const ASK_WIDTH = 120;       // initial empty-input width — tiny pill
+const ASK_WIDTH = 280;       // initial empty-input width — comfortable to type in
 const ASK_HEIGHT = 44;
 const SPEAK_MAX_WIDTH = 360;
 const SPEAK_MAX_HEIGHT = 360;
@@ -347,6 +348,22 @@ function seedAdaptersFromBundle(srcDir, dstDir, fsImpl = fs, log = () => {}) {
 
 // ── HTTP probe helpers ──────────────────────────────────────────────────────
 
+// B-5: the gateway requires X-MiniCPM-Token on every request (localhost APIs
+// are still reachable from any webpage running in a browser on this machine).
+// The gateway creates ~/.minicpm/gateway-token on boot; we read it lazily and
+// cache it in memory.
+let _gatewayTokenCache = null;
+function gatewayToken() {
+  if (_gatewayTokenCache) return _gatewayTokenCache;
+  try {
+    const p = path.join(os.homedir(), ".minicpm", "gateway-token");
+    _gatewayTokenCache = fs.readFileSync(p, "utf8").trim();
+  } catch {
+    _gatewayTokenCache = "";
+  }
+  return _gatewayTokenCache;
+}
+
 function httpJson(method, urlStr, body, timeoutMs = 4000) {
   return new Promise((resolve, reject) => {
     const u = new URL(urlStr);
@@ -355,7 +372,10 @@ function httpJson(method, urlStr, body, timeoutMs = 4000) {
       port: u.port || 80,
       path: u.pathname + (u.search || ""),
       method,
-      headers: { "content-type": "application/json" },
+      headers: {
+        "content-type": "application/json",
+        "x-minicpm-token": gatewayToken(),
+      },
       timeout: timeoutMs,
     };
     const req = http.request(opts, (res) => {
@@ -536,7 +556,7 @@ class Sidecar {
       const body = opts && opts.mmproj
         ? { path: p, mmproj: opts.mmproj }
         : { path: p };
-      const r = await httpJson("POST", `${this.baseUrl()}/api/load-model`, body, 90000);
+      const r = await httpJson("POST", `${this.baseUrl()}/api/load-model`, body, 300000);
       return r.json || null;
     } catch (err) { return { error: String(err && err.message || err) }; }
   }
@@ -1826,6 +1846,38 @@ module.exports = function initMinicpmChat(ctx) {
     }
   }
 
+  // ── 身体感受上报: the BODY tells the BRAIN about touch ──────────
+  // Drag-end / click-burst reports go to the gateway, which keeps them
+  // fresh for the next chat's system prompt and writes light episodic
+  // memories. Fire-and-forget: a failed report must NEVER break
+  // dragging or clicking — swallow everything.
+  function reportInteraction(payload) {
+    try {
+      const body = {
+        kind: String(payload && payload.kind) || "",
+        clicks: Number(payload && payload.clicks) || 0,
+        distance_px: Number(payload && payload.distance_px) || 0,
+        duration_ms: Number(payload && payload.duration_ms) || 0,
+      };
+      if (!body.kind) return;
+      void httpJson("POST", `${sidecar.baseUrl()}/api/pet/interaction`, body, 2500)
+        .catch(() => {});
+      // 碰他就直接告诉他: also push to the chat renderer so it can wake
+      // the pet immediately instead of waiting for the next idle window.
+      // The renderer owns all gating (mode / phase / cooldown). The
+      // bubble is lazy-created, so ensure it exists; if its page is still
+      // loading, deliver after load or the wake would be lost.
+      try {
+        const b = ensureBubble();
+        const push = () => {
+          try { b.webContents.send("minicpm:pet-touched", { kind: body.kind }); } catch {}
+        };
+        if (b.webContents.isLoading()) b.webContents.once("did-finish-load", push);
+        else push();
+      } catch {}
+    } catch {}
+  }
+
   function createBubble() {
     const pb = getPetBoundsSafe() || { x: 200, y: 200, width: 280, height: 280 };
     const wa = getWorkAreaForPet(pb);
@@ -1850,6 +1902,12 @@ module.exports = function initMinicpmChat(ctx) {
       ...(isMac ? { type: "panel" } : {}),
       webPreferences: {
         preload: path.join(__dirname, "preload-minicpm-chat.js"),
+        // Windows occlusion misdetection can freeze a transparent always-on-
+        // top window's compositor: DOM keeps updating (typing, streaming all
+        // work) but the screen shows a stale frame — the bubble "ignores"
+        // everything. The pet render/hit windows already disable throttling
+        // for the same reason.
+        backgroundThrottling: false,
         contextIsolation: true,
         nodeIntegration: false,
       },
@@ -2433,6 +2491,28 @@ module.exports = function initMinicpmChat(ctx) {
       click: () => dismiss(),
     });
 
+    // 持续自我存在 UI: styled HTML menu (shared custom window) with the
+    // native popup as fallback. Checkbox-style items wrap their click so
+    // the handler receives {checked} like a native MenuItem would.
+    try {
+      const data = items.map((it) => {
+        if (!it || it.type === "separator") return { type: "separator" };
+        const origClick = it.click;
+        const origChecked = !!it.checked;
+        return {
+          label: String(it.label || ""),
+          checked: origChecked,
+          disabled: it.enabled === false,
+          danger: String(it.label || "").includes("清空"),
+          click: origClick ? () => origClick({ checked: !origChecked }) : undefined,
+        };
+      });
+      await showContextMenu(data).catch(() => {
+        const menu = Menu.buildFromTemplate(items);
+        if (bubble && !bubble.isDestroyed()) menu.popup({ window: bubble });
+      });
+      return;
+    } catch {}
     const menu = Menu.buildFromTemplate(items);
     if (bubble && !bubble.isDestroyed()) menu.popup({ window: bubble });
   }
@@ -2468,8 +2548,16 @@ module.exports = function initMinicpmChat(ctx) {
       return minicpmI18n.getMinicpmI18nPayload(lang);
     },
     "minicpm:resize": (_evt, { width, height } = {}) => {
-      width = Math.max(MIN_WIDTH, Math.min(SPEAK_MAX_WIDTH, Math.round(Number(width) || ASK_WIDTH)));
-      height = Math.max(MIN_HEIGHT, Math.min(SPEAK_MAX_HEIGHT, Math.round(Number(height) || ASK_HEIGHT)));
+      // Real-time fit (实时适配): the bubble grows with the streaming
+      // content. The ceiling is the pet's WORK AREA, not a fixed pixel
+      // constant — only a truly huge reply scrolls internally, and the
+      // bubble never leaves the screen.
+      const pb = getPetBoundsSafe();
+      const wa = pb ? getWorkAreaForPet(pb) : screen.getPrimaryDisplay().workArea;
+      const maxW = Math.max(SPEAK_MAX_WIDTH, Math.round(wa.width * 0.5));
+      const maxH = Math.max(SPEAK_MAX_HEIGHT, Math.round(wa.height * 0.72));
+      width = Math.max(MIN_WIDTH, Math.min(maxW, Math.round(Number(width) || ASK_WIDTH)));
+      height = Math.max(MIN_HEIGHT, Math.min(maxH, Math.round(Number(height) || ASK_HEIGHT)));
       chooseAndApplyBounds(width, height);
       return { ok: true, width, height };
     },
@@ -2693,8 +2781,19 @@ module.exports = function initMinicpmChat(ctx) {
 	  try { ipcMain.removeHandler("minicpm:get-chat-params"); } catch {}
 	  ipcMain.handle("minicpm:get-chat-params", wrapHandler("minicpm:get-chat-params", async () => getChatParams()));
 
+	  // B-5: give the chat renderer the gateway token so its fetch() calls
+	  // carry X-MiniCPM-Token. Same file the gateway wrote at boot.
+	  try { ipcMain.removeHandler("minicpm:gateway-token"); } catch {}
+	  ipcMain.handle("minicpm:gateway-token", wrapHandler("minicpm:gateway-token", async () => gatewayToken()));
+
 	  // ── Chat history persistence ─────────────────────────────────────────
 	  const CHAT_HISTORY_PATH = path.join(app.getPath("userData"), "chat-history.json");
+
+	  // B-5: renderers call the gateway directly (bubble SSE etc.) and need
+	  // the same X-MiniCPM-Token the main process uses.
+	  try { ipcMain.removeHandler("minicpm:get-gateway-token"); } catch {}
+	  ipcMain.handle("minicpm:get-gateway-token", wrapHandler("minicpm:get-gateway-token", () => gatewayToken()));
+
 	  try { ipcMain.removeHandler("minicpm:save-history"); } catch {}
 	  ipcMain.handle("minicpm:save-history", wrapHandler("minicpm:save-history", async (_, data) => {
 	    try {
@@ -2710,6 +2809,20 @@ module.exports = function initMinicpmChat(ctx) {
 	      const raw = await fs.promises.readFile(CHAT_HISTORY_PATH, "utf-8");
 	      return JSON.parse(raw);
 	    } catch { return null; }
+	  }));
+
+	  // History viewer data source (设置 → 历史): read the persisted file
+	  // directly — unlike minicpm:get-chat-history (which mirrors the
+	  // bubble's in-memory array and returns [] when the bubble is closed),
+	  // this works even when the pet hasn't been talked to this session.
+	  // Returns ALL themes keyed by theme id; the tab filters to 24h.
+	  try { ipcMain.removeHandler("minicpm-settings:get-history-file"); } catch {}
+	  ipcMain.handle("minicpm-settings:get-history-file", wrapHandler("minicpm-settings:get-history-file", async () => {
+	    try {
+	      const raw = await fs.promises.readFile(CHAT_HISTORY_PATH, "utf-8");
+	      const data = JSON.parse(raw);
+	      return { ok: true, themes: (data && typeof data === "object" && !Array.isArray(data)) ? data : {} };
+	    } catch { return { ok: true, themes: {} }; }
 	  }));
 
 	  // ── Long-term memory snapshot ────────────────────────────────────────
@@ -3596,6 +3709,7 @@ module.exports = function initMinicpmChat(ctx) {
     setNarrationEnabled,
     isNarrationEnabled,
     setPetDragging,
+    reportInteraction,
     isOpen: () => bubbleShown && !!(bubble && !bubble.isDestroyed()),
     reposition,
     shutdown,

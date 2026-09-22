@@ -95,6 +95,9 @@ function createHarness(overrides = {}) {
       return state.openTerminalResult;
     },
     dropLog: (message) => calls.push(["dropLog", message]),
+    // 身体感受 reporting hook (optional — absent by default, matching
+    // callers that never initialized the chat module).
+    reportInteraction: overrides.reportInteraction || null,
     // Default to the enabled platforms so the suite behaves the same on a
     // macOS dev machine; the macOS-disabled path has its own explicit test.
     isMacPlatform: overrides.isMacPlatform != null ? overrides.isMacPlatform : false,
@@ -125,6 +128,7 @@ test("pet interaction IPC registers owned channels and disposes them", () => {
     "low-power-idle-paused",
     "pause-cursor-polling",
     "pet-drop-paths",
+    "pet-interaction:click-burst",
     "pet-interaction:reveal-session-hud",
     "play-click-reaction",
     "resume-from-reaction",
@@ -439,4 +443,64 @@ test("pet drop does not ping the hit window when the terminal launch fails", asy
   assert.deepStrictEqual(sender.sent, []);
   const logs = calls.filter((c) => c[0] === "dropLog").map((c) => c[1]);
   assert.ok(logs.some((m) => m.includes("launch failed") && m.includes("no terminal")), logs.join("; "));
+});
+
+// ── 身体感受 (somatic reporting): drags and click bursts reach the hook ──
+
+test("drag gesture reports carry distance and duration on drag-end", () => {
+  const reports = [];
+  const { ipcMain, state } = createHarness({
+    reportInteraction: (payload) => reports.push(payload),
+  });
+
+  // Pet starts at (10, 20); the drag carries it to (410, 20) → 400px.
+  ipcMain.send("drag-lock", true);
+  assert.strictEqual(reports.length, 0);
+  state.petWindowBounds = { x: 410, y: 20, width: 120, height: 80 };
+  ipcMain.send("drag-end");
+
+  assert.strictEqual(reports.length, 1);
+  const report = reports[0];
+  assert.strictEqual(report.kind, "drag");
+  assert.strictEqual(report.distance_px, 400);
+  assert.ok(Number.isFinite(report.duration_ms) && report.duration_ms >= 0);
+});
+
+test("drag without a prior drag-lock reports nothing", () => {
+  const reports = [];
+  const { ipcMain } = createHarness({
+    reportInteraction: (payload) => reports.push(payload),
+  });
+  ipcMain.send("drag-end");
+  assert.deepStrictEqual(reports, []);
+});
+
+test("missing reportInteraction hook never breaks drag handling", () => {
+  const { ipcMain, calls } = createHarness();
+  ipcMain.send("drag-lock", true);
+  ipcMain.send("drag-end");
+  assert.ok(calls.some((c) => c[0] === "applyPetWindowBounds"));
+});
+
+test("click bursts forward the count, clamped to 1..20", () => {
+  const reports = [];
+  const { ipcMain } = createHarness({
+    reportInteraction: (payload) => reports.push(payload),
+  });
+
+  ipcMain.send("pet-interaction:click-burst", 1);
+  ipcMain.send("pet-interaction:click-burst", 3);
+  assert.deepStrictEqual(reports, [
+    { kind: "click", clicks: 1 },
+    { kind: "click", clicks: 3 },
+  ]);
+
+  reports.length = 0;
+  ipcMain.send("pet-interaction:click-burst", 0);
+  ipcMain.send("pet-interaction:click-burst", -2);
+  ipcMain.send("pet-interaction:click-burst", "nonsense");
+  assert.deepStrictEqual(reports, []);
+
+  ipcMain.send("pet-interaction:click-burst", 99);
+  assert.deepStrictEqual(reports, [{ kind: "click", clicks: 20 }]);
 });

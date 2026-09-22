@@ -187,12 +187,24 @@ function handleClick(clientX) {
 
   if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; }
 
+  // 身体感受: when a burst settles (below), tell the main process how
+  // many times the user touched the pet — the gateway feeds it into the
+  // next chat so the pet knows it was poked.
+  const reportBurst = () => {
+    try {
+      if (clickCount > 0 && typeof window.hitAPI.reportClickBurst === "function") {
+        window.hitAPI.reportClickBurst(clickCount);
+      }
+    } catch {}
+  };
+
   const doubleReact = _getReaction("double");
   const annoyedReact = _getReaction("annoyed");
   const leftReact = _getReaction("clickLeft");
   const rightReact = _getReaction("clickRight");
 
   if (clickCount >= 4 && doubleReact) {
+    reportBurst();
     clickCount = 0;
     firstClickDir = null;
     if (!canPlayReactionNow()) return;
@@ -201,6 +213,7 @@ function handleClick(clientX) {
     playReaction(file, doubleReact.duration || 3500);
   } else if (clickCount >= 2) {
     clickTimer = setTimeout(() => {
+      reportBurst();
       clickTimer = null;
       clickCount = 0;
       const dir = firstClickDir;
@@ -215,6 +228,7 @@ function handleClick(clientX) {
     }, CLICK_WINDOW_MS);
   } else {
     clickTimer = setTimeout(() => {
+      reportBurst();
       clickTimer = null;
       clickCount = 0;
       firstClickDir = null;

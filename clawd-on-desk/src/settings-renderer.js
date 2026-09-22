@@ -19,6 +19,7 @@ const SIDEBAR_TABS = [
   { id: "mcp", labelKey: "sidebarMcp", available: true },
   { id: "evolve", labelKey: "sidebarEvolve", available: true },
   { id: "memory", labelKey: "sidebarMemory", available: true },
+  { id: "history", labelKey: "sidebarHistory", available: true },
   { id: "telegram-approval", labelKey: "sidebarTelegramApproval", available: true },
   { id: "mobile", labelKey: "sidebarMobile", available: true },
   { id: "about", labelKey: "sidebarAbout", available: true },
@@ -106,6 +107,7 @@ if (globalThis.ClawdSettingsTabProviders) globalThis.ClawdSettingsTabProviders.i
 if (globalThis.ClawdSettingsTabMcp) globalThis.ClawdSettingsTabMcp.init(core);
 if (globalThis.ClawdSettingsTabEvolve) globalThis.ClawdSettingsTabEvolve.init(core);
 if (globalThis.ClawdSettingsTabMemory) globalThis.ClawdSettingsTabMemory.init(core);
+if (globalThis.ClawdSettingsTabHistory) globalThis.ClawdSettingsTabHistory.init(core);
 
 if (window.settingsAPI && typeof window.settingsAPI.onChanged === "function") {
   window.settingsAPI.onChanged((payload) => core.ops.applyChanges(payload));

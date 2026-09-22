@@ -215,6 +215,7 @@ contextBridge.exposeInMainWorld("minicpmSettings", {
     ipcRenderer.invoke("minicpm:mcp-execute", { serverName, toolName, args }),
   getProviderPrefs: () => ipcRenderer.invoke("minicpm:get-provider-prefs"),
   getChatHistory: () => ipcRenderer.invoke("minicpm:get-chat-history"),
+  getHistoryFile: () => ipcRenderer.invoke("minicpm-settings:get-history-file"),
   clearChatHistory: () => ipcRenderer.invoke("minicpm:clear-chat-history"),
   saveProvidersConfig: (providers) => ipcRenderer.invoke("minicpm:save-providers-config", { providers }),
   mcpGetConfig: () => ipcRenderer.invoke("minicpm:mcp-get-config"),
