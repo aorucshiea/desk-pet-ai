@@ -114,9 +114,21 @@ RECALL_RESTORE_WEIGHT = 100
 
 _recall_attempts: Dict[str, int] = {}
 
+# Session-level count of SUCCESSFUL recalls — an input to the speech
+# impulse (impulse.compute_gap): the more the mind has been stirring,
+# the sooner it may feel like speaking again.
+_recall_success_count = 0
+
 
 def _reset_recall_attempts() -> None:
+    global _recall_success_count
     _recall_attempts.clear()
+    _recall_success_count = 0
+
+
+def get_session_recall_count() -> int:
+    """Successful recalls this session (resets with the session)."""
+    return _recall_success_count
 
 
 def _sample_recall(store: EventStore, candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -208,6 +220,8 @@ async def recall_tool_handler(args: dict) -> Dict[str, Any]:
     for evt in sampled:
         when = human_time_ago(evt.get("created_at", ""))
         lines.append(f"- {when}的事：[{evt['title']}] {evt['content']}")
+    global _recall_success_count
+    _recall_success_count += 1
     text = "\n".join(lines)
     return {
         "content": [{"type": "text", "text": text}],

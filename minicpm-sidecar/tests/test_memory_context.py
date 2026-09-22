@@ -57,19 +57,32 @@ class TestSwitch:
         # default root untouched
         assert not (ctx._base / "events.json").exists()
 
+    # 持续自我存在: each real switch adds system-narrated events (the
+    # outgoing appearance notes the change, the new one opens with "same
+    # me"). User-event isolation is still the invariant under test —
+    # filter the system markers out.
+    _SWITCH_TITLES = {"换下旧形象", "换上新形象"}
+
+    def _user_titles(self, store):
+        return [
+            e["title"] for e in store.get_all_events()
+            if e["title"] not in self._SWITCH_TITLES
+        ]
+
     def test_switch_back_restores_previous(self, ctx):
         ctx.switch("default")
         ctx.event_store.add_event(title="D1", content="c", weight=100)
         ctx.switch("cybercat")
         ctx.event_store.add_event(title="C1", content="c", weight=100)
-        assert ctx.event_store.event_count() == 1
+        assert self._user_titles(ctx.event_store) == ["C1"]
+        # The new appearance opened with the continuity event (持续自我存在).
+        assert any(e["title"] == "换上新形象" for e in ctx.event_store.get_all_events())
 
         ctx.switch("default")
-        assert ctx.event_store.event_count() == 1
-        assert ctx.event_store.get_all_events()[0]["title"] == "D1"
+        assert self._user_titles(ctx.event_store) == ["D1"]
 
         ctx.switch("cybercat")
-        assert ctx.event_store.get_all_events()[0]["title"] == "C1"
+        assert self._user_titles(ctx.event_store) == ["C1"]
 
     def test_identity_and_mood_files_switch(self, ctx):
         ctx.switch("cybercat")

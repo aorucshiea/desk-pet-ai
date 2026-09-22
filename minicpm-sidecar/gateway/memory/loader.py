@@ -58,6 +58,14 @@ MIN_VISIBLE_CHARS = 3
 # 的"真忘了") — the data stays, recall/resonance can still reach them.
 MIN_DIRECTORY_WEIGHT = 30
 
+# B-8: the faded directory is bounded. Without a cap, months of events
+# would drown the system prompt tail in hundreds of ghost placeholder
+# lines ("-X天的事 （已模糊）" × N) — context bloat + "已模糊" losing all
+# meaning. Top entries are kept by weight; the rest go to "deep sleep"
+# (still reachable via recall/resonance, just not listed every turn).
+DIRECTORY_MAX_LINES = 20      # total directory lines (titles + ghosts)
+GHOST_MAX_LINES = 5           # cap for （已模糊）ghost placeholders
+
 # Session-level tracking of loaded event IDs. Once loaded, they stay
 # in context for the entire conversation — no "一阵一阵" flickering.
 _session_loaded_ids: Set[str] = set()
@@ -175,6 +183,8 @@ def build_faded_directory(
         reverse=True,
     )
     lines: List[str] = []
+    ghost_count = 0          # B-8: （已模糊）placeholder cap
+    title_count = 0          # B-8: real title entries
 
     for evt in events:
         if evt["id"] in exclude_ids:
@@ -187,9 +197,16 @@ def build_faded_directory(
         # stays visible as （已模糊）. recall can still reach the event and
         # restore its weight (复活).
         if evt["weight"] < MIN_DIRECTORY_WEIGHT:
+            if ghost_count >= GHOST_MAX_LINES:
+                continue  # deep sleep — reachable by recall only
+            ghost_count += 1
             when = human_time_ago(evt.get("created_at", ""))
             lines.append(f"- {when}的事 （已模糊）")
             continue
+
+        if title_count >= DIRECTORY_MAX_LINES - GHOST_MAX_LINES:
+            continue  # reserve space for ghosts; rest go to deep sleep
+        title_count += 1
 
         ratio = evt["weight"] / 1000.0
         title = evt.get("title", "")

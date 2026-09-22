@@ -65,6 +65,10 @@ EMOTION_INDEX_DELTAS: Dict[str, float] = {
 }
 INDEX_MIN = -1.0
 INDEX_MAX = 1.0
+# B-9: emotion regresses toward neutral over time — a feeling you slept on
+# fades a little. ~10% per hour toward 0 (slow enough that a single strong
+# emotion (-0.15 for mad) still dominates the curve for hours).
+INDEX_REGRESSION_PER_HOUR = 0.90
 
 
 def _clamp_index(value: float) -> float:
@@ -99,6 +103,7 @@ class MoodStore:
         self._since: str = datetime.now(timezone.utc).isoformat()
         self._history: List[Dict[str, Any]] = []
         self._emotion_index: float = 0.0
+        self._index_updated_at: str = datetime.now(timezone.utc).isoformat()
 
     def _path(self) -> Path:
         if self._memory_dir is None:
@@ -120,6 +125,11 @@ class MoodStore:
             self._since = data.get("since", datetime.now(timezone.utc).isoformat())
             self._history = data.get("history", [])[-50:]  # keep last 50
             self._emotion_index = _clamp_index(float(data.get("emotion_index", 0.0)))
+            self._index_updated_at = data.get(
+                "index_updated_at", datetime.now(timezone.utc).isoformat()
+            )
+            # B-9: regress toward neutral for the time we were offline.
+            self._regress_index()
         except Exception as exc:
             logger.warning("MoodStore load failed: %s", exc)
 
@@ -136,6 +146,7 @@ class MoodStore:
             "since": self._since,
             "history": self._history[-50:],
             "emotion_index": self._emotion_index,
+            "index_updated_at": self._index_updated_at,
         }
         content = json.dumps(data, ensure_ascii=False, indent=2)
         fd, tmp_path = tempfile.mkstemp(
@@ -176,7 +187,32 @@ class MoodStore:
 
     @property
     def emotion_index(self) -> float:
+        # B-9: reading the live index applies time-regression lazily, so a
+        # long silent gap shows a calmer pet even before anything saves.
+        self._regress_index()
         return self._emotion_index
+
+    def _regress_index(self) -> None:
+        """Mean-revert the emotion index toward 0, ~10% per hour elapsed."""
+        if self._emotion_index == 0.0:
+            self._index_updated_at = datetime.now(timezone.utc).isoformat()
+            return
+        try:
+            last = datetime.fromisoformat(self._index_updated_at)
+        except (TypeError, ValueError):
+            self._index_updated_at = datetime.now(timezone.utc).isoformat()
+            return
+        elapsed_h = (datetime.now(timezone.utc) - last).total_seconds() / 3600.0
+        # Sub-3-second gaps produce float noise without meaningful calming;
+        # skipping them keeps rapid successive tags arithmetically exact.
+        if elapsed_h < 0.001:
+            return
+        self._emotion_index = _clamp_index(
+            self._emotion_index * (INDEX_REGRESSION_PER_HOUR ** elapsed_h)
+        )
+        if abs(self._emotion_index) < 1e-3:
+            self._emotion_index = 0.0
+        self._index_updated_at = datetime.now(timezone.utc).isoformat()
 
     def apply_emotion_tag(self, tag: str) -> float:
         """Move the emotion index by the tag's delta (model chose the tag).
@@ -187,7 +223,9 @@ class MoodStore:
         delta = EMOTION_INDEX_DELTAS.get((tag or "").lower())
         if delta is None:
             return self._emotion_index  # unknown tag — idempotent
+        self._regress_index()  # apply elapsed-time calm before the new hit
         self._emotion_index = _clamp_index(self._emotion_index + delta)
+        self._index_updated_at = datetime.now(timezone.utc).isoformat()
         self.save()
         return self._emotion_index
 

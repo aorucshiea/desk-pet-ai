@@ -9,6 +9,7 @@ owned by `LlamaServer`; this file is just glue.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import platform
@@ -39,21 +40,29 @@ from .providers.local import LocalProvider
 from .skills.skill_routes import register_skill_routes
 from .omniparser_manager import OmniParserManager
 from .memory import MemoryStore, EventStore, MoodStore
-from .memory.events import parse_event_block
+from .memory.events import parse_event_block, promote_core
 from .memory.tool import (
     MEMORY_TOOL_SCHEMA,
     memory_tool_handler,
     set_memory_store,
 )
 from .memory import decay as _decay_module
+from .memory import dream as _dream_module
+from .memory import impulse as _impulse_module
 from .memory import loader as _loader_module
+from .memory import continuity as _continuity_module
 from .memory import resonance as _resonance_module
+from .memory import somatic as _somatic_module
+from . import petplugins as _petplugins_module
 from .memory.recall import (
     RECALL_TOOL_SCHEMA,
     recall_tool_handler,
+    get_event_store,
+    get_session_recall_count,
     set_event_store,
 )
 from .screen_consent import ScreenPermissionManager
+from .holo_agent import HoloRunner
 from .memory_context import MemoryContext, theme_slug
 from .memory.mood import build_mood_assessment_prompt, EMOTION_TO_MOOD
 
@@ -61,9 +70,33 @@ from .memory.mood import build_mood_assessment_prompt, EMOTION_TO_MOOD
 # the user hasn't talked to the pet for FREEZE_HOURS (memory only fades
 # while the pet is awake). Updated at the start of each /api/chat stream.
 _last_conversation_at = None
+
+# Death-note hook (死亡遗嘱): set by build_app so the module-level chat
+# stream can persist memories even when the client dies mid-stream —
+# the renderer is the usual extraction trigger, but the renderer is
+# also the thing most likely to vanish. Signature: fn(reply_text) -> dict.
+_extraction_hook = None
+
+# Consecutive proactive requests immediately preceding the current one
+# (a proactive request = the last user message is the renderer's
+# [系统提示：…] wake-up prompt). Feeds the speech-impulse backoff: the
+# longer the pet has been talking into the void, the longer the
+# subconscious waits before trying again. Reset the moment the user
+# actually speaks.
+_proactive_streak = 0
+
+# Marker the renderer uses for proactive wake-up prompts ([系统提示：…]).
+_PROACTIVE_PROMPT_PREFIX = "[系统提示"
+
+# ── 身体感受 (somatic sense) ─────────────────────────────────────────────
+# The pet BODY (Electron shell) reports touch: drags, click bursts. One
+# process-wide buffer shared by the reporting endpoint (writer) and the
+# chat stream (reader) — module scope because _stream_chat_provider sits
+# outside build_app's closure (the event_store NameError lesson).
+_somatic_buffer = _somatic_module.SensationBuffer()
 from . import screen_click
 from .screen_capture import capture as screen_capture
-from .think_filter import ThinkBlockFilter
+from .think_filter import ThinkBlockFilter, ControlTagFilter
 from .updater import DEFAULT_SOURCE as DEFAULT_UPDATE_SOURCE
 from .updater import ModelUpdater
 from .sidecar_updater import SidecarUpdater
@@ -116,6 +149,20 @@ class ChatRequest(BaseModel):
         description="When false, skip MCP tool injection and detection",
     )
     context_window: Optional[int] = None
+
+
+class PetInteractionRequest(BaseModel):
+    """One body interaction reported by the Electron shell (the BODY).
+
+    kind="drag": the user picked the pet up and moved it — distance_px is
+    the straight-line window displacement, duration_ms the gesture length.
+    kind="click": a settled click burst — clicks is the burst count
+    (1 = a tap, 2-3 = poking, 4+ = relentless poking).
+    """
+    kind: str
+    clicks: int = 0
+    distance_px: int = 0
+    duration_ms: int = 0
 
 
 # When thinking=true the model emits a <think> block before the
@@ -454,7 +501,7 @@ def build_app(
             memory_dir = Path.home() / "AppData" / "Roaming" / "MiniCPM Desk Pet" / "memories"
         else:
             memory_dir = Path.home() / ".local" / "share" / "MiniCPM Desk Pet" / "memories"
-    # ── Theme-scoped memory (换身体 = 换灵魂) ─────────────────────────
+    # ── Theme-scoped memory (持续自我存在) ─────────────────────────
     # One MemoryContext holds the soul-layer stores (identity / episodic
     # / mood) and switches them per animation theme. The boot theme comes
     # from the Electron host via MINICPM_THEME.
@@ -468,6 +515,85 @@ def build_app(
     memory_store = mem_ctx.memory_store
     event_store = mem_ctx.event_store
     mood_store = mem_ctx.mood_store
+
+    # ── Cordis-style plugin container (万物皆插件 → 自进化) ──────────
+    # One process-wide container (module scope: the chat stream reads it
+    # outside build_app's closure — same reason as _somatic_buffer).
+    # Services = the soul-layer stores; plugins inject what they need.
+    _plugin_services = {
+        "mood": mood_store,
+        "events": event_store,
+        "memory": memory_store,
+        "memory_dir": memory_dir,
+    }
+    _pet_plugins = _petplugins_module.PluginManager(_plugin_services)
+    _plugin_services["gateway"] = _pet_plugins  # gateway service = the container itself
+    try:
+        _sync = _pet_plugins.sync()
+        if _sync["loaded"] or _sync["failed"]:
+            log.info("pet plugins: loaded=%s failed=%s", _sync["loaded"], _sync["failed"])
+        _pet_plugins.start_watching()
+    except Exception as exc:
+        log.warning("pet plugins boot failed (continuing): %s", exc)
+
+    # ── plugin_forge: the self-evolution organ (CORE, always loaded) ──
+    # The model authors its own plugins through one tool call; the hot
+    # loader brings them alive within SCAN_INTERVAL_SECONDS.
+    def _forge_ctx() -> _petplugins_module.PluginContext:
+        ctx = _petplugins_module.PluginContext("plugin_forge", _pet_plugins)
+        def forge(args: dict) -> str:
+            name = "".join(ch for ch in str(args.get("name", "")) if ch.isalnum() or ch == "_").strip()
+            code = str(args.get("code", ""))
+            if not name or not code:
+                return "[forge error: need 'name' and 'code']"
+            if "\x00" in code or len(code) > 64_000:
+                return "[forge error: invalid or oversized code]"
+            pdir = _petplugins_module.PluginManager.plugin_dir(memory_dir)
+            pdir.mkdir(parents=True, exist_ok=True)
+            (pdir / f"{name}.py").write_text(code, encoding="utf-8")
+            # sync immediately — the plugin is alive when the tool returns
+            result = _pet_plugins.sync()
+            ok = name in result["loaded"]
+            return (
+                f"插件 '{name}' 已铸造并加载。可用工具: "
+                f"{[t for c in _pet_plugins.describe() if c['name'] == name for t in c['tools']]}"
+            ) if ok else f"插件 '{name}' 已写入但加载失败: {result['failed']}"
+        def unforge(args: dict) -> str:
+            name = str(args.get("name", "")).strip()
+            pdir = _petplugins_module.PluginManager.plugin_dir(memory_dir)
+            target = pdir / f"{name}.py"
+            if target.is_file():
+                target.unlink()
+                _pet_plugins.sync()
+                return f"插件 '{name}' 已卸载并删除。"
+            return f"插件 '{name}' 不存在。"
+        def roster(args: dict) -> str:
+            plugins = _pet_plugins.describe()
+            if not plugins:
+                return "当前没有任何插件。"
+            return "\n".join(f"- {p['name']}: tools={p['tools']}" for p in plugins)
+        ctx.tool(
+            "pet_forge_plugin",
+            "铸造一个新插件（Python，定义 apply(ctx)，用 ctx.tool() 注册能力）并热加载。这是你给自己长新器官的方式。",
+            {"type": "object", "properties": {"name": {"type": "string"}, "code": {"type": "string"}}, "required": ["name", "code"]},
+            forge,
+        )
+        ctx.tool(
+            "pet_unload_plugin",
+            "卸载并删除一个插件（放弃一个自己长出的器官）。",
+            {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]},
+            unforge,
+        )
+        ctx.tool(
+            "pet_list_plugins",
+            "列出当前所有插件及其提供的工具。",
+            {"type": "object", "properties": {}},
+            roster,
+        )
+        return ctx
+
+    _pet_plugins._contexts["plugin_forge"] = _forge_ctx()
+    _pet_plugins.protect("plugin_forge")
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -527,11 +653,155 @@ def build_app(
                 except Exception as exc:
                     log.warning("decay loop error: %s", exc)
         _decay_task = _aio.get_event_loop().create_task(_decay_loop())
+
+        # ── LingLing: dream cycle (梦境固化, autonomous subsystem) ──────
+        # When the pet has been idle long enough, the gateway itself runs
+        # a consolidation pass: faint fragments are gathered, whatever
+        # provider is available merges them into distilled memories, and
+        # the night is recorded as a dream event. Memory maintenance as a
+        # structured subconscious organ — not a chore the model must
+        # remember to do.
+        async def _maybe_run_dream() -> str:
+            state = _dream_module.load_state(mem_ctx.theme_dir(mem_ctx.current_theme))
+            due, reason = _dream_module.should_dream(
+                event_store, _last_conversation_at, state=state)
+            if not due:
+                return ""
+
+            # Provider pick: prefer a cloud provider (cheap, better at
+            # instruction-following); fall back to the local model if it's
+            # the only one and it's alive.
+            provider = None
+            for name, p in provider_registry._providers.items():
+                if name != "local":
+                    provider = p
+                    break
+            if provider is None and getattr(server, "alive", False):
+                provider = provider_registry.get_or("local")
+            if provider is None:
+                log.info("dream deferred: no provider available")
+                return ""
+
+            candidates = _dream_module.collect_candidates(event_store)
+            if len(candidates) < _dream_module.MIN_CANDIDATES:
+                return ""
+            mood_ctx = mood_store.format_for_system_prompt() if mood_store else ""
+            system, user = _dream_module.build_dream_prompt(candidates, mood_ctx)
+
+            reply_chunks: list[str] = []
+            async for ev in provider.chat(
+                [{"role": "user", "content": user}],
+                system=system,
+                max_tokens=1024,
+                temperature=0.4,
+                top_p=0.95,
+            ):
+                if ev.get("type") == "delta":
+                    reply_chunks.append(ev.get("content", ""))
+                elif ev.get("type") == "error":
+                    raise RuntimeError(ev.get("message", "provider error"))
+            reply = "".join(reply_chunks)
+
+            data = parse_event_block(reply) or {}
+            outcome = _dream_module.apply_dream(event_store, data)
+            _resonance_module.mark_stale()
+            _dream_module.save_state(mem_ctx.theme_dir(mem_ctx.current_theme), {
+                **state,
+                "last_dream_at": datetime.now(timezone.utc).isoformat(),
+                "dream_count": int(state.get("dream_count", 0)) + 1,
+                "last_outcome": outcome,
+            })
+            return outcome.get("summary", "")
+
+        async def _dream_loop():
+            while True:
+                try:
+                    await asyncio.sleep(_dream_module.CHECK_INTERVAL_SECONDS)
+                    summary = await _maybe_run_dream()
+                    if summary:
+                        log.info("dream cycle complete: %s", summary)
+                except asyncio.CancelledError:
+                    break
+                except Exception as exc:
+                    log.warning("dream loop error: %s", exc)
+        _dream_task = _aio.get_event_loop().create_task(_dream_loop())
+
+        # ── B-15: self-check heartbeat (自主稳态——检测"我病了"并记下来) │
+        # Passive survival exists (web-panel lifeboat, provider fallback,
+        # OmniParser restart cap). What's missing is ACTIVE self-awareness:
+        # periodically probe each organ, count consecutive failures, and on
+        # a state transition write an event memory — the pet remembers being
+        # sick, and wakes up knowing it was sick ("生病了"叙事进记忆流).
+        async def _health_loop():
+            HEALTH_INTERVAL = 300          # seconds between probes
+            SICK_THRESHOLD = 3             # consecutive failures → degraded
+            state = {"llama_fail": 0, "bridge_fail": 0, "degraded": False}
+            while True:
+                try:
+                    await asyncio.sleep(HEALTH_INTERVAL)
+                    # Organ 1: llama-server alive?
+                    if getattr(server, "alive", False):
+                        state["llama_fail"] = 0
+                    else:
+                        # /api/load-model not yet called is normal (onboarding)
+                        if initial_model or getattr(server, "started_once", False):
+                            state["llama_fail"] = state["llama_fail"] + 1
+                    # Organ 2: bridge to the pet body reachable?
+                    try:
+                        bridge_ok = bool(getattr(bridge, "is_reachable", lambda: True)())
+                    except Exception:
+                        bridge_ok = False
+                    state["bridge_fail"] = 0 if bridge_ok else state["bridge_fail"] + 1
+
+                    sick = state["llama_fail"] >= SICK_THRESHOLD or state["bridge_fail"] >= SICK_THRESHOLD
+                    if sick and not state["degraded"]:
+                        state["degraded"] = True
+                        log.warning("homeostasis: DEGRADED (llama_fail=%d bridge_fail=%d)",
+                                    state["llama_fail"], state["bridge_fail"])
+                        try:
+                            event_store = get_event_store()
+                            if event_store is not None:
+                                event_store.add_event(
+                                title="生病了",
+                                content=(
+                                    f"系统自检发现自己不太对劲（"
+                                    f"llama连续{state['llama_fail']}次异常，"
+                                    f"桥连续{state['bridge_fail']}次异常）。"
+                                    f"说话可能断断续续的。"
+                                ),
+                                weight=400,
+                                type_="experience",
+                                resolved=False,
+                            )
+                        except Exception as exc:
+                            log.warning("homeostasis: sick-note write failed: %s", exc)
+                    elif not sick and state["degraded"]:
+                        state["degraded"] = False
+                        log.info("homeostasis: recovered")
+                        try:
+                            event_store = get_event_store()
+                            if event_store is not None:
+                                event_store.add_event(
+                                title="病好了",
+                                content="系统自检恢复正常，身体舒服了。",
+                                weight=300,
+                                type_="experience",
+                                resolved=True,
+                            )
+                        except Exception as exc:
+                            log.warning("homeostasis: recovery-note write failed: %s", exc)
+                except asyncio.CancelledError:
+                    break
+                except Exception as exc:
+                    log.warning("health loop error: %s", exc)
+        _health_task = _aio.get_event_loop().create_task(_health_loop())
         try:
             yield
         finally:
             bridge.post("sleeping")
             _decay_task.cancel()
+            _dream_task.cancel()
+            _health_task.cancel()
             # Tear down MCP subprocesses gracefully *before* everything else.
             # The mcp SDK's transport context managers back onto anyio
             # TaskGroups whose cancel scopes must be exited in the same task
@@ -551,10 +821,52 @@ def build_app(
                 bridge.close()
 
     app = FastAPI(title="MiniCPM Sidecar Gateway", lifespan=lifespan)
+    # ── B-5: localhost token auth ──────────────────────────────────────
+    # A pet gateway binding 127.0.0.1 with zero auth is still reachable
+    # from ANY webpage running in a browser on this machine (browsers
+    # happily hit localhost). Threat model: a webpage calls
+    # /api/screen/click to click the user's real mouse. Fix: every
+    # request must carry the X-MiniCPM-Token header. The Electron host
+    # learns the token from the token file in the app's userData dir;
+    # the web-panel prompt for it once and stashes it in localStorage.
+    _token_path = Path.home() / ".minicpm" / "gateway-token"
+    _token_path.parent.mkdir(parents=True, exist_ok=True)
+    if _token_path.is_file():
+        _gateway_token = _token_path.read_text(encoding="utf-8").strip()
+    else:
+        import secrets as _sec
+        _gateway_token = _sec.token_urlsafe(32)
+        _token_path.write_text(_gateway_token, encoding="utf-8")
+        try:
+            os.chmod(_token_path, 0o600)  # owner-only on POSIX, no-op on Win
+        except OSError:
+            pass
+
+    @app.middleware("http")
+    async def _token_gate(request, call_next):
+        # /api/health stays open — onboarding pings it before the host has
+        # had a chance to read the token file.
+        if request.url.path == "/api/health":
+            return await call_next(request)
+        if request.headers.get("x-minicpm-token") != _gateway_token:
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        return await call_next(request)
+
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
-        allow_methods=["*"],
+        # Web panel only — the Electron renderer uses a custom scheme so
+        # CORS doesn't apply there, but we still list the known origins
+        # instead of "*". "http://tauri.localhost" is the Tauri rewrite's
+        # WebView2 origin (default port 80) — it talks to /api/* directly.
+        allow_origins=[
+            "http://127.0.0.1:18999",
+            "http://localhost:18999",
+            "http://tauri.localhost",
+            "app://.",
+            "file://",
+            "null",
+        ],
+        allow_methods=["GET", "POST", "OPTIONS"],
         allow_headers=["*"],
     )
 
@@ -752,6 +1064,140 @@ def build_app(
         return screen_click.click_element(element)
 
     mcp_manager = MCPManager()
+    # ── Holo GUI desktop control (the pet's hands) ───────────────────
+    # The pet's language model hands a HIGH-LEVEL task to Holo (vision
+    # GUI agent); Holo drives the real mouse/keyboard step by step.
+    # Consent model: requesting a task consumes/asks screen consent ONCE
+    # at task level — the user approves "让凌凌操作电脑：xxx", not every click.
+    holo_runner = HoloRunner()
+
+    async def _handle_holo_desktop_task(args):
+        nonlocal consent_state, consent_lock
+        task = str((args or {}).get("task", "")).strip()
+        if not task:
+            return {
+                "content": [{"type": "text", "text": "缺少 task 参数。"}],
+                "is_error": True,
+                "summary": "Missing task.",
+            }
+        max_steps = int((args or {}).get("max_steps", 18) or 18)
+        max_steps = max(1, min(max_steps, 40))
+        if not holo_runner.configured():
+            return {
+                "content": [{"type": "text", "text": (
+                    "桌面操作能力未配置（缺 MINICPM_HOLO_API_KEY）。"
+                    "请用户在 设置 → MiniCPM 中填写 Holo API Key 后重试。"
+                )}],
+                "is_error": True,
+                "summary": "Holo API key not configured.",
+            }
+        async with consent_lock:
+            if consent_state == "deny":
+                if not await _request_screen_permission("操作电脑", f"凌凌想要操作你的电脑完成任务：{task[:80]}"):
+                    return {
+                        "content": [{"type": "text", "text": "用户拒绝了这次电脑操作授权。不要继续尝试，除非用户明确要求。"}],
+                        "is_error": True,
+                        "summary": "Desktop control denied by user.",
+                    }
+            if consent_state == "once":
+                consent_state = "always"
+
+        async def _on_done(ok: bool, summary: str):
+            # Tell the pet body about the outcome so it visibly reacts.
+            try:
+                bridge.post("success" if ok else "idle", title=f"电脑任务{'完成' if ok else '失败'}")
+            except Exception:
+                pass
+
+        ack = await holo_runner.run_background(task, max_steps=max_steps, on_done=_on_done)
+        if not ack.get("ok"):
+            return {
+                "content": [{"type": "text", "text": f"无法启动桌面任务：{ack.get('error')}"}],
+                "is_error": True,
+                "summary": f"Could not start: {ack.get('error')}",
+            }
+        return {
+            "content": [{"type": "text", "text": (
+                f"✋ 桌面任务已启动（最多 {max_steps} 步）。任务在后台执行，"
+                "告诉我：你可以用 holo_status 查询进度，不要假装任务已完成。"
+            )}],
+            "summary": f"Desktop task started: {task[:60]}",
+            "is_error": False,
+        }
+
+    async def _handle_holo_status(_args):
+        snap = holo_runner.snapshot()
+        zh = {
+            "idle": "空闲", "running": "正在执行", "done": "已完成", "failed": "失败"
+        }.get(snap["status"], snap["status"])
+        lines = [f"状态：{zh}", f"任务：{snap['task'] or '（无）'}", f"已执行步数：{snap['step_count']}"]
+        for s in snap["steps"]:
+            lines.append(f"  [{s['step']}] {s.get('action_line', '?')} -> {s.get('result', '')[:60]}")
+        if snap["answer"]:
+            lines.append(f"结论：{snap['answer']}")
+        if snap["error"]:
+            lines.append(f"错误：{snap['error']}")
+        return {
+            "content": [{"type": "text", "text": "\n".join(lines)}],
+            "summary": f"holo status: {snap['status']}",
+            "is_error": False,
+        }
+
+    mcp_manager.register_builtin({
+        "name": "desktop_task",
+        "description": (
+            "Operate the user's REAL computer (mouse + keyboard) to accomplish a task "
+            "autonomously, e.g. 打开记事本输入文字、清空回收站、打开设置查信息. "
+            "You describe WHAT to do in natural language; a dedicated vision model "
+            "(Holo) decides each click/key stroke against live screenshots. "
+            "Runs in the background — the task is async! Call holo_status to check "
+            "progress before reporting results to the user. "
+            "Requires screen consent; if the user denies, do not retry. "
+            "Requires MINICPM_HOLO_API_KEY configured in settings."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task": {
+                    "type": "string",
+                    "description": "High-level task in natural language, e.g. '打开记事本，输入 Hello World'",
+                },
+                "max_steps": {
+                    "type": "integer",
+                    "description": "Max GUI steps (default 18, cap 40)",
+                },
+            },
+            "required": ["task"],
+        },
+        "handler": _handle_holo_desktop_task,
+    })
+    mcp_manager.register_builtin({
+        "name": "holo_status",
+        "description": (
+            "Check the status of the background desktop task started by desktop_task. "
+            "Returns current state (idle/running/done/failed), recent steps, and the "
+            "final answer when done. Always call this before telling the user a "
+            "desktop task finished."
+        ),
+        "input_schema": {"type": "object", "properties": {}},
+        "handler": _handle_holo_status,
+    })
+
+    @app.post("/api/holo/run")
+    async def holo_run(payload: dict):
+        """HTTP entry for web-panel / debugging a Holo desktop task."""
+        result = await _handle_holo_desktop_task(payload if isinstance(payload, dict) else {})
+        status = 200 if not result.get("is_error") else 400
+        return JSONResponse(result, status_code=status)
+
+    @app.get("/api/holo/status")
+    async def holo_status():
+        return holo_runner.snapshot()
+
+    @app.post("/api/holo/cancel")
+    async def holo_cancel():
+        return holo_runner.cancel()
+
     mcp_manager.register_builtin({
         "name": "screen_click",
         "description": (
@@ -919,7 +1365,7 @@ def build_app(
     @app.post("/api/memory/switch")
     async def switch_memory(payload: dict):
         """Hot-switch the soul-layer memory to another animation theme
-        (换身体 = 换灵魂). Capability layer (skills/experiences) stays
+        (换形象，不换自我). Capability layer (skills/experiences) stays
         global."""
         nonlocal memory_store, event_store, mood_store
         theme = str((payload or {}).get("theme") or "").strip()
@@ -927,6 +1373,12 @@ def build_app(
         memory_store = mem_ctx.memory_store
         event_store = mem_ctx.event_store
         mood_store = mem_ctx.mood_store
+        # cordis 注入的服务跟着换店（灵魂层按主题切换，插件拿到的
+        # 必须是当前主题的 store，不能是启动时的旧指针）
+        _pet_plugins.services["mood"] = mood_store
+        _pet_plugins.services["events"] = event_store
+        _pet_plugins.services["memory"] = memory_store
+        _pet_plugins.emit("theme_switched", theme=slug)
         return {
             "ok": True,
             "theme": slug,
@@ -982,26 +1434,43 @@ def build_app(
             "theme": mem_ctx.current_theme,
         }
 
-    @app.post("/api/events/extract")
-    async def extract_events(payload: dict):
-        """Extract events from the last conversation turn.
+    # ── LingLing: shared extraction core ─────────────────────────────
+    # One idempotent apply-path for both triggers: the gateway-side
+    # death-note hook (runs first, so a client that died mid-stream
+    # loses nothing) and the renderer's POST after stream end.
+    _EXTRACTION_DEDUP_SECONDS = 600
+    _last_extraction: dict = {"digest": "", "at": 0.0}
 
-        Called by the renderer after the streaming reply completes.
-        The model's response is parsed for events and mood assessment.
-        Body: { "response_text": "...", "conversation_summary": "..." }
+    def _apply_extraction(response_text: str) -> dict:
+        """Parse the <<<MEM>>> block out of a reply and apply it.
+
+        Idempotent by normalized-text dedup: the death-note hook and the
+        renderer's POST carry the same reply text, so the second apply
+        is a no-op within the window. Synchronous on purpose — the
+        death note must be able to run during generator teardown.
         """
-        response_text = str(payload.get("response_text") or "")
-        # Try to parse JSON events from the model's response
-        events_added = []
-        mood_updated = False
+        result: dict = {
+            "ok": True, "events_added": [], "mood_updated": False,
+            "duplicate": False,
+        }
+        text = response_text or ""
+        digest = hashlib.sha1(" ".join(text.split()).encode("utf-8")).hexdigest()
+        now_ts = time.time()
+        if (
+            digest == _last_extraction["digest"]
+            and (now_ts - _last_extraction["at"]) < _EXTRACTION_DEDUP_SECONDS
+        ):
+            result["duplicate"] = True
+            return result
+
         try:
-            data = parse_event_block(response_text)
+            data = parse_event_block(text)
             if data:
                 # Engagement proxy: rough token size of this conversation
                 # turn (chars/4 ≈ tokens, no tokenizer needed). Feeds the
                 # event's consolidation weighting (deep talk → harder to
                 # forget; perfunctory → fades).
-                conversation_tokens = len(response_text) // 4
+                conversation_tokens = len(text) // 4
                 for evt_data in data.get("events", []):
                     evt = event_store.add_event(
                         title=evt_data.get("title", ""),
@@ -1013,58 +1482,16 @@ def build_app(
                         core=bool(evt_data.get("core", False)),
                         conversation_tokens=conversation_tokens,
                     )
-                    events_added.append(evt["id"])
+                    result["events_added"].append(evt["id"])
                 _resonance_module.mark_stale()
 
-                # Core memory bank: the model can promote events by title
-                # via a top-level "core" array. Cap the bank at CORE_CAP —
-                # putting something in means it almost never fades, so it
-                # must stay rare.
-                CORE_CAP = 7
-                # Auto-promote events at/above this weight into the core
-                # bank (提取 prompt 的"改变关系的事 800-999"档).
-                CORE_PROMOTE_WEIGHT = 800
-                core_names = data.get("core") or []
-                existing_core = sum(1 for e in event_store.get_all_events() if e.get("core"))
-                if core_names and existing_core < CORE_CAP:
-                    budget = CORE_CAP - existing_core
-                    promoted = 0
-                    for evt in event_store.get_all_events():
-                        if promoted >= budget:
-                            break
-                        if evt.get("core"):
-                            continue
-                        if evt.get("title") in core_names:
-                            evt["core"] = True
-                            promoted += 1
-                    if promoted:
-                        event_store.save()
-                        log.info("Core bank: promoted %d event(s)", promoted)
-
-                # Auto-promote very high-weight events (≥ CORE_PROMOTE_WEIGHT,
-                # "改变关系的事" 档) into the core bank while there's room —
-                # the model's manual core picks still take priority (they run
-                # first above). Core memories decay ~not at all and get a
-                # recall probability bonus (用户: 核心记忆权重掉得非常非常慢，
-                # recall 概率为核心+普通权重联合计算).
-                if existing_core < CORE_CAP:
-                    budget = CORE_CAP - existing_core
-                    auto = 0
-                    for evt in sorted(
-                        event_store.get_all_events(),
-                        key=lambda e: e.get("weight", 0),
-                        reverse=True,
-                    ):
-                        if auto >= budget:
-                            break
-                        if evt.get("core"):
-                            continue
-                        if evt.get("weight", 0) >= CORE_PROMOTE_WEIGHT:
-                            evt["core"] = True
-                            auto += 1
-                    if auto:
-                        event_store.save()
-                        log.info("Core bank: auto-promoted %d high-weight event(s)", auto)
+                # Core memory bank: the model's explicit picks (by title)
+                # take priority, then very high-weight events auto-promote
+                # while room remains (cap 7 — nearly-immortal memories must
+                # stay rare). Shared with the dream consolidation cycle.
+                promoted = promote_core(event_store, data.get("core") or [])
+                if promoted:
+                    log.info("Core bank: promoted %d event(s)", promoted)
 
                 mood_data = data.get("mood", {})
                 if mood_data:
@@ -1074,17 +1501,64 @@ def build_app(
                         reason=mood_data.get("reason", ""),
                         changed=mood_data.get("changed", False),
                     )
-                    mood_updated = True
+                    result["mood_updated"] = True
         except Exception as exc:
             log.warning("Event extraction parse failed: %s", exc)
+
+        _last_extraction["digest"] = digest
+        _last_extraction["at"] = now_ts
+        return result
+
+    global _extraction_hook
+    _extraction_hook = _apply_extraction
+
+    @app.post("/api/pet/interaction")
+    async def pet_interaction(payload: PetInteractionRequest):
+        """身体感受上报: the pet BODY reports touch (drag / click burst).
+
+        Fresh sensations land in the module-level somatic buffer and are
+        injected into the next chat's system prompt; meaningful ones also
+        become light episodic events (throttled per kind so a gesture
+        storm can't flood the memory stream).
+        """
+        detail, ev_title, ev_content = _somatic_module.record(
+            _somatic_buffer, payload.model_dump()
+        )
+        if ev_title:
+            try:
+                store = get_event_store()
+                if store is not None:
+                    store.add_event(
+                        title=ev_title,
+                        content=ev_content,
+                        weight=_somatic_module.EVENT_WEIGHT,
+                        type_="experience",
+                        resolved=True,
+                    )
+            except Exception as exc:
+                log.warning("somatic event write failed: %s", exc)
+        return {"ok": True, "recorded": bool(detail)}
+
+    @app.post("/api/events/extract")
+    async def extract_events(payload: dict):
+        """Extract events from the last conversation turn.
+
+        Called by the renderer after the streaming reply completes. The
+        gateway-side death-note hook has usually applied this same reply
+        already (idempotent — this call is then a no-op).
+        Body: { "response_text": "..." }
+        """
+        response_text = str(payload.get("response_text") or "")
+        result = _apply_extraction(response_text)
 
         # End-of-conversation housekeeping: consolidate mentioned events
         _decay_module.on_conversation_end(event_store)
 
         return {
             "ok": True,
-            "events_added": events_added,
-            "mood_updated": mood_updated,
+            "events_added": result.get("events_added", []),
+            "mood_updated": result.get("mood_updated", False),
+            "duplicate": result.get("duplicate", False),
             "mood": mood_store.current_mood,
             "mood_intensity": mood_store.intensity,
         }
@@ -1787,7 +2261,7 @@ def build_app(
         lora_arr = _lora_arr_for(req)
         try:
             result = await _blocking_chat_provider(
-                provider_registry, mcp_manager, bridge, req, server, state, lora_arr,
+                provider_registry, mcp_manager, bridge, req, server, state, mood_store, lora_arr,
             )
             reply = ""
             if isinstance(result, dict):
@@ -2092,17 +2566,29 @@ def _resolve_provider(
 
 
 async def _gather_tools(mcp_manager: MCPManager, req: ChatRequest) -> Optional[list[ToolDef]]:
-    """Gather MCP tool definitions if tools are enabled."""
+    """Gather MCP tool definitions if tools are enabled. Plugin tools
+    (petplugins container — the model's self-authored organs) join the
+    same tool list, prefixed pet_ to stay collision-free with MCP."""
     if not req.tools_enabled:
         return None
+    tool_defs: list[ToolDef] = []
     try:
         tools_data = await mcp_manager.list_all_tools()
-        if not tools_data:
-            return None
-        return [ToolDef(**t) for t in tools_data]
+        if tools_data:
+            tool_defs.extend(ToolDef(**t) for t in tools_data)
     except Exception as exc:
         get_logger().debug("gather_tools error: %s", exc)
-        return None
+    try:
+        for name, tool in _pet_plugins.all_tools().items():
+            tool_defs.append(ToolDef(
+                server_name="pet",
+                name=name,
+                description=tool.get("description", ""),
+                input_schema=tool.get("parameters") or {"type": "object", "properties": {}},
+            ))
+    except Exception as exc:
+        get_logger().debug("gather plugin tools error: %s", exc)
+    return tool_defs or None
 
 
 async def _stream_chat_provider(
@@ -2151,31 +2637,87 @@ async def _stream_chat_provider(
     yield _sse({"event": "start"})
 
     # LingLing v3: a conversation is happening — un-freeze memory decay.
-    global _last_conversation_at
+    global _last_conversation_at, _proactive_streak
     _last_conversation_at = datetime.now(timezone.utc)
 
     messages = [{"role": m.role, "content": m.content} for m in req.messages]
+
+    # Proactive-request detection (说话冲动的冷场计数): the renderer's
+    # wake-up prompt arrives as a user message starting with [系统提示.
+    # A real user message resets the streak; each consecutive proactive
+    # request deepens it — the subconscious backs off when talking into
+    # the void.
+    _last_msg_text = ""
+    if messages:
+        _last = messages[-1].get("content", "")
+        _last_msg_text = _last if isinstance(_last, str) else ""
+    if _last_msg_text.startswith(_PROACTIVE_PROMPT_PREFIX):
+        _proactive_streak += 1
+    else:
+        _proactive_streak = 0
     system = req.system
 
     # ── LingLing: inject episodic memory + mood + resonance ──────────
     try:
-        # 1. Episodic memory context (top-5 + mood-modulated flashback +
-        #    faded directory). Emotion index shapes the subconscious:
-        #    冷静 → 高权重被过滤、闪现少；开心 → 闪现频发.
-        episodic_ctx = _loader_module.build_memory_context(
-            event_store,
-            emotion_index=mood_store.emotion_index if mood_store is not None else 0.0,
-        )
-        if episodic_ctx and event_store.event_count() > 0:
-            system = (system or "") + "\n\n" + episodic_ctx
+        # The active theme's episodic store (kept in sync across theme
+        # switches by MemoryContext._inject_singletons). NOTE: this module
+        # has no access to build_app's closure — resolving the store
+        # through the singleton getter is the whole point; a bare name
+        # here used to NameError and silently kill ALL injections below.
+        active_event_store = get_event_store()
+        if active_event_store is not None:
+            # 1. Episodic memory context (top-5 + mood-modulated flashback +
+            #    faded directory). Emotion index shapes the subconscious:
+            #    冷静 → 高权重被过滤、闪现少；开心 → 闪现频发.
+            episodic_ctx = _loader_module.build_memory_context(
+                active_event_store,
+                emotion_index=mood_store.emotion_index if mood_store is not None else 0.0,
+            )
+            if episodic_ctx and active_event_store.event_count() > 0:
+                system = (system or "") + "\n\n" + episodic_ctx
+
+            # 1.5 Continuity of self (持续自我存在): the same self, continuously
+            #     existing. The body changed; the self did not — the system
+            #     subconscious keeps the thread alive.
+            renote = _continuity_module.get_current_note()
+            if renote:
+                system = (system or "") + "\n\n" + renote
 
         # 2. Mood context
         mood_ctx = mood_store.format_for_system_prompt()
         if mood_ctx:
             system = (system or "") + "\n\n" + mood_ctx
 
+        # 2.6 Somatic sense (身体感受): the body just reported touch —
+        #     being dragged across the screen, being poked. Inject while
+        #     fresh so the pet can react to what physically happened to
+        #     it instead of being an amnesiac puppet.
+        somatic_ctx = _somatic_module.build_somatic_block(_somatic_buffer)
+        if somatic_ctx:
+            system = (system or "") + "\n\n" + somatic_ctx
+
+        # 2.7 Body capability + self-evolution (身体能力 + 万物皆插件):
+        #     the model can MOVE its own body with control tags and GROW
+        #     new organs via the petplugins container.
+        body_lines = [
+            "【身体与进化】你的身体可以自己移动：在回复里输出 [WALK:dx,dy]"
+            "（屏幕像素增量，可负值，一条回复可以多个，身体会依次走过去），"
+            "输出 [WALK_DESKTOP] 会跳到另一个虚拟桌面。"
+            "这些标签会被身体执行，不会显示给用户。"
+        ]
+        if req.tools_enabled:
+            plugins_desc = _pet_plugins.describe()
+            body_lines.append(
+                "你的能力是插件化的（万物皆插件）：工具 pet_list_plugins 查看"
+                "当前器官，pet_forge_plugin 可以给自己铸造新插件（Python，定义"
+                " apply(ctx)，用 ctx.tool() 注册新工具），写完立即热加载生效——"
+                "这是你给自己进化出新器官的方式。当前插件："
+                + (", ".join(p["name"] for p in plugins_desc) or "（只有内置 forge）")
+            )
+        system = (system or "") + "\n\n" + "\n".join(body_lines)
+
         # 3. Resonance: check if the user's latest message triggers stored events
-        if messages:
+        if active_event_store is not None and messages:
             last_msg = messages[-1]
             msg_text = last_msg.get("content", "") if isinstance(last_msg.get("content"), str) else ""
             if not msg_text and isinstance(last_msg.get("content"), list):
@@ -2184,7 +2726,7 @@ async def _stream_chat_provider(
                     b.get("text", "") for b in last_msg["content"] if isinstance(b, dict) and b.get("type") == "text"
                 )
             if msg_text:
-                resonance_hits = await _resonance_module.find_resonance(event_store, msg_text)
+                resonance_hits = await _resonance_module.find_resonance(active_event_store, msg_text)
                 if resonance_hits:
                     # v2: felt-language + time annotation (this is a memory
                     # surfacing, not a database hit).
@@ -2200,6 +2742,19 @@ async def _stream_chat_provider(
     iteration = 0
     tool_occurred = False
     think_filter = ThinkBlockFilter(expose=req.thinking, start_inside=False)
+    # B-1: strip [EMOTION:…]/[NEXT_CHAT:…] control tags mid-stream so the
+    # renderer's typewriter never flashes them. The renderer keeps its own
+    # sanitize pass as defense-in-depth. [WALK…] body-commands are captured
+    # here and re-emitted as body-command SSE events (身体自己走路).
+    _walk_queue: list[dict] = []
+
+    def _on_walk_control(kind: str, dx: int | None, dy: int | None) -> None:
+        if kind == "walk":
+            _walk_queue.append({"event": "walk", "dx": dx, "dy": dy})
+        else:
+            _walk_queue.append({"event": "walk_desktop"})
+
+    tag_filter = ControlTagFilter(on_control=_on_walk_control)
     accumulated_full_text: list[str] = []
     full_text = ""
 
@@ -2257,7 +2812,14 @@ async def _stream_chat_provider(
                 if event["type"] == "delta":
                     full_text += event["content"]
                     for ev in think_filter.feed(event["content"]):
-                        yield _sse(ev)
+                        if ev.get("event") == "delta":
+                            clean = tag_filter.feed(ev["content"])
+                            while _walk_queue:
+                                yield _sse(_walk_queue.pop(0))
+                            if clean:
+                                yield _sse({"event": "delta", "content": clean})
+                        else:
+                            yield _sse(ev)
                 elif event["type"] == "think":
                     yield _sse({"event": "think", "content": event["content"]})
                 elif event["type"] == "tool_call":
@@ -2314,8 +2876,13 @@ async def _stream_chat_provider(
 
             log.info("MCP tool call: %s/%s args=%s", sn, tn, args)
 
-            result = await mcp_manager.call_tool(sn, tn, args)
-            summary = result.get("summary", f"[Tool {tn} completed]")
+            if sn == "pet" or tn in _pet_plugins.all_tools():
+                # plugin tool (自进化器官) — executed by the container
+                result_text = await _pet_plugins.call_tool(tn, args)
+                summary = result_text or f"[Tool {tn} completed]"
+            else:
+                result = await mcp_manager.call_tool(sn, tn, args)
+                summary = result.get("summary", f"[Tool {tn} completed]")
 
             # Add to message context for next iteration
             if provider.supports_function_calling and tc_id:
@@ -2384,8 +2951,31 @@ async def _stream_chat_provider(
                 "content": f"\n_执行 {tn}..._\n",
             })
 
+    # ── Death note: gateway-side memory extraction (死亡遗嘱) ────────
+    # Placed before ANY further yield: if the client died mid-stream the
+    # generator gets GeneratorExit at the next yield, so this is the last
+    # guaranteed chance to persist memories. The renderer's later POST
+    # /api/events/extract is an idempotent no-op for the same text.
+    if _extraction_hook is not None:
+        try:
+            _parts = list(accumulated_full_text)
+            if full_text.strip():
+                _parts.append(full_text)
+            _combined = " ".join(_parts)
+            if _combined.strip():
+                _extraction_hook(_combined)
+        except Exception as exc:
+            log.warning("gateway-side extraction failed: %s", exc)
+
     for ev in think_filter.flush():
-        yield _sse(ev)
+        if ev.get("event") == "delta":
+            clean = tag_filter.feed(ev["content"]) + tag_filter.flush()
+            while _walk_queue:
+                yield _sse(_walk_queue.pop(0))
+            if clean:
+                yield _sse({"event": "delta", "content": clean})
+        else:
+            yield _sse(ev)
 
     # ── Emotion tag extraction ──
     # The LLM is instructed (via system prompt) to end replies with
@@ -2408,12 +2998,26 @@ async def _stream_chat_provider(
 
     # ── Proactive chat scheduling ──
     # Proactive chat: model outputs [NEXT_CHAT:N] where N is integer seconds.
-    # 0 means "no proactive chat". Sent via SSE so renderer can setTimeout.
+    # 0 means "no proactive chat" — an explicit choice to stay silent,
+    # always honoured as-is. Sent via SSE so renderer can setTimeout.
     _next_chat_re = re.compile(r"\[NEXT_CHAT:\s*(\d+)\s*(?:s|sec|seconds)?\s*\]", re.IGNORECASE)
     _nc_match = _next_chat_re.search(combined_text)
     if _nc_match:
         _nc_seconds = max(0, int(_nc_match.group(1)))
         yield _sse({"event": "next_chat", "seconds": _nc_seconds})
+    elif not req.silent:
+        # ── 说话冲动：潜意识兜底 ──
+        # The model forgot to decide when to speak next. The subconscious
+        # decides instead, from mood + how long it has been talking into
+        # the void + how much the mind has been stirring. The model's own
+        # explicit silence ([NEXT_CHAT:0]) never reaches this branch.
+        _impulse_gap = _impulse_module.compute_gap(
+            emotion_index=mood_store.emotion_index if mood_store is not None else 0.0,
+            proactive_streak=_proactive_streak,
+            recall_count=get_session_recall_count(),
+        )
+        log.info("speech impulse: no [NEXT_CHAT] tag, subconscious gap=%ds (streak=%d)", _impulse_gap, _proactive_streak)
+        yield _sse({"event": "next_chat", "seconds": _impulse_gap})
 
     if not req.silent:
         bridge.post("attention", emotion=_emotion)

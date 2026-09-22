@@ -37,6 +37,21 @@ EMOTION_VOCAB: List[str] = [
 # top-5 loads full content into context every turn.
 CONTENT_MAX_CHARS = 500
 
+# Duplicate guard: the same reply text can legitimately reach extraction
+# twice by design (the gateway-side death-note hook runs first so a
+# client that died mid-stream loses nothing; the renderer then POSTs the
+# same text here). Exact-same content within this window is treated as
+# the same extraction replayed, not a new event.
+DEDUP_WINDOW_SECONDS = 600
+
+# Core memory bank (核心记忆): nearly-immortal memories the model chose
+# to keep. Cap enforced at extraction/promotion — putting something in
+# means it almost never fades, so it must stay rare.
+CORE_CAP = 7
+# Auto-promote events at/above this weight (提取 prompt 的
+# "改变关系的事 800-999" 档).
+CORE_PROMOTE_WEIGHT = 800
+
 
 def human_time_ago(created_at: str) -> str:
     """Turn a created_at ISO timestamp into a NEGATIVE time offset.
@@ -240,15 +255,24 @@ class EventStore:
             emotion = aggregate_emotion(content)
         type_ = type_ if type_ in ("experience", "knowledge") else "experience"
 
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(timezone.utc)
+
+        dup = self._find_duplicate(content, title, now)
+        if dup is not None:
+            logger.info(
+                "EventStore: duplicate content within %ds window, "
+                "returning existing %s instead of adding",
+                DEDUP_WINDOW_SECONDS, dup["id"],
+            )
+            return dup
 
         evt: Dict[str, Any] = {
-            "id": f"evt_{now[:10].replace('-', '')}_{self._next_id:03d}",
+            "id": f"evt_{now.isoformat()[:10].replace('-', '')}_{self._next_id:03d}",
             "title": title,
             "content": content,
             "weight": weight,
-            "created_at": now,
-            "last_accessed": now,
+            "created_at": now.isoformat(),
+            "last_accessed": now.isoformat(),
             "access_count": 0,
             "decay_coefficient": 1.0,
             "pause_decay": False,
@@ -317,6 +341,31 @@ class EventStore:
     # Internal helpers
     # ------------------------------------------------------------------
 
+    def _find_duplicate(
+        self, content: str, title: str, now: datetime
+    ) -> Optional[Dict[str, Any]]:
+        """Return an existing event with identical title AND content
+        created within DEDUP_WINDOW_SECONDS of now, or None.
+
+        Both fields must match: the death-note replay carries the same
+        title+content pair, while distinct events that merely share a
+        content string (test fixtures, template-y writes) stay distinct.
+        """
+        if not content:
+            return None
+        for evt in self._events:
+            if (evt.get("content") or "") != content or (evt.get("title") or "") != title:
+                continue
+            try:
+                created = datetime.fromisoformat(
+                    str(evt.get("created_at", "")).replace("Z", "+00:00")
+                )
+            except ValueError:
+                continue
+            if abs((now - created).total_seconds()) <= DEDUP_WINDOW_SECONDS:
+                return evt
+        return None
+
     @staticmethod
     def _normalize_event(evt: Dict[str, Any]) -> None:
         """Ensure an event dict has all required fields with correct types."""
@@ -338,3 +387,58 @@ class EventStore:
         evt["resolved"] = bool(evt.get("resolved", True))
         evt["core"] = bool(evt.get("core", False))
         evt["conversation_tokens"] = max(0, int(evt.get("conversation_tokens", 0)))
+
+
+def promote_core(
+    store: "EventStore",
+    core_names: Optional[List[str]] = None,
+    *,
+    auto_weight: int = CORE_PROMOTE_WEIGHT,
+    cap: int = CORE_CAP,
+) -> int:
+    """Promote events into the nearly-immortal core bank (核心记忆库).
+
+    The model's explicit picks (by title, from the extraction block's
+    top-level ``core`` array) run first; then any event at/above
+    ``auto_weight`` fills the remaining room ("改变关系的事" 档).
+    Core memories decay ~not at all and get a recall probability bonus.
+
+    Returns the number of events promoted. Shared by the extraction
+    endpoint and the dream consolidation cycle.
+    """
+    names = [n for n in (core_names or []) if isinstance(n, str) and n]
+    existing_core = sum(1 for e in store.get_all_events() if e.get("core"))
+    if existing_core >= cap:
+        return 0
+    budget = cap - existing_core
+    promoted = 0
+
+    # Model's manual picks take priority.
+    if names:
+        for evt in store.get_all_events():
+            if promoted >= budget:
+                break
+            if evt.get("core"):
+                continue
+            if evt.get("title") in names:
+                evt["core"] = True
+                promoted += 1
+
+    # Auto-promote very high-weight events while there's room.
+    if promoted < budget:
+        for evt in sorted(
+            store.get_all_events(),
+            key=lambda e: e.get("weight", 0),
+            reverse=True,
+        ):
+            if promoted >= budget:
+                break
+            if evt.get("core"):
+                continue
+            if evt.get("weight", 0) >= auto_weight:
+                evt["core"] = True
+                promoted += 1
+
+    if promoted:
+        store.save()
+    return promoted

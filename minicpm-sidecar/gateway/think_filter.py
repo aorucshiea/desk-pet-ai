@@ -8,11 +8,16 @@ always emitted as a `delta` event.
 
 The Electron renderer (see clawd-on-desk/src/minicpm-chat.html) consumes
 this exact event vocabulary.
+
+Also hosts ControlTagFilter (B-1): strips [EMOTION:…] / [NEXT_CHAT:…]
+control tags from the delta stream mid-flight so the typewriter renderer
+never flashes them at the user.
 """
 
 from __future__ import annotations
 
-from typing import Iterable
+import re
+from typing import Callable, Iterable
 
 
 class ThinkBlockFilter:
@@ -87,3 +92,69 @@ class ThinkBlockFilter:
             if tag.startswith(buf[-keep:]):
                 return len(buf) - keep
         return len(buf)
+
+
+# ── B-1: control-tag filter for streaming deltas ─────────────────────────────
+# [EMOTION:happy] / [NEXT_CHAT:300] are renderer control tags the model
+# appends to its reply; [WALK:dx,dy] / [WALK_DESKTOP] are BODY commands
+# (身体移动 — the model walks itself). Streaming them raw made them flash
+# on screen until the renderer's final sanitize pass stripped them. This
+# filter removes the tags from the stream itself, holding back any
+# `[`-prefix tail that might still grow into a tag (max tag length is
+# short, so the hold is tiny). WALK tags are additionally surfaced to the
+# caller via on_control so the stream loop can emit body-command events.
+
+_CTRL_TAG_RE = re.compile(
+    r"\[\s*(?:EMOTION|NEXT_CHAT|WALK_DESKTOP|WALK)\s*[^\]]*\]",
+    re.IGNORECASE,
+)
+# The longest possible tag prefix we must hold before deciding it is not a
+# tag: "[WALK_DESKTOP" → 13 chars. Holding 16 covers whitespace variants.
+_CTRL_MAX_HOLD = 16
+_CTRL_PREFIXES = ("[EMOTION:", "[NEXT_CHAT:", "[WALK:", "[WALK_DESKTOP")
+_WALK_RE = re.compile(r"\[\s*WALK\s*:\s*(-?\d+)\s*,\s*(-?\d+)\s*\]", re.IGNORECASE)
+
+
+class ControlTagFilter:
+    """Stateful stripper for [EMOTION:…] / [NEXT_CHAT:…] / [WALK…] tokens."""
+
+    def __init__(self, on_control: Callable[[str, int | None, int | None], None] | None = None) -> None:
+        self._buf = ""
+        self._on_control = on_control
+
+    def feed(self, piece: str) -> str:
+        """Append a delta; return the safe-to-emit text with tags removed."""
+        self._buf += piece
+        # Surface complete WALK body-commands to the caller BEFORE they are
+        # stripped — the stream loop turns them into body-command SSE events.
+        if self._on_control is not None:
+            for m in _WALK_RE.finditer(self._buf):
+                self._on_control("walk", int(m.group(1)), int(m.group(2)))
+            if re.search(r"\[\s*WALK_DESKTOP\s*\]", self._buf, re.IGNORECASE):
+                self._on_control("walk_desktop", None, None)
+        self._buf = _CTRL_TAG_RE.sub("", self._buf)
+        # Hold back a trailing '[' fragment that may yet grow into a tag.
+        # Search the WHOLE buffer (tags up to ~30 chars exceed any fixed
+        # tail window when deltas split mid-tag).
+        idx = self._buf.rfind("[")
+        if idx >= 0:
+            candidate = self._buf[idx:]
+            if "]" not in candidate:
+                squashed = re.sub(r"\s", "", candidate).upper()
+                plausible = candidate == "[" or any(
+                    # candidate still growing toward a tag, or an open tag
+                    # whose closing ']' just hasn't arrived yet
+                    p.startswith(squashed) or squashed.startswith(p)
+                    for p in _CTRL_PREFIXES
+                )
+                if plausible:
+                    emit, self._buf = self._buf[:idx], candidate
+                    return emit
+        out, self._buf = self._buf, ""
+        return out
+
+    def flush(self) -> str:
+        """Stream end: emit and strip whatever remains."""
+        out = _CTRL_TAG_RE.sub("", self._buf)
+        self._buf = ""
+        return out
