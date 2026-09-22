@@ -16,6 +16,16 @@
   A local-first desktop pet powered by MiniCPM. Download, complete the guided setup, and chat with a tiny companion that lives on your desktop.
 </p>
 
+> [!NOTE]
+> **Two shell versions live in this repo** (the brain — the Python gateway — is shared by both):
+>
+> | Version | Path | Installer size | Status |
+> | --- | --- | --- | --- |
+> | **Electron 版 (original)** | [`clawd-on-desk/`](./clawd-on-desk) | ~770 MB | Full feature set |
+> | **Tauri 版 (rewrite)** | [`deskpt-tauri/`](./deskpt-tauri) | ~10.7 MB | High-fidelity replica; feature parity in progress |
+>
+> Git tags: `v0.10.0-electron` marks the original Electron shell; `v0.1.0-tauri` marks the first Tauri rewrite.
+
 ---
 
 ## Highlights
