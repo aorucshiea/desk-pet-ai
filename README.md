@@ -1,3 +1,4 @@
+仍处于开发阶段，bug较多，下载后，请自行承担风险。
 # Desk Pet AI
 
 A local-first desktop pet AI. (work in progress)
