@@ -8,19 +8,19 @@ const settingsThemeImporter = require("./settings-theme-importer");
 const productMetadata = require("./product-metadata");
 const { DEFAULT_THEME_ID } = require("./default-theme");
 
-// Sidecar gateway lives on localhost (same constants as minicpm-chat.js:
-// MINICPM_PORT override, else 18765). The settings window uses these to
+// Sidecar gateway lives on localhost (same constants as pet-chat.js:
+// PET_PORT override, else 18765). The settings window uses these to
 // expose the llama.cpp engine self-update (check + apply) without owning
 // the sidecar lifecycle.
 const SIDECAR_HOST = "127.0.0.1";
-const SIDECAR_PORT = Number(process.env.MINICPM_PORT) || 18765;
+const SIDECAR_PORT = Number(process.env.PET_PORT) || 18765;
 
-// B-5: gateway requires X-MiniCPM-Token on every API call. Read + cache.
+// B-5: gateway requires X-DeskPet-Token on every API call. Read + cache.
 let _gatewayTokenCache = null;
 function gatewayToken() {
   if (_gatewayTokenCache) return _gatewayTokenCache;
   try {
-    const p = defaultPath.join(require("os").homedir(), ".minicpm", "gateway-token");
+    const p = defaultPath.join(require("os").homedir(), ".pet", "gateway-token");
     _gatewayTokenCache = defaultFs.readFileSync(p, "utf8").trim();
   } catch {
     _gatewayTokenCache = "";
@@ -31,7 +31,7 @@ function gatewayToken() {
 function sidecarJson(method, pathname, timeoutMs = 3000, body = null) {
   return new Promise((resolve) => {
     const payload = body ? JSON.stringify(body) : null;
-    const headers = { "x-minicpm-token": gatewayToken() };
+    const headers = { "x-pet-token": gatewayToken() };
     if (payload) {
       headers["content-type"] = "application/json";
       headers["content-length"] = Buffer.byteLength(payload);
@@ -81,7 +81,7 @@ function locateLlamaServer() {
       candidates.push(defaultPath.join(process.resourcesPath, "sidecar-bin", triple, name));
     }
   } catch {}
-  const devRoot = defaultPath.join(__dirname, "..", "..", "minicpm-sidecar", "bin", triple);
+  const devRoot = defaultPath.join(__dirname, "..", "..", "pet-sidecar", "bin", triple);
   candidates.push(defaultPath.join(devRoot, name));
   for (const backend of ["vulkan", "cuda", "metal"]) {
     candidates.push(defaultPath.join(devRoot, "backends", backend, name));
@@ -600,12 +600,12 @@ function registerSettingsIpc(options = {}) {
   // policy = "off" | "free" | "interval:<seconds>"
   handle("settings:set-proactive-policy", (event, { policy } = {}) => {
     try {
-      const chat = typeof options.getMinicpmChat === "function" ? options.getMinicpmChat() : null;
+      const chat = typeof options.getDeskPetChat === "function" ? options.getDeskPetChat() : null;
       if (chat && typeof chat.setProactivePolicy === "function") {
         chat.setProactivePolicy(String(policy || "free"));
         return { status: "ok" };
       }
-      return { status: "error", message: "minicpm chat not available" };
+      return { status: "error", message: "pet chat not available" };
     } catch (err) {
       return { status: "error", message: String(err && err.message) };
     }
@@ -797,6 +797,18 @@ function registerSettingsIpc(options = {}) {
     return { status: "ok", info: r.json || {} };
   });
 
+  handle("settings:engine-start", async () => {
+    const r = await sidecarJson("POST", "/api/engine/start", 30000);
+    if (!r.ok) return { status: "error", message: r.error || "sidecar unreachable" };
+    return { status: "ok", ...r.json };
+  });
+
+  handle("settings:engine-stop", async () => {
+    const r = await sidecarJson("POST", "/api/engine/stop", 10000);
+    if (!r.ok) return { status: "error", message: r.error || "sidecar unreachable" };
+    return { status: "ok", ...r.json };
+  });
+
   handle("settings:get-memory-view", async () => {
     // Settings → Memory viewer: identity notes + episodic events +
     // mood for the CURRENT theme (换身体 = 换灵魂).
@@ -850,7 +862,7 @@ function registerSettingsIpc(options = {}) {
       try {
         const win = getSettingsWindow();
         if (win && !win.isDestroyed()) {
-          win.webContents.send("minicpm:engine-update-progress", ev);
+          win.webContents.send("pet:engine-update-progress", ev);
         }
       } catch {}
     }, body ? { path: "/api/engine-update-apply-dir", body } : null);

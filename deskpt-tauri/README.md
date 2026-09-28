@@ -7,7 +7,7 @@
 
 原版的渲染层就是纯 Web 内容，直接搬进来跑（verbatim copy）：
 
-- `minicpm-chat.html` + `minicpm-chat-renderer.js` + i18n —— 聊天气泡，
+- `pet-chat.html` + `pet-chat-renderer.js` + i18n —— 聊天气泡，
   像素级同款（tail、ask/speak/think 状态、流式打字机、思考折叠、自适应尺寸）
 - `context-menu.html` —— 右键菜单（同款玻璃拟态样式 + 完整菜单项）
 - `themes/cybercat/` —— 像素机器猫 GIF 资产 + theme.json（idle/拖拽/戳
@@ -15,18 +15,18 @@
 
 Rust 侧实现这些页面依赖的桥：
 
-- `ui/minicpm-bridge.js` —— `window.minicpm` 全量桥（38 个方法全覆盖：
+- `ui/pet-bridge.js` —— `window.pet` 全量桥（38 个方法全覆盖：
   核心走 Tauri invoke，未移植功能是安全 stub，渲染器怎么调都不会崩）
 - `ui/pet-render.js` —— 由 theme.json 驱动的迷你状态机（idle/拖拽/戳）
 - `ui/hit.html` —— 输入窗口（拖拽/点击爆发/右键菜单），渲染窗口点穿透
   ——和原版一样的双窗口模型
 - `src/main.rs` —— 五窗口管理（pet-render / pet-hit / chat / menu）+
   网关 sidecar 自检自启 + 原版契约的 chat_start（gateway 健康 → 读原版
-  minicpm-prefs.json → 找 *.gguf → /api/load-model，冷启动可能要几分钟）
+  pet-prefs.json → 找 *.gguf → /api/load-model，冷启动可能要几分钟）
 
 ## 与 Electron 版共享的东西（同一个我）
 
-- **大脑**：同一个 Python 网关（sidecar 拉起，`MINICPM_MEMORY_DIR` 指向
+- **大脑**：同一个 Python 网关（sidecar 拉起，`PET_MEMORY_DIR` 指向
   同一份 `%APPDATA%/deskpt/memories`）——记忆/心情/事件/身体感受全共享
 - **对话历史**：同一份 `%APPDATA%/deskpt/chat-history.json`（按主题分桶）
 - **本地模型**：同一个（prefs 里的 model_dir → /api/load-model）

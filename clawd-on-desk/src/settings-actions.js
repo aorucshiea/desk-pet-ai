@@ -829,7 +829,7 @@ function setThemeSelection(payload, deps) {
   // soul-layer memory (events/identity/mood) to this theme, and push the
   // change to the chat renderer so it reloads this theme's history.
   try {
-    const chat = deps && typeof deps.getMinicpmChat === "function" ? deps.getMinicpmChat() : null;
+    const chat = deps && typeof deps.getDeskPetChat === "function" ? deps.getDeskPetChat() : null;
     if (chat && typeof chat.switchMemoryTheme === "function") {
       void chat.switchMemoryTheme(themeId);
     }

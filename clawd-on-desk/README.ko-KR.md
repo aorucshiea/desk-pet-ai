@@ -13,20 +13,20 @@
 </p>
 <p align="center">
   <a href="https://github.com/rullerzhou-afk/clawd-on-desk/releases"><img src="https://img.shields.io/github/v/release/rullerzhou-afk/clawd-on-desk" alt="Version"></a>
-  <img src="https://img.shields.io/badge/model-MiniCPM5--1B--GGUF-blue" alt="Model">
+  <img src="https://img.shields.io/badge/model-the local GGUF model--1B--GGUF-blue" alt="Model">
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey" alt="Platform">
   <img src="https://img.shields.io/badge/license-AGPL--3.0--only-green" alt="License">
 </p>
 
-Desk Pet은 MiniCPM으로 동작하는 로컬 우선 AI 데스크톱 펫입니다. 데스크톱 펫, 로컬 MiniCPM 채팅 버블, 첫 실행 모델 온보딩, AI 코딩 Agent 상태 반응을 하나의 앱으로 제공합니다.
+Desk Pet은 Desk Pet으로 동작하는 로컬 우선 AI 데스크톱 펫입니다. 데스크톱 펫, 로컬 Desk Pet 채팅 버블, 첫 실행 모델 온보딩, AI 코딩 Agent 상태 반응을 하나의 앱으로 제공합니다.
 
-이 브랜치는 MiniCPM 제품 정체성, 기본 테마, 모델 온보딩, 패키징 리소스, sidecar 경로, adapter 경로를 유지합니다. 0.8에서 0.10까지의 마이그레이션은 Electron 프런트엔드, 설정, Agent hook, 상태 관리, 패키징 설정, 테스트에 한정하며 inframodel 추론 코드는 변경하지 않습니다.
+이 브랜치는 Desk Pet 제품 정체성, 기본 테마, 모델 온보딩, 패키징 리소스, sidecar 경로, adapter 경로를 유지합니다. 0.8에서 0.10까지의 마이그레이션은 Electron 프런트엔드, 설정, Agent hook, 상태 관리, 패키징 설정, 테스트에 한정하며 inframodel 추론 코드는 변경하지 않습니다.
 
 ## 주요 기능
 
-- **로컬 MiniCPM 채팅**: 첫 실행 환경 점검, MiniCPM5-1B-GGUF 모델 다운로드, 워밍업, 채팅 버블, 로컬 모델 상태.
+- **로컬 Desk Pet 채팅**: 첫 실행 환경 점검, the local GGUF model-1B-GGUF 모델 다운로드, 워밍업, 채팅 버블, 로컬 모델 상태.
 - **모델 관리**: Hugging Face / ModelScope 다운로드 흐름, 로컬 모델 경로 선택, 백엔드 재시작, 로그 보기.
-- **Persona LoRA**: `Settings...` -> `MiniCPM`에서 LoRA adapter를 관리합니다. 펫 내레이션은 base 모델을 사용합니다.
+- **Persona LoRA**: `Settings...` -> `Desk Pet`에서 LoRA adapter를 관리합니다. 펫 내레이션은 base 모델을 사용합니다.
 - **데스크톱 펫 반응**: 지원 Agent의 세션, 도구 실행, 권한 요청, 완료, 유휴, 수면, mini-mode 상태에 따라 반응합니다.
 - **온디맨드 Agent 연동**: 새 설치에서는 Claude Code와 Codex만 기본 관리합니다. 다른 마이그레이션 Agent는 Settings에서 명시적으로 설치합니다.
 - **원격/휴먼 컨트롤 기능 기본 꺼짐**: Telegram approval/native bot, completion notification, Direct Send, mobile PWA, Hardware Buddy, auto-pilot은 코드만 마이그레이션되며 기본으로 켜지지 않습니다.
@@ -51,17 +51,17 @@ state-only 연동은 상태만 보고하며 권한을 대신 처리하지 않습
 
 ## 빠른 시작
 
-[OpenBMB Desk Pet Releases](https://github.com/rullerzhou-afk/clawd-on-desk/releases)에서 사전 빌드 패키지를 다운로드합니다.
+[Releases](https://github.com/rullerzhou-afk/clawd-on-desk/releases)에서 사전 빌드 패키지를 다운로드합니다.
 
-- **macOS**: `MiniCPM-Desk-Pet-<version>-<arch>.dmg`
-- **Windows**: `MiniCPM-Desk-Pet-Setup-<version>-<arch>.exe`
+- **macOS**: `Desk Pet-Desk-Pet-<version>-<arch>.dmg`
+- **Windows**: `Desk Pet-Desk-Pet-Setup-<version>-<arch>.exe`
 - **Linux**: `.AppImage` 또는 `.deb`
 
 개발 또는 테스트 시 소스에서 실행합니다.
 
 ```bash
 git clone https://github.com/rullerzhou-afk/clawd-on-desk.git
-cd MiniCPM-Desk-Pet/clawd-on-desk
+cd Desk Pet-Desk-Pet/clawd-on-desk
 npm install
 npm start
 ```
@@ -70,7 +70,7 @@ npm start
 
 ## 개발 메모
 
-- MiniCPM sidecar, adapter, 모델 리소스, 기본 제품 metadata를 유지합니다.
+- Desk Pet sidecar, adapter, 모델 리소스, 기본 제품 metadata를 유지합니다.
 - 원격 승인, 모바일 미리보기, Direct Send, Hardware Buddy, auto-pilot은 별도 테스트와 릴리스 작업 없이 활성화하지 않습니다.
 - `task_plan.md`, `findings.md`, `progress.md`, `.planning/` 등의 planning 산출물은 Git에서 무시됩니다.
 
@@ -83,4 +83,4 @@ npm start
 
 ## 감사의 말
 
-Desk Pet은 OpenBMB MiniCPM 모델 리소스를 사용하며, upstream 데스크톱 펫 UI 기반에 대한 표기를 [NOTICE.md](NOTICE.md)에 유지합니다. 모델 가중치와 타사 자산은 각각의 라이선스를 따릅니다.
+Desk Pet은 upstream 로컬 GGUF 모델 리소스를 사용하며, upstream 데스크톱 펫 UI 기반에 대한 표기를 [NOTICE.md](NOTICE.md)에 유지합니다. 모델 가중치와 타사 자산은 각각의 라이선스를 따릅니다.

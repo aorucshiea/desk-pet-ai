@@ -2,7 +2,7 @@
 
 const path = require("path");
 
-const WINDOWS_APP_USER_MODEL_ID = "com.openbmb.minicpm-desk-pet";
+const WINDOWS_APP_USER_MODEL_ID = "com.upstream.pet-desk-pet";
 const SETTINGS_WINDOW_TITLE = "Settings";
 const SETTINGS_WINDOW_LAUNCH_ARG = "--open-settings-window";
 

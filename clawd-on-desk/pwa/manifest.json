@@ -1,7 +1,7 @@
 {
-  "name": "MiniCPM Desk Pet Mobile",
-  "short_name": "MiniCPM",
-  "description": "Monitor MiniCPM Desk Pet sessions from your phone",
+  "name": "Desk Pet Mobile",
+  "short_name": "Desk Pet",
+  "description": "Monitor Desk Pet sessions from your phone",
   "start_url": "/mobile/",
   "display": "standalone",
   "background_color": "#111318",

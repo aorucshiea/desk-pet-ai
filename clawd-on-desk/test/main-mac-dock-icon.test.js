@@ -121,14 +121,14 @@ test("macOS runtime dock icon override respects hidden Dock preference", () => {
 test("dock icon is full-bleed for macOS Tahoe tiling", () => {
   const { canvas, width, height } = alphaContentBBox(DOCK_ICON);
   assert.equal(canvas, 1024, "dock icon canvas should be 1024px");
-  // MiniCPM uses full-bleed square icons so macOS Tahoe tiles them correctly.
+  // Desk Pet uses full-bleed square icons so macOS Tahoe tiles them correctly.
   assert.ok(
     width >= 900 && height >= 900,
     `dock icon content (${width}x${height}) should be full-bleed (>= 900px)`
   );
 });
 
-test("MiniCPM app icons use full-bleed opaque corners for macOS Tahoe", () => {
+test("Desk Pet app icons use full-bleed opaque corners for macOS Tahoe", () => {
   for (const file of [APP_ICON, DOCK_ICON]) {
     const { canvas } = alphaContentBBox(file);
     const last = canvas - 1;
@@ -139,11 +139,11 @@ test("MiniCPM app icons use full-bleed opaque corners for macOS Tahoe", () => {
   }
 });
 
-test("dock icon source follows the MiniCPM app icon artwork", () => {
+test("dock icon source follows the Desk Pet app icon artwork", () => {
   assert.deepStrictEqual(
     fs.readFileSync(DOCK_ICON_SOURCE),
     fs.readFileSync(APP_ICON),
-    "dock icon source should match the MiniCPM app icon, not an upstream replacement"
+    "dock icon source should match the Desk Pet app icon, not an upstream replacement"
   );
 });
 

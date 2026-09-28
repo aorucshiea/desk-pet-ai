@@ -405,7 +405,7 @@ describe("menu taskbar recovery", () => {
 });
 
 describe("menu dashboard action", () => {
-  it("labels the MiniCPM chat menu item with the product name", () => {
+  it("labels the Desk Pet chat menu item with the product name", () => {
     const fakeElectron = {
       app: { quit: () => {}, setActivationPolicy: () => {}, dock: { show: () => {}, hide: () => {} } },
       BrowserWindow: function BrowserWindow() {},
@@ -440,10 +440,10 @@ describe("menu dashboard action", () => {
     menu.buildContextMenu();
     menu.createTray();
 
-    assert.ok(ctx.contextMenu.template.some((item) => item.label === "MiniCPM Chat"));
-    assert.ok(ctx.tray.contextMenu.template.some((item) => item.label === "MiniCPM Chat"));
-    assert.strictEqual(ctx.contextMenu.template.some((item) => item.label === "menuMinicpmChat"), false);
-    assert.strictEqual(ctx.tray.contextMenu.template.some((item) => item.label === "menuMinicpmChat"), false);
+    assert.ok(ctx.contextMenu.template.some((item) => item.label === "Desk Pet Chat"));
+    assert.ok(ctx.tray.contextMenu.template.some((item) => item.label === "Desk Pet Chat"));
+    assert.strictEqual(ctx.contextMenu.template.some((item) => item.label === "menuDeskPetChat"), false);
+    assert.strictEqual(ctx.tray.contextMenu.template.some((item) => item.label === "menuDeskPetChat"), false);
   });
 
   it("adds a context menu item that opens the Dashboard", () => {

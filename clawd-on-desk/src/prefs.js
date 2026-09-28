@@ -353,7 +353,7 @@ const SCHEMA = {
       searchUrls: [],
       autoReview: false,
       nudgeInterval: 604800000,  // 7 days in ms
-      // Phase 2: model providers (MCP servers stored separately in ~/.minicpm/mcp.json)
+      // Phase 2: model providers (MCP servers stored separately in ~/.pet/mcp.json)
       defaultProvider: "local",
       autoRoute: false,
       modelProviders: [],
@@ -591,7 +591,7 @@ function migrate(raw) {
     if (!("sessionHudCleanupDetached" in out)) out.sessionHudCleanupDetached = false;
     out.version = 10;
   }
-  // v10 -> v11: agent integrations are installed on demand. Older MiniCPM
+  // v10 -> v11: agent integrations are installed on demand. Older DeskPet
   // prefs may contain default-populated entries for many agents, but that does
   // not mean the user explicitly installed those integrations. Keep only the
   // default managed agents (Claude Code / Codex) installed; any other agent can

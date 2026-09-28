@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// MiniCPM Desk Pet — CodeWhale Hook Script
+// Desk Pet — CodeWhale Hook Script
 //
 // Invoked by CodeWhale lifecycle hooks ([[hooks.hooks]] in config.toml).
 // CodeWhale passes context via environment variables:

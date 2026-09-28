@@ -18,7 +18,7 @@ const GITHUB_RELEASES_WEB_PATH = (() => {
     return "/rullerzhou-afk/clawd-on-desk/releases/latest";
   }
 })();
-const UPDATE_USER_AGENT = productMetadata.userAgent || "MiniCPM-Desk-Pet";
+const UPDATE_USER_AGENT = productMetadata.userAgent || "desk-pet-ai";
 
 function makeTranslate(ctx) {
   return (key, fallback) => {

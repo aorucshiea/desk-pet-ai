@@ -2,7 +2,7 @@ param(
   [int]$DurationSeconds = 600,
   [double]$IntervalSeconds = 2,
   # Includes the old executable name as a legacy diagnostic match only.
-  [string]$Pattern = 'MiniCPM Desk Pet|Clawd on Desk|clawd-on-desk|src[\\/]+main\.js',
+  [string]$Pattern = 'Desk Pet|Clawd on Desk|clawd-on-desk|src[\\/]+main\.js',
   [int[]]$RootPid,
   [string]$OutputPath,
   [switch]$Once,
@@ -37,7 +37,7 @@ function Get-AllProcessRows {
 function Get-CandidateProcessRows {
   $rows = Get-AllProcessRows |
     Where-Object {
-      $_.Name -eq "MiniCPM Desk Pet.exe" -or
+      $_.Name -eq "Desk Pet.exe" -or
       $_.Name -eq "Clawd on Desk.exe" -or
       (
         ($_.Name -eq "electron.exe" -or $_.Name -eq "node.exe") -and
@@ -94,7 +94,7 @@ function Get-TargetPids {
   }
 
   $rows = Get-CandidateProcessRows | Where-Object {
-    $_.Name -eq "MiniCPM Desk Pet.exe" -or
+    $_.Name -eq "Desk Pet.exe" -or
     $_.Name -eq "Clawd on Desk.exe" -or
     ($_.CommandLine -and $_.CommandLine -match $Pattern)
   }

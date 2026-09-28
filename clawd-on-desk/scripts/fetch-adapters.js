@@ -16,7 +16,7 @@ const https = require("node:https");
 const path = require("node:path");
 
 const FETCH_COMMAND = "node scripts/fetch-adapters.js";
-const USER_AGENT = "minicpm-desk-pet-adapter-fetcher";
+const USER_AGENT = "desk-pet-adapter-fetcher";
 const GGUF_MAGIC = "GGUF"; // first 4 bytes of every valid GGUF file
 
 // Bundled adapters fetched into <repo>/adapters/ before electron-builder's
@@ -25,12 +25,12 @@ const GGUF_MAGIC = "GGUF"; // first 4 bytes of every valid GGUF file
 // exact tree electron-builder copies from.
 //
 // Persona/preset wiring keys off the path: the gateway's _persona_for()
-// matches "nekoqa" and minicpm-chat.js's preset filenameHint is
+// matches "nekoqa" and pet-chat.js's preset filenameHint is
 // "lora_nekoqa", so the destination dir name must keep that token.
 const REMOTE_ADAPTERS = Object.freeze([
   Object.freeze({
     id: "preset:nekoqa",
-    repo: "DennisHuang648/MiniCPM5-1B-NekoQA-v2-LoRA-GGUF",
+    repo: "DennisHuang648/local-gguf",
     revision: "main",
     // null → auto-discover the single *.gguf via the HF tree API.
     sourceFile: null,

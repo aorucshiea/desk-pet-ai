@@ -10,11 +10,12 @@ __pycache__/
 # Build / dist outputs
 dist/
 
-# Sidecar build artifacts. Spec / scripts under minicpm-sidecar/ stay
+# Sidecar build artifacts. Spec / scripts under pet-sidecar/ stay
 # committed via that directory's own .gitignore.
-minicpm-sidecar/bin/
-minicpm-sidecar/build/build/
-minicpm-sidecar/build/dist/
+pet-sidecar/bin/
+pet-sidecar/build/
+pet-sidecar/build/build/
+pet-sidecar/build/dist/
 
 # llama.cpp submodule build outputs (the submodule itself is tracked)
 llama.cpp/build/

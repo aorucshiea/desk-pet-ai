@@ -1,7 +1,7 @@
 {
   "name": "deskpt",
   "version": "0.10.0",
-  "description": "Desk Pet — local-first desktop pet powered by MiniCPM5-0.9B. Forked from clawd-on-desk.",
+  "description": "Desk Pet — local-first desktop pet powered by DeskPet5-0.9B. Forked from clawd-on-desk.",
   "main": "src/main.js",
   "scripts": {
     "start": "node launch.js",
@@ -10,10 +10,10 @@
     "build:win:arm64": "electron-builder --win nsis:arm64",
     "build:win:all": "electron-builder --win nsis:x64 nsis:arm64",
     "build:mac": "electron-builder --mac",
-    "build:mac:mvp": "bash ../minicpm-sidecar/scripts/build-all.sh && electron-builder --mac --arm64 -c.mac.target=dmg",
+    "build:mac:mvp": "bash ../pet-sidecar/scripts/build-all.sh && electron-builder --mac --arm64 -c.mac.target=dmg",
     "build:mac:repack": "electron-builder --mac --arm64 -c.mac.target=dmg",
     "build:mac:notarize": "bash scripts/build-dmg-notarize.sh",
-    "build:mac:mvp:notarize": "bash ../minicpm-sidecar/scripts/build-all.sh && bash scripts/build-dmg-notarize.sh",
+    "build:mac:mvp:notarize": "bash ../pet-sidecar/scripts/build-all.sh && bash scripts/build-dmg-notarize.sh",
     "build:linux": "electron-builder --linux",
     "build:all": "electron-builder --win --mac --linux",
     "fetch:sidecars": "node scripts/fetch-sidecar-binaries.js",
@@ -119,7 +119,7 @@
       ]
     },
     "linux": {
-      "maintainer": "OpenBMB <opensource@openbmb.org>",
+      "maintainer": "upstream <opensource@upstream.org>",
       "icon": "assets/icons",
       "category": "Utility",
       "artifactName": "deskpt-${version}-${arch}.${ext}",
@@ -181,12 +181,12 @@
         "to": "sidecars/cc-connect-clawd"
       },
       {
-        "from": "../minicpm-sidecar/bin/${os}-${arch}",
+        "from": "../pet-sidecar/bin/${os}-${arch}",
         "to": "sidecar-bin"
       },
       {
-        "from": "../minicpm-sidecar",
-        "to": "minicpm-sidecar",
+        "from": "../pet-sidecar",
+        "to": "pet-sidecar",
         "filter": [
           "gateway/**/*.py",
           "pyproject.toml",
@@ -208,8 +208,8 @@
     "publish": [
       {
         "provider": "github",
-        "owner": "OpenBMB",
-        "repo": "MiniCPM-Desk-Pet"
+        "owner": "upstream",
+        "repo": "desk-pet-ai"
       }
     ]
   },

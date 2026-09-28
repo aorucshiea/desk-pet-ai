@@ -625,7 +625,7 @@ function resolveWindowsNodeBinSync(options = {}) {
   };
 
   // 1. process.execPath / options.execPath when it's actually node[.exe].
-  //    In packaged builds this is `MiniCPM Desk Pet.exe`, so it falls
+  //    In packaged builds this is `Desk Pet.exe`, so it falls
   //    through; mostly useful for unit tests and non-Electron Node runs.
   const execHit = checkAccess(validateWindowsNodeCandidate(options.execPath || process.execPath));
   if (execHit) return execHit;

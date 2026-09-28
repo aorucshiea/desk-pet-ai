@@ -13,20 +13,20 @@
 </p>
 <p align="center">
   <a href="https://github.com/rullerzhou-afk/clawd-on-desk/releases"><img src="https://img.shields.io/github/v/release/rullerzhou-afk/clawd-on-desk" alt="Version"></a>
-  <img src="https://img.shields.io/badge/model-MiniCPM5--1B--GGUF-blue" alt="Model">
+  <img src="https://img.shields.io/badge/model-DeskPet5--1B--GGUF-blue" alt="Model">
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey" alt="Platform">
   <img src="https://img.shields.io/badge/license-AGPL--3.0--only-green" alt="License">
 </p>
 
-Desk Pet is a local-first desktop pet powered by MiniCPM. It brings a lightweight desktop companion, a local MiniCPM chat bubble, first-launch model onboarding, and coding-agent state reactions into one app.
+Desk Pet is a local-first desktop pet powered by DeskPet. It brings a lightweight desktop companion, a local DeskPet chat bubble, first-launch model onboarding, and coding-agent state reactions into one app.
 
-This fork keeps the MiniCPM product identity, default themes, model onboarding, packaged sidecar resources, and adapter paths. The v0.8 to v0.10 upstream feature migration is integrated around the Electron app, settings, hooks, state management, packaging, and tests; inframodel inference code is intentionally left untouched.
+This fork keeps the DeskPet product identity, default themes, model onboarding, packaged sidecar resources, and adapter paths. The v0.8 to v0.10 upstream feature migration is integrated around the Electron app, settings, hooks, state management, packaging, and tests; inframodel inference code is intentionally left untouched.
 
 ## Highlights
 
-- **Local MiniCPM chat**: first-launch environment checks, MiniCPM5-1B-GGUF model download, warm-up, chat bubble, and local model status.
+- **Local DeskPet chat**: first-launch environment checks, DeskPet5-1B-GGUF model download, warm-up, chat bubble, and local model status.
 - **Model management**: Hugging Face / ModelScope download flow, local model path selection, backend restart, and log access.
-- **Persona adapters**: LoRA adapters are managed from `Settings...` -> `MiniCPM` without changing the base model used for pet narration.
+- **Persona adapters**: LoRA adapters are managed from `Settings...` -> `DeskPet` without changing the base model used for pet narration.
 - **Desktop pet reactions**: the pet reacts to supported coding-agent sessions, tool activity, permissions, completion, idle, sleep, and mini-mode states.
 - **On-demand agent integrations**: fresh installs manage Claude Code and Codex by default; other migrated agents are installed explicitly from Settings.
 - **Remote features migrated but off**: Telegram approval/native bot, completion notification, Direct Send, mobile PWA, Hardware Buddy, and auto-pilot are present for later validation but disabled by default.
@@ -51,17 +51,17 @@ Before any of these are enabled in a release configuration, they need dedicated 
 
 ## Quick Start
 
-Download prebuilt packages from [OpenBMB Desk Pet Releases](https://github.com/rullerzhou-afk/clawd-on-desk/releases).
+Download prebuilt packages from [upstream Desk Pet Releases](https://github.com/rullerzhou-afk/clawd-on-desk/releases).
 
-- **macOS**: `MiniCPM-Desk-Pet-<version>-<arch>.dmg`
-- **Windows**: `MiniCPM-Desk-Pet-Setup-<version>-<arch>.exe`
+- **macOS**: `desk-pet-ai-<version>-<arch>.dmg`
+- **Windows**: `desk-pet-ai-Setup-<version>-<arch>.exe`
 - **Linux**: `.AppImage` or `.deb`
 
 Run from source when developing or testing:
 
 ```bash
 git clone https://github.com/rullerzhou-afk/clawd-on-desk.git
-cd MiniCPM-Desk-Pet/clawd-on-desk
+cd desk-pet-ai/clawd-on-desk
 npm install
 npm start
 ```
@@ -70,7 +70,7 @@ The application folder remains `clawd-on-desk` for compatibility with the upstre
 
 ## Development Notes
 
-- Keep MiniCPM sidecar, adapters, model resources, and default product metadata intact.
+- Keep DeskPet sidecar, adapters, model resources, and default product metadata intact.
 - Do not enable remote approval, mobile preview, Direct Send, Hardware Buddy, or auto-pilot without a separate test-and-release task.
 - Planning artifacts such as `task_plan.md`, `findings.md`, `progress.md`, and `.planning/` are intentionally ignored by Git.
 
@@ -83,4 +83,4 @@ npm start
 
 ## Acknowledgments
 
-Desk Pet uses OpenBMB MiniCPM model resources and keeps attribution for the upstream desktop-pet UI foundation in [NOTICE.md](NOTICE.md). Model weights and third-party assets remain governed by their own licenses.
+Desk Pet uses upstream DeskPet model resources and keeps attribution for the upstream desktop-pet UI foundation in [NOTICE.md](NOTICE.md). Model weights and third-party assets remain governed by their own licenses.

@@ -17,12 +17,12 @@
 ## 快速上手 (dev 模式)
 
 ```bash
-git clone git@github.com:OpenBMB/MiniCPM-Desk-Pet.git
-cd MiniCPM-Desk-Pet
+git clone git@github.com:aorucshiea/desk-pet-ai.git
+cd Desk Pet-Desk-Pet
 
 # 把模型放进来 (~2 GB，跟生产用户不一样的是：dev 模式仍然走 <repo>/models/)
 mkdir -p models
-ln -s /absolute/path/to/your/minicpm5-0.9b models/minicpm5-0.9b
+ln -s /absolute/path/to/your/pet5-0.9b models/pet5-0.9b
 # 或者 cp -r
 
 ./go.sh                  # 自动安装依赖 + 启动
@@ -38,10 +38,10 @@ ln -s /absolute/path/to/your/minicpm5-0.9b models/minicpm5-0.9b
 
 ```bash
 # Onboarding sentinel 写在 userData 下
-rm "$HOME/Library/Application Support/Clawd on Desk/minicpm-onboarding.json"
+rm "$HOME/Library/Application Support/Clawd on Desk/pet-onboarding.json"
 
 # 或反向：强制再次显示
-MINICPM_FORCE_ONBOARDING=1 ./go.sh start
+PET_FORCE_ONBOARDING=1 ./go.sh start
 ```
 
 ---
@@ -49,19 +49,19 @@ MINICPM_FORCE_ONBOARDING=1 ./go.sh start
 ## 仓库结构
 
 ```
-MiniCPM-Desk-Pet/
+Desk Pet-Desk-Pet/
 ├── clawd-on-desk/              ← Electron 桌宠 (vendored fork of clawd-on-desk@5b1f003)
-│                                  + MiniCPM 集成层：聊天气泡 / Onboarding / Settings
-├── minicpm-sidecar/            ← llama.cpp 推理服务 + 瘦 FastAPI gateway
+│                                  + Desk Pet 集成层：聊天气泡 / Onboarding / Settings
+├── pet-sidecar/            ← llama.cpp 推理服务 + 瘦 FastAPI gateway
 ├── adapters/                   ← LoRA 适配器（.gguf + safetensors source）
-├── skills/deploy-minicpm-pet/  ← Cursor Agent Skill（dev 部署引导）
+├── skills/deploy-pet-pet/  ← Cursor Agent Skill（dev 部署引导）
 ├── docs/                       ← 开发者文档
 ├── models/                     ← GGUF 模型文件（gitignored）
 ├── go.sh                       ← 开发者快捷脚本
 └── README.md                   ← 用户向（dmg 安装 + 引导）
 ```
 
-> v0.7 时代的双份 PyTorch sidecar（`minicpm-pet-bridge/` 与 `minicpm-pet-bridge-uv/`）以及 PyInstaller `build/sidecar.spec` 已在 v0.9 删除。当前 sidecar 结构与构建方式以 [`minicpm-sidecar/README.md`](../minicpm-sidecar/README.md) 为准。
+> v0.7 时代的双份 PyTorch sidecar（`pet-pet-bridge/` 与 `pet-pet-bridge-uv/`）以及 PyInstaller `build/sidecar.spec` 已在 v0.9 删除。当前 sidecar 结构与构建方式以 [`pet-sidecar/README.md`](../pet-sidecar/README.md) 为准。
 
 ---
 
@@ -85,7 +85,7 @@ MiniCPM-Desk-Pet/
 
 ```bash
 # 1. 下载官方 llama.cpp 的 llama-server + PyInstaller 打 gateway
-cd minicpm-sidecar && ./scripts/build-all.sh && cd ..
+cd pet-sidecar && ./scripts/build-all.sh && cd ..
 
 # 2. electron-builder 出 dmg
 cd clawd-on-desk
@@ -159,17 +159,17 @@ Onboarding 是 5 步状态机，主进程 + 渲染端代码分布如下：
 
 | 文件 | 责任 |
 |------|------|
-| [`clawd-on-desk/src/minicpm-onboarding.js`](../clawd-on-desk/src/minicpm-onboarding.js) | 主进程：BrowserWindow 管理 + IPC handlers + sentinel 文件读写 |
-| [`clawd-on-desk/src/minicpm-onboarding.html`](../clawd-on-desk/src/minicpm-onboarding.html) | 5 个 panel 的静态结构 |
-| [`clawd-on-desk/src/minicpm-onboarding.css`](../clawd-on-desk/src/minicpm-onboarding.css) | 暗 / 亮主题样式 |
-| [`clawd-on-desk/src/minicpm-onboarding-renderer.js`](../clawd-on-desk/src/minicpm-onboarding-renderer.js) | 渲染端：步骤切换、进度条、SSE 消费 |
-| [`clawd-on-desk/src/preload-minicpm-onboarding.js`](../clawd-on-desk/src/preload-minicpm-onboarding.js) | contextBridge → `window.onboarding` |
+| [`clawd-on-desk/src/pet-onboarding.js`](../clawd-on-desk/src/pet-onboarding.js) | 主进程：BrowserWindow 管理 + IPC handlers + sentinel 文件读写 |
+| [`clawd-on-desk/src/pet-onboarding.html`](../clawd-on-desk/src/pet-onboarding.html) | 5 个 panel 的静态结构 |
+| [`clawd-on-desk/src/pet-onboarding.css`](../clawd-on-desk/src/pet-onboarding.css) | 暗 / 亮主题样式 |
+| [`clawd-on-desk/src/pet-onboarding-renderer.js`](../clawd-on-desk/src/pet-onboarding-renderer.js) | 渲染端：步骤切换、进度条、SSE 消费 |
+| [`clawd-on-desk/src/preload-pet-onboarding.js`](../clawd-on-desk/src/preload-pet-onboarding.js) | contextBridge → `window.onboarding` |
 
-主进程接入位置：[`src/main.js` `app.whenReady()` 中部](../clawd-on-desk/src/main.js) — 通过 `_minicpmOnboarding.shouldShow()` 决定是先弹向导还是直接弹桌宠。
+主进程接入位置：[`src/main.js` `app.whenReady()` 中部](../clawd-on-desk/src/main.js) — 通过 `_petOnboarding.shouldShow()` 决定是先弹向导还是直接弹桌宠。
 
 ### 完成标志（sentinel）
 
-`<userData>/minicpm-onboarding.json` 写入 `{complete: true, version: 1, completedAt: <iso>, device: <picked>}` 即视为已完成。删除该文件可强制重弹（也可通过 Settings → 🐾 MiniCPM → 高级 / 开发 触发）。
+`<userData>/pet-onboarding.json` 写入 `{complete: true, version: 1, completedAt: <iso>, device: <picked>}` 即视为已完成。删除该文件可强制重弹（也可通过 Settings → 🐾 Desk Pet → 高级 / 开发 触发）。
 
 ### 调试单步
 

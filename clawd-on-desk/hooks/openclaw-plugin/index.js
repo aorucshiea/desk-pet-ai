@@ -374,7 +374,7 @@ let defaultRuntime = null;
 
 export default {
   id: PLUGIN_ID,
-  name: "MiniCPM Desk Pet",
+  name: "Desk Pet",
   register(api) {
     if (!defaultRuntime) defaultRuntime = createOpenClawRuntime();
     defaultRuntime.register(api);

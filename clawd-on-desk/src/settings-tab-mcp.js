@@ -161,22 +161,22 @@
     form.appendChild(addBtn);
     card.appendChild(form);
 
-    card.appendChild(el("p", { style: { color: "var(--text-secondary)", fontSize: "11px", marginTop: "10px" } }, "Saved to ~/.minicpm/mcp.json. Needs sidecar restart to apply."));
+    card.appendChild(el("p", { style: { color: "var(--text-secondary)", fontSize: "11px", marginTop: "10px" } }, "Saved to ~/.pet/mcp.json. Needs sidecar restart to apply."));
     return card;
   }
 
   function refreshCard() { if (!_card || !_parent) return; const old = _card; _card = buildCard(); _parent.replaceChild(_card, old); }
 
   async function loadConfig() {
-    try { if (window.minicpmSettings && typeof window.minicpmSettings.mcpGetConfig === "function") { const data = await window.minicpmSettings.mcpGetConfig(); serversData = (data && data.mcpServers) ? data.mcpServers : {}; } } catch { serversData = {}; }
+    try { if (window.petSettings && typeof window.petSettings.mcpGetConfig === "function") { const data = await window.petSettings.mcpGetConfig(); serversData = (data && data.mcpServers) ? data.mcpServers : {}; } } catch { serversData = {}; }
   }
 
   async function loadTools() {
-    try { if (window.minicpmSettings && typeof window.minicpmSettings.mcpListServers === "function") { const data = await window.minicpmSettings.mcpListServers(); toolsList = (data && data.tools) ? data.tools : []; } } catch { toolsList = []; }
+    try { if (window.petSettings && typeof window.petSettings.mcpListServers === "function") { const data = await window.petSettings.mcpListServers(); toolsList = (data && data.tools) ? data.tools : []; } } catch { toolsList = []; }
   }
 
   async function save() {
-    try { if (window.minicpmSettings && typeof window.minicpmSettings.mcpSaveConfig === "function") { await window.minicpmSettings.mcpSaveConfig(serversData); } } catch {}
+    try { if (window.petSettings && typeof window.petSettings.mcpSaveConfig === "function") { await window.petSettings.mcpSaveConfig(serversData); } } catch {}
   }
 
   async function render(parent) {

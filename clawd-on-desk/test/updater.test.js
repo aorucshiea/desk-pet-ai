@@ -619,11 +619,11 @@ describe("updater visual flow", () => {
         tag_name: "v0.6.1",
         assets: [
           {
-            name: "MiniCPM-Desk-Pet-Setup-0.6.1-x64.exe",
+            name: "Desk Pet-Desk-Pet-Setup-0.6.1-x64.exe",
             browser_download_url: "https://example.invalid/x64.exe",
           },
           {
-            name: "MiniCPM-Desk-Pet-Setup-0.6.1-arm64.exe",
+            name: "Desk Pet-Desk-Pet-Setup-0.6.1-arm64.exe",
             browser_download_url: "https://example.invalid/arm64.exe",
           },
         ],
@@ -663,7 +663,7 @@ describe("updater visual flow", () => {
         tag_name: "v0.6.1",
         assets: [
           {
-            name: "MiniCPM-Desk-Pet-Setup-0.6.1-x64.exe",
+            name: "Desk Pet-Desk-Pet-Setup-0.6.1-x64.exe",
             browser_download_url: "https://example.invalid/x64.exe",
           },
         ],
@@ -810,7 +810,7 @@ describe("updater visual flow", () => {
         tag_name: "v0.6.1",
         assets: [
           {
-            name: "MiniCPM-Desk-Pet-Setup-0.6.1-arm64.exe",
+            name: "Desk Pet-Desk-Pet-Setup-0.6.1-arm64.exe",
             browser_download_url: "https://example.invalid/arm64.exe",
           },
         ],
@@ -858,7 +858,7 @@ describe("updater visual flow", () => {
       tag_name: "v0.6.1",
       assets: [
         {
-          name: "MiniCPM-Desk-Pet-Setup-0.6.1-arm64.exe",
+          name: "Desk Pet-Desk-Pet-Setup-0.6.1-arm64.exe",
           browser_download_url: "https://example.invalid/arm64.exe",
         },
       ],
@@ -871,7 +871,7 @@ describe("updater visual flow", () => {
       tag_name: "v0.6.1",
       assets: [
         {
-          name: "MiniCPM-Desk-Pet-Setup-0.6.1-arm64.exe",
+          name: "Desk Pet-Desk-Pet-Setup-0.6.1-arm64.exe",
           browser_download_url: "https://example.invalid/arm64.exe",
         },
       ],
@@ -930,7 +930,7 @@ describe("updater visual flow", () => {
       tag_name: "v0.6.1",
       assets: [
         {
-          name: "MiniCPM-Desk-Pet-Setup-0.6.1-arm64.exe",
+          name: "Desk Pet-Desk-Pet-Setup-0.6.1-arm64.exe",
           browser_download_url: "https://example.invalid/arm64.exe",
         },
       ],
@@ -951,7 +951,7 @@ describe("updater visual flow", () => {
       tag_name: "v0.6.1",
       assets: [
         {
-          name: "MiniCPM-Desk-Pet-Setup-0.6.1-x64.exe",
+          name: "Desk Pet-Desk-Pet-Setup-0.6.1-x64.exe",
           browser_download_url: "https://example.invalid/x64.exe",
         },
       ],
@@ -1146,9 +1146,9 @@ describe("updater Windows ARM64 migration helpers", () => {
     const { findWindowsArm64InstallerAsset } = initUpdater.__test;
     const asset = findWindowsArm64InstallerAsset({
       assets: [
-        { name: "MiniCPM-Desk-Pet-Setup-0.6.1-arm64.exe.blockmap", browser_download_url: "blockmap" },
-        { name: "MiniCPM-Desk-Pet-Setup-0.6.1-x64.exe", browser_download_url: "x64" },
-        { name: "MiniCPM-Desk-Pet-Setup-0.6.1-arm64.exe", browser_download_url: "arm64" },
+        { name: "Desk Pet-Desk-Pet-Setup-0.6.1-arm64.exe.blockmap", browser_download_url: "blockmap" },
+        { name: "Desk Pet-Desk-Pet-Setup-0.6.1-x64.exe", browser_download_url: "x64" },
+        { name: "Desk Pet-Desk-Pet-Setup-0.6.1-arm64.exe", browser_download_url: "arm64" },
       ],
     });
 

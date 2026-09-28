@@ -1,4 +1,4 @@
-"""MiniCPM Desk Pet plugin for Hermes Agent.
+"""Desk Pet plugin for Hermes Agent.
 
 This is intentionally stdlib-only. It forwards conservative Hermes state events
 to Clawd's local /state endpoint when Clawd is running and never raises out of

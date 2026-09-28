@@ -4,7 +4,7 @@ LoRA adapter trained on **neko30k** ([liumindmind/NekoQA-30K](https://huggingfac
 12 categories incl. ACG / 心理疗愈 / 创意写作 / 安全 / 数学 / 代码 / 职场),
 rebuilt on **the fixed base model** at:
 
-    /user/yanhui/share_user_long/zhaohengyu/MiniCPM5-models-fixed/official
+    /user/yanhui/share_user_long/zhaohengyu/local-training-run
 
 ## What changed vs v1 (2026-05-15)?
 
@@ -34,7 +34,7 @@ from peft import PeftModel
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 # Use the fixed base model that this adapter was trained on
-BASE = "/user/yanhui/share_user_long/zhaohengyu/MiniCPM5-models-fixed/official"
+BASE = "/user/yanhui/share_user_long/zhaohengyu/local-training-run"
 ADAPTER = "./"
 
 tok = AutoTokenizer.from_pretrained(BASE, trust_remote_code=True)
@@ -74,7 +74,7 @@ print(tok.decode(out[0, ids.input_ids.shape[1]:], skip_special_tokens=True))
 ## Compatibility note
 
 `adapter_config.json` records `base_model_name_or_path` =
-`/user/yanhui/share_user_long/zhaohengyu/MiniCPM5-models-fixed/official`.
+`/user/yanhui/share_user_long/zhaohengyu/local-training-run`.
 
 If you load on a different machine, either:
 1. Edit `adapter_config.json` to point at your local base path, or

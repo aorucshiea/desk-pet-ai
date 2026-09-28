@@ -8,14 +8,14 @@
 
 $ErrorActionPreference = "Continue"
 $ROOT = Split-Path -Parent $MyInvocation.MyCommand.Path
-$SIDECAR = Join-Path $ROOT "minicpm-sidecar"
+$SIDECAR = Join-Path $ROOT "pet-sidecar"
 $GATEWAY_PY = Join-Path $SIDECAR ".venv\Scripts\python.exe"
 $ELECTRON = Join-Path $ROOT "clawd-on-desk"
 $LLAMA = Join-Path $SIDECAR "bin\win-x64\llama-server.exe"
 $PORT = 18765
 
 Write-Host "======================================" -ForegroundColor Cyan
-Write-Host "  MiniCPM Desk Pet Dev Launcher" -ForegroundColor Cyan
+Write-Host "  Desk Pet Dev Launcher" -ForegroundColor Cyan
 Write-Host "======================================" -ForegroundColor Cyan
 
 # -- 1. Node is the only hard requirement --
@@ -86,7 +86,7 @@ if (-not (Test-Path $LLAMA)) {
     Write-Host "       Running in API mode: chat goes through providers configured in" -ForegroundColor Yellow
     Write-Host "       Settings -> Model Providers (any OpenAI-compatible API)." -ForegroundColor Yellow
     Write-Host "       To enable local inference later, run:" -ForegroundColor Yellow
-    Write-Host "       powershell -File minicpm-sidecar\scripts\fetch-llama-release.ps1" -ForegroundColor Yellow
+    Write-Host "       powershell -File pet-sidecar\scripts\fetch-llama-release.ps1" -ForegroundColor Yellow
 }
 
 # -- 4. Kill stale project processes --
@@ -95,7 +95,7 @@ Get-Process -Name "electron" -ErrorAction SilentlyContinue | Where-Object {
     $_.Path -and $_.Path -match [regex]::Escape($ROOT)
 } | Stop-Process -Force
 Get-Process -Name "python*" -ErrorAction SilentlyContinue | Where-Object {
-    $_.Path -and $_.Path -match [regex]::Escape("minicpm-sidecar")
+    $_.Path -and $_.Path -match [regex]::Escape("pet-sidecar")
 } | Stop-Process -Force
 Start-Sleep -Seconds 1
 
@@ -106,7 +106,7 @@ Start-Sleep -Seconds 1
 # soon as the script ends. The Electron shell spawns and supervises the
 # sidecar itself (its own pid is the watched parent), so let it do that.
 Write-Host "[5/5] Starting Electron (it spawns the sidecar itself)..." -ForegroundColor Yellow
-$env:MINICPM_LLAMA_SERVER = $LLAMA
+$env:PET_LLAMA_SERVER = $LLAMA
 try {
     $proc = Start-Process -FilePath $nodePath -ArgumentList "launch.js" -WorkingDirectory $ELECTRON -PassThru
     Write-Host "  Electron PID: $($proc.Id)" -ForegroundColor Gray
@@ -136,11 +136,11 @@ for ($i = 0; $i -lt 30; $i++) {
 }
 if (-not $healthy) {
     Write-Host "[WARN] Sidecar did not answer within 60s." -ForegroundColor Yellow
-    Write-Host "       Check the pet's own log: %LOCALAPPDATA%\MiniCPM Desk Pet\logs\" -ForegroundColor Yellow
+    Write-Host "       Check the pet's own log: %LOCALAPPDATA%\deskpt\logs\" -ForegroundColor Yellow
 }
 
 Write-Host "Done. Pet should appear on desktop." -ForegroundColor Green
-if (-not (Test-Path "$env:USERPROFILE\.minicpm\providers.json")) {
+if (-not (Test-Path "$env:USERPROFILE\.deskpt\providers.json")) {
     Write-Host "" -ForegroundColor White
     Write-Host "FIRST RUN? No API provider configured yet." -ForegroundColor Cyan
     Write-Host "  Right-click the pet -> Settings -> Model Providers -> add your API" -ForegroundColor Cyan

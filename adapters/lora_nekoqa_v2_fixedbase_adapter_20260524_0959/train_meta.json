@@ -1,5 +1,5 @@
 {
-  "base_model": "/user/yanhui/share_user_long/zhaohengyu/MiniCPM5-models-fixed/official",
+  "base_model": "/user/yanhui/share_user_long/zhaohengyu/local-training-run",
   "data": "finetune_datasets/processed/by_source/nekoqa_30k.jsonl",
   "filter_tag": null,
   "filter_lang": null,

@@ -55,8 +55,8 @@ function createSettingsEffectRouter(options = {}) {
   const sendToRenderer = options.sendToRenderer || noop;
   const sendDashboardI18n = options.sendDashboardI18n || noop;
   const sendSessionHudI18n = options.sendSessionHudI18n || noop;
-  const sendMinicpmChatI18n = options.sendMinicpmChatI18n || noop;
-  const sendMinicpmOnboardingI18n = options.sendMinicpmOnboardingI18n || noop;
+  const sendDeskPetChatI18n = options.sendDeskPetChatI18n || noop;
+  const sendDeskPetOnboardingI18n = options.sendDeskPetOnboardingI18n || noop;
   const emitSessionSnapshot = options.emitSessionSnapshot || noop;
   const cleanStaleSessions = options.cleanStaleSessions || noop;
   const syncPermissionShortcuts = options.syncPermissionShortcuts || noop;
@@ -107,8 +107,8 @@ function createSettingsEffectRouter(options = {}) {
     if ("lang" in changes) {
       safeCall(logWarn, "Clawd: dashboard lang broadcast failed:", sendDashboardI18n);
       safeCall(logWarn, "Clawd: session HUD lang broadcast failed:", sendSessionHudI18n);
-      safeCall(logWarn, "Clawd: MiniCPM chat lang broadcast failed:", sendMinicpmChatI18n);
-      safeCall(logWarn, "Clawd: MiniCPM onboarding lang broadcast failed:", sendMinicpmOnboardingI18n);
+      safeCall(logWarn, "Clawd: DeskPet chat lang broadcast failed:", sendDeskPetChatI18n);
+      safeCall(logWarn, "Clawd: DeskPet onboarding lang broadcast failed:", sendDeskPetOnboardingI18n);
     }
     if ("sessionAliases" in changes) {
       safeCall(

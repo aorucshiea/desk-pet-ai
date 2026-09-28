@@ -20,9 +20,9 @@ const ICONS = {
     '</svg>',
 
   // Models tab — generic wireframe cube (the previous icon was the
-  // MiniCPM vendor brand mark, removed along with the vendor branding).
+  // DeskPet vendor brand mark, removed along with the vendor branding).
   // 24x24, stroke-only, same weight as the rest of the set.
-  minicpm:
+  pet:
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" width="100%" height="100%">' +
     '<path d="M12 2.9 3.4 7.4v9.2L12 21.1l8.6-4.5V7.4L12 2.9Z"/>' +
     '<path d="M12 12.1 3.4 7.4M12 12.1l8.6-4.7M12 12.1v9"/>' +

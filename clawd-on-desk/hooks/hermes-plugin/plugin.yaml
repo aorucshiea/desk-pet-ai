@@ -1,7 +1,7 @@
 name: clawd-on-desk
 version: "0.2.0"
-description: "Forward Hermes Agent lifecycle and tool state events to MiniCPM Desk Pet."
-author: "MiniCPM Desk Pet"
+description: "Forward Hermes Agent lifecycle and tool state events to Desk Pet."
+author: "Desk Pet"
 
 hooks:
   - on_session_start

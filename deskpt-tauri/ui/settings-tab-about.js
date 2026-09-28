@@ -184,7 +184,7 @@
 
     const logoWrap = document.createElement("div");
     logoWrap.className = "about-logo-wrap";
-    logoWrap.title = "MiniCPM";
+    logoWrap.title = "Desk Pet";
 
     const title = document.createElement("h2");
     title.className = "about-title";

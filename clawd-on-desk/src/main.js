@@ -323,8 +323,8 @@ let hardwareBuddyStatus = null;
 let hardwareBuddyTestApprovalPromise = null;
 let lastHardwareBuddyStatusLogKey = "";
 let unsubscribeHardwareBuddySettings = null;
-let _minicpmChat = null;
-let _minicpmOnboarding = null;
+let _petChat = null;
+let _petOnboarding = null;
 const shortcutHandlers = {
   togglePet: () => togglePetVisibility(),
 };
@@ -380,7 +380,7 @@ const _settingsController = createSettingsController({
     activateTheme: (id, variantId, overrideMap) => themeRuntime.activateTheme(id, variantId, overrideMap),
     // Map a fresh theme change to its per-theme chat-assistant bucket so
     // each desk pet has its own conversation history.
-    getMinicpmChat: () => _minicpmChat,
+    getDeskPetChat: () => _petChat,
     refreshActiveThemeHitboxOverrides: (id, overrideMap) =>
       themeRuntime.refreshActiveThemeHitboxOverrides(id, overrideMap),
     getThemeInfo: (id) => themeRuntime.getThemeInfo(id),
@@ -1155,7 +1155,7 @@ function moveWindowForDrag() { return petWindowRuntime.moveWindowForDrag(); }
 // is not ported on the Electron shell yet (virtual-desktop COM lives in
 // the Tauri rewrite) — the message is swallowed gracefully.
 let _petWalkBusy = false;
-ipcMain.on("minicpm:pet-walk", (_event, { dx, dy } = {}) => {
+ipcMain.on("pet:pet-walk", (_event, { dx, dy } = {}) => {
   try {
     if (_petWalkBusy) return;
     const startBounds = getPetWindowBounds();
@@ -1186,7 +1186,7 @@ ipcMain.on("minicpm:pet-walk", (_event, { dx, dy } = {}) => {
     }, 28);
   } catch {}
 });
-ipcMain.on("minicpm:pet-hop-desktop", () => {
+ipcMain.on("pet:pet-hop-desktop", () => {
   // not ported on the Electron shell — swallowed so the tag never errors
 });
 
@@ -1348,8 +1348,8 @@ floatingWindowRuntime = createFloatingWindowRuntime({
 function repositionFloatingBubbles() {
   const result = floatingWindowRuntime.repositionFloatingBubbles();
   try {
-    if (_minicpmChat && typeof _minicpmChat.isOpen === "function" && _minicpmChat.isOpen()) {
-      _minicpmChat.reposition();
+    if (_petChat && typeof _petChat.isOpen === "function" && _petChat.isOpen()) {
+      _petChat.reposition();
     }
   } catch {}
   return result;
@@ -1652,7 +1652,7 @@ showDashboard = _dashboard.showDashboard;
 broadcastDashboardSessionSnapshot = _dashboard.broadcastSessionSnapshot;
 sendDashboardI18n = _dashboard.sendI18n;
 
-_minicpmChat = require("./minicpm-chat")({
+_petChat = require("./pet-chat")({
   getPetWindowBounds,
   getPetHitRect: () => {
     try { return getHitRectScreen(); } catch { return null; }
@@ -1663,19 +1663,19 @@ _minicpmChat = require("./minicpm-chat")({
   getActiveThemeId: () => themeRuntime ? themeRuntime.getActiveThemeId(DEFAULT_THEME_ID) : "default",
 });
 
-function openMinicpmChat() {
-  if (_minicpmChat && typeof _minicpmChat.open === "function") {
-    _minicpmChat.open();
+function openDeskPetChat() {
+  if (_petChat && typeof _petChat.open === "function") {
+    _petChat.open();
   }
 }
 
-_minicpmOnboarding = require("./minicpm-onboarding")({
-  getSidecarUrl: () => _minicpmChat.getSidecarUrl(),
-  getChat: () => _minicpmChat,
+_petOnboarding = require("./pet-onboarding")({
+  getSidecarUrl: () => _petChat.getSidecarUrl(),
+  getChat: () => _petChat,
   getLang: () => lang,
   ensureSidecarRunning: async () => {
     try {
-      const r = await _minicpmChat.ensureSidecarReady();
+      const r = await _petChat.ensureSidecarReady();
       return { ok: true, status: r && r.status };
     } catch (err) {
       return { ok: false, error: String((err && err.message) || err) };
@@ -1684,8 +1684,8 @@ _minicpmOnboarding = require("./minicpm-onboarding")({
   onComplete: () => {
     try { createWindow(); } catch (err) { console.error("createWindow after onboarding:", err); }
     setTimeout(() => {
-      if (_minicpmChat && typeof _minicpmChat.warmup === "function") {
-        _minicpmChat.warmup();
+      if (_petChat && typeof _petChat.warmup === "function") {
+        _petChat.warmup();
       }
     }, 500);
   },
@@ -1765,8 +1765,8 @@ const _serverCtx = {
   permLog,
   onStateEvent: (data) => {
     try {
-      if (_minicpmChat && typeof _minicpmChat.onStateEvent === "function") {
-        _minicpmChat.onStateEvent(data);
+      if (_petChat && typeof _petChat.onStateEvent === "function") {
+        _petChat.onStateEvent(data);
       }
     } catch {}
   },
@@ -2945,7 +2945,7 @@ const _menuCtx = {
   getActiveThemeCapabilities: () => themeRuntime.getActiveThemeCapabilities(),
   ensureUserThemesDir: () => themeLoader.ensureUserThemesDir(),
   openSettingsWindow: () => settingsWindowRuntime.open(),
-  openMinicpmChat: () => openMinicpmChat(),
+  openDeskPetChat: () => openDeskPetChat(),
 };
 const _menu = require("./menu")(_menuCtx);
 const { t, buildContextMenu, buildTrayMenu, rebuildAllMenus, createTray,
@@ -2994,15 +2994,15 @@ const settingsEffectRouter = createSettingsEffectRouter({
   sendToRenderer,
   sendDashboardI18n: () => sendDashboardI18n(),
   sendSessionHudI18n: () => sendSessionHudI18n(),
-  sendMinicpmChatI18n: () => {
+  sendDeskPetChatI18n: () => {
     try {
-      if (_minicpmChat && typeof _minicpmChat.sendI18n === "function") _minicpmChat.sendI18n();
+      if (_petChat && typeof _petChat.sendI18n === "function") _petChat.sendI18n();
     } catch {}
   },
-  sendMinicpmOnboardingI18n: () => {
+  sendDeskPetOnboardingI18n: () => {
     try {
-      if (_minicpmOnboarding && typeof _minicpmOnboarding.sendI18n === "function") {
-        _minicpmOnboarding.sendI18n();
+      if (_petOnboarding && typeof _petOnboarding.sendI18n === "function") {
+        _petOnboarding.sendI18n();
       }
     } catch {}
   },
@@ -3241,7 +3241,7 @@ registerSettingsIpc({
   checkForUpdates,
   aboutHeroSvgPath: path.join(__dirname, "..", "assets", "svg", "model-mark.svg"),
   getLanWsServer: () => _lanWss,
-  getMinicpmChat: () => _minicpmChat,
+  getDeskPetChat: () => _petChat,
 });
 
 registerSessionIpc({
@@ -3344,9 +3344,9 @@ function createWindow() {
 
   syncSessionHudVisibility();
 
-  ipcMain.removeAllListeners("open-minicpm-chat");
-  ipcMain.on("open-minicpm-chat", () => {
-    try { openMinicpmChat(); } catch (err) { console.error("openMinicpmChat:", err); }
+  ipcMain.removeAllListeners("open-pet-chat");
+  ipcMain.on("open-pet-chat", () => {
+    try { openDeskPetChat(); } catch (err) { console.error("openDeskPetChat:", err); }
   });
 
   registerPetInteractionIpc({
@@ -3362,8 +3362,8 @@ function createWindow() {
     setDragLocked: (value) => {
       petWindowRuntime.setDragLocked(value);
       try {
-        if (_minicpmChat && typeof _minicpmChat.setPetDragging === "function") {
-          _minicpmChat.setPetDragging(!!value);
+        if (_petChat && typeof _petChat.setPetDragging === "function") {
+          _petChat.setPetDragging(!!value);
         }
       } catch {}
     },
@@ -3403,8 +3403,8 @@ function createWindow() {
     // silently skipped when the chat module never initialized.
     reportInteraction: (payload) => {
       try {
-        if (_minicpmChat && typeof _minicpmChat.reportInteraction === "function") {
-          _minicpmChat.reportInteraction(payload);
+        if (_petChat && typeof _petChat.reportInteraction === "function") {
+          _petChat.reportInteraction(payload);
         }
       } catch {}
     },
@@ -3702,9 +3702,9 @@ if (!gotTheLock) {
     initTelegramMigrationController().catch((err) => {
       console.warn("Clawd: migration controller init failed:", err && err.message);
     });
-    const shouldShowMinicpmOnboarding = _minicpmOnboarding && _minicpmOnboarding.shouldShow();
-    if (shouldShowMinicpmOnboarding) {
-      _minicpmOnboarding.open();
+    const shouldShowDeskPetOnboarding = _petOnboarding && _petOnboarding.shouldShow();
+    if (shouldShowDeskPetOnboarding) {
+      _petOnboarding.open();
     } else {
       createWindow();
     }
@@ -3736,26 +3736,26 @@ if (!gotTheLock) {
 
     try {
       globalShortcut.register("CommandOrControl+Shift+M", () => {
-        if (_minicpmChat && typeof _minicpmChat.toggle === "function") _minicpmChat.toggle();
+        if (_petChat && typeof _petChat.toggle === "function") _petChat.toggle();
       });
       globalShortcut.register("CommandOrControl+Shift+T", () => {
         try {
-          if (_minicpmChat && typeof _minicpmChat.isOpen === "function" && !_minicpmChat.isOpen()) {
-            _minicpmChat.toggle();
+          if (_petChat && typeof _petChat.isOpen === "function" && !_petChat.isOpen()) {
+            _petChat.toggle();
           }
-          if (_minicpmChat && typeof _minicpmChat.toggleThinking === "function") {
-            _minicpmChat.toggleThinking();
+          if (_petChat && typeof _petChat.toggleThinking === "function") {
+            _petChat.toggleThinking();
           }
         } catch {}
       });
     } catch (err) {
-      console.warn("Clawd: failed to register MiniCPM shortcuts:", err && err.message);
+      console.warn("Clawd: failed to register DeskPet shortcuts:", err && err.message);
     }
 
-    if (!shouldShowMinicpmOnboarding) {
+    if (!shouldShowDeskPetOnboarding) {
       setTimeout(() => {
-        if (_minicpmChat && typeof _minicpmChat.warmup === "function") {
-          _minicpmChat.warmup();
+        if (_petChat && typeof _petChat.warmup === "function") {
+          _petChat.warmup();
         }
       }, 500);
     }
@@ -3818,7 +3818,7 @@ if (!gotTheLock) {
     if (animationOverridesMain) animationOverridesMain.cleanup();
     try { _remoteSshIpc.dispose(); } catch {}
     try { _remoteSshRuntime.cleanup(); } catch {}
-    try { if (_minicpmChat && typeof _minicpmChat.shutdown === "function") _minicpmChat.shutdown(); } catch {}
+    try { if (_petChat && typeof _petChat.shutdown === "function") _petChat.shutdown(); } catch {}
     if (hitWin && !hitWin.isDestroyed()) hitWin.destroy();
   });
 

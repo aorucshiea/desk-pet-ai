@@ -1,7 +1,7 @@
 {
   "alpha_pattern": {},
   "auto_mapping": null,
-  "base_model_name_or_path": "/user/yanhui/share_user_long/zhaohengyu/MiniCPM5-models-fixed/official",
+  "base_model_name_or_path": "/user/yanhui/share_user_long/zhaohengyu/local-training-run",
   "bias": "none",
   "fan_in_fan_out": false,
   "inference_mode": true,

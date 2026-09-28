@@ -36,15 +36,15 @@ test("settings-renderer.js SIDEBAR_TABS includes the history entry", () => {
 });
 
 test("history data plumbing: file-backed IPC + preload exposure", () => {
-  const main = fs.readFileSync(path.join(SRC_DIR, "minicpm-chat.js"), "utf8");
-  assert.match(main, /minicpm-settings:get-history-file/);
+  const main = fs.readFileSync(path.join(SRC_DIR, "pet-chat.js"), "utf8");
+  assert.match(main, /pet-settings:get-history-file/);
   assert.match(main, /CHAT_HISTORY_PATH/, "viewer must read the persisted file, not bubble memory");
   const preload = fs.readFileSync(path.join(SRC_DIR, "preload-settings.js"), "utf8");
-  assert.match(preload, /getHistoryFile:\s*\(\)\s*=>\s*ipcRenderer\.invoke\("minicpm-settings:get-history-file"\)/);
+  assert.match(preload, /getHistoryFile:\s*\(\)\s*=>\s*ipcRenderer\.invoke\("pet-settings:get-history-file"\)/);
 });
 
 test("persisted messages carry timestamps + thinking for the 24h filter", () => {
-  const code = fs.readFileSync(path.join(SRC_DIR, "minicpm-chat-renderer.js"), "utf8");
+  const code = fs.readFileSync(path.join(SRC_DIR, "pet-chat-renderer.js"), "utf8");
   // _cleanHistoryForSave stamps ts once per live message (re-saves keep
   // the original stamp) and keeps thinking for the collapsed block.
   assert.match(code, /if \(m && typeof m === "object" && !m\.ts\) m\.ts = now;/);

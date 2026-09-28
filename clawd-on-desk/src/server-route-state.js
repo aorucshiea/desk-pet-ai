@@ -166,7 +166,7 @@ function handleStatePost(req, res, options) {
       const permissionSuspect = data.permission_suspect === true;
       const preserveState = data.preserve_state === true;
       const hookSource = typeof data.hook_source === "string" ? data.hook_source : null;
-      // Emotion tag forwarded by the MiniCPM gateway after parsing
+      // Emotion tag forwarded by the DeskPet gateway after parsing
       // [EMOTION:xxx] from the LLM reply. Lowercase, alphabetic + underscore
       // only — anything else is dropped so a malformed payload can't smuggle a
       // weird string into the visual resolver.

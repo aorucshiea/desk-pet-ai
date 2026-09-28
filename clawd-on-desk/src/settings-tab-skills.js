@@ -101,8 +101,8 @@
   async function fetchSkills() {
     if (!mounted) return;
     try {
-      if (window.minicpmSettings && typeof window.minicpmSettings.listSkills === "function") {
-        const data = await window.minicpmSettings.listSkills();
+      if (window.petSettings && typeof window.petSettings.listSkills === "function") {
+        const data = await window.petSettings.listSkills();
         skillsList = Array.isArray(data && data.skills) ? data.skills : [];
         skillsError = null;
       }

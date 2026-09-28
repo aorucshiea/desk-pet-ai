@@ -52,11 +52,11 @@
         await window.settingsAPI.update("skills", { ...live, modelProviders: providers });
       }
       // Sync to providers.json and reload gateway
-      if (window.minicpmSettings && typeof window.minicpmSettings.saveProvidersConfig === "function") {
-        await window.minicpmSettings.saveProvidersConfig(providers);
+      if (window.petSettings && typeof window.petSettings.saveProvidersConfig === "function") {
+        await window.petSettings.saveProvidersConfig(providers);
       }
-      if (window.minicpmSettings && typeof window.minicpmSettings.restartSidecar === "function") {
-        await window.minicpmSettings.restartSidecar();
+      if (window.petSettings && typeof window.petSettings.restartSidecar === "function") {
+        await window.petSettings.restartSidecar();
       }
     } catch {}
   }
@@ -84,7 +84,7 @@
     const selRow = el("div", { style: { display: "flex", alignItems: "center", gap: "12px", marginBottom: "8px" } });
     selRow.appendChild(el("span", { style: { fontSize: "13px", whiteSpace: "nowrap" } }, "Current provider:"));
     const sel = el("select", { className: "setting-select", style: { flex: "1", maxWidth: "240px", fontSize: "13px" } });
-    [["local", "Local (MiniCPM)"], ...providers.map((p) => [p.provider, p.model ? `${p.provider} / ${p.model}` : p.provider])]
+    [["local", "Local (Desk Pet)"], ...providers.map((p) => [p.provider, p.model ? `${p.provider} / ${p.model}` : p.provider])]
       .forEach(([val, label]) => {
         const opt = el("option", { value: val }, label);
         if (val === defaultProvider) opt.selected = true;
@@ -303,7 +303,7 @@
       style: { marginTop: "4px", padding: "6px 16px", fontSize: "13px", background: "var(--accent)", color: "#fff", border: "none", borderRadius: "4px", cursor: "pointer" },
       onclick: async () => {
         restartBtn.textContent = "Restarting..."; restartBtn.disabled = true;
-        try { if (window.minicpmSettings && typeof window.minicpmSettings.restartSidecar === "function") await window.minicpmSettings.restartSidecar(); } catch {}
+        try { if (window.petSettings && typeof window.petSettings.restartSidecar === "function") await window.petSettings.restartSidecar(); } catch {}
         setTimeout(() => { restartBtn.textContent = "Restart Sidecar"; restartBtn.disabled = false; }, 5000);
       },
     }, "Restart Sidecar");

@@ -4,10 +4,10 @@ const core = globalThis.ClawdSettingsCore;
 
 const SIDEBAR_TABS = [
   { id: "general", labelKey: "sidebarGeneral", available: true },
-  // One "Models" page: the local MiniCPM tab renders the API provider
+  // One "Models" page: the local DeskPet tab renders the API provider
   // section inside it (see the tab-merge wrapper near the bottom of this
   // file). The separate "providers" entry is gone on purpose.
-  { id: "minicpm", labelKey: "sidebarModels", available: true },
+  { id: "pet", labelKey: "sidebarModels", available: true },
   // "agents" tab intentionally removed: this is a desktop pet, not a
   // coding-agent companion. See AGENTS.md / hooks/ for the removed
   // integration layer.
@@ -99,7 +99,7 @@ globalThis.ClawdSettingsTabShortcuts.init(core);
 if (globalThis.ClawdSettingsTabTelegramApproval) globalThis.ClawdSettingsTabTelegramApproval.init(core);
 globalThis.ClawdSettingsTabAbout.init(core);
 if (globalThis.ClawdSettingsTabRemoteSsh) globalThis.ClawdSettingsTabRemoteSsh.init(core);
-if (globalThis.ClawdSettingsTabMinicpm) globalThis.ClawdSettingsTabMinicpm.init(core);
+if (globalThis.ClawdSettingsTabDeskPet) globalThis.ClawdSettingsTabDeskPet.init(core);
 if (globalThis.ClawdSettingsTabScreenClick) globalThis.ClawdSettingsTabScreenClick.init(core);
 if (globalThis.ClawdSettingsTabSkills) globalThis.ClawdSettingsTabSkills.init(core);
 if (globalThis.ClawdSettingsTabProviders) globalThis.ClawdSettingsTabProviders.init(core);
@@ -136,18 +136,18 @@ if (core.tabs.animMap && core.tabs.animOverrides) {
 }
 
 // ── Merge the API-provider page into the single "Models" page ─────────
-// The sidebar exposes one "Models" entry (the minicpm tab). We wrap its
+// The sidebar exposes one "Models" entry (the pet tab). We wrap its
 // render() so the API-provider section is appended underneath inside its
 // own container: settings-tab-providers wipes its parent on every render,
-// so it must never be handed the DOM that holds the MiniCPM sections.
-if (core.tabs.minicpm && core.tabs.providers) {
-  const minicpmRender = core.tabs.minicpm.render;
+// so it must never be handed the DOM that holds the DeskPet sections.
+if (core.tabs.pet && core.tabs.providers) {
+  const petRender = core.tabs.pet.render;
   const providersRender = core.tabs.providers.render;
-  core.tabs.minicpm.render = (parent) => {
-    minicpmRender(parent);                     // sync-appends the MiniCPM boxes
+  core.tabs.pet.render = (parent) => {
+    petRender(parent);                     // sync-appends the DeskPet boxes
     const apiHolder = document.createElement("div");
     apiHolder.id = "modelsProviderSection";
-    parent.appendChild(apiHolder);             // lands *after* the MiniCPM boxes
+    parent.appendChild(apiHolder);             // lands *after* the DeskPet boxes
     providersRender(apiHolder);
   };
 }

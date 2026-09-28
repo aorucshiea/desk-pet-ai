@@ -19,7 +19,7 @@ function parseGitHubRepo(url) {
 }
 
 function extractCopyrightShort(copyright) {
-  // No OpenBMB branding \u2014 the copyright line is whatever the package
+  // No upstream branding \u2014 the copyright line is whatever the package
   // declares, or a bare year.
   if (!copyright) return "\u00a9 2026";
   const match = String(copyright).match(/Copyright\s*\u00a9?\s*(\d{4})\s+([^.\n]+)/i);

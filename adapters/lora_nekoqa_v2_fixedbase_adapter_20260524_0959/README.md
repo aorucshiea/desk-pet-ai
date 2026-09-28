@@ -14,7 +14,7 @@ tags:
 本地开发副本。公开版本见 Hugging Face：
 
 - **PEFT**: [DennisHuang648/MiniCPM5-1B-NekoQA-v2-LoRA](https://huggingface.co/DennisHuang648/MiniCPM5-1B-NekoQA-v2-LoRA)
-- **GGUF**: [DennisHuang648/MiniCPM5-1B-NekoQA-v2-LoRA-GGUF](https://huggingface.co/DennisHuang648/MiniCPM5-1B-NekoQA-v2-LoRA-GGUF)
+- **GGUF**: [DennisHuang648/local-gguf](https://huggingface.co/DennisHuang648/local-gguf)
 
 ## 训练数据
 

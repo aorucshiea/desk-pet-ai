@@ -93,9 +93,9 @@
     hardwareBuddy: {},
   };
 
-  // ── window.minicpmSettings — the MiniCPM tab's bridge (原版 minicpm-chat
+  // ── window.petSettings — the Desk Pet tab's bridge (原版 pet-chat
   // 桥的设置页子集)。Real: status/params/history/skills via the shared
-  // gateway + minicpm-prefs.json; model/engine management = stubs.
+  // gateway + pet-prefs.json; model/engine management = stubs.
   let _gwCache = null;
   async function gw() {
     if (_gwCache) return _gwCache;
@@ -105,15 +105,15 @@
   async function gwGet(path) {
     try {
       const st = await gw();
-      const r = await fetch(st.base + path, { headers: { "x-minicpm-token": st.token } });
+      const r = await fetch(st.base + path, { headers: { "x-pet-token": st.token } });
       return r.ok ? await r.json() : null;
     } catch { return null; }
   }
-  async function minicpmPrefs() {
-    try { return (await invoke("minicpm_prefs_load")) || {}; } catch { return {}; }
+  async function petPrefs() {
+    try { return (await invoke("pet_prefs_load")) || {}; } catch { return {}; }
   }
 
-  window.minicpmSettings = {
+  window.petSettings = {
     getStatus: async () => {
       const h = (await gwGet("/api/health")) || {};
       return {
@@ -127,15 +127,15 @@
       };
     },
     getChatParams: async () => {
-      const prefs = await minicpmPrefs();
+      const prefs = await petPrefs();
       return prefs.chatParams || { thinking: false, max_new_tokens: 768 };
     },
     setChatParams: async (params) => {
-      await invoke("minicpm_prefs_save", { json: JSON.stringify({ chatParams: params }) });
+      await invoke("pet_prefs_save", { json: JSON.stringify({ chatParams: params }) });
       return { ok: true };
     },
     setNarration: async (on) => {
-      await invoke("minicpm_prefs_save", { json: JSON.stringify({ narration_enabled: !!on }) });
+      await invoke("pet_prefs_save", { json: JSON.stringify({ narration_enabled: !!on }) });
       return { ok: true };
     },
     getBackendMode: () => "local",
@@ -224,7 +224,7 @@
     // ── about / doctor (rendered from real data where cheap) ──
     getAboutInfo: () => invoke("about_info").then((info) => ({
       ...info,
-      appName: "MiniCPM Desk Pet (Tauri)",
+      appName: "Desk Pet (Tauri)",
       pendingUpdateVersion: "",
       autoUpdateCheck: false,
       license: "MIT",

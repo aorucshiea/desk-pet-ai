@@ -1,21 +1,21 @@
 # Notices
 
-## MiniCPM Desk Pet
+## Desk Pet
 
 Copyright © 2026 OpenBMB.
 
-This repository combines a local MiniCPM5-0.9B inference sidecar (via
+This repository combines a local the local GGUF model-0.9B inference sidecar (via
 [llama.cpp](https://github.com/ggml-org/llama.cpp)) with an Electron
 desktop pet UI. The Electron application (`clawd-on-desk/`) is a fork
 of [rullerzhou-afk/clawd-on-desk](https://github.com/rullerzhou-afk/clawd-on-desk)
-at commit `5b1f003`, modified to add local MiniCPM5-0.9B inference, a
+at commit `5b1f003`, modified to add local the local GGUF model-0.9B inference, a
 5-step onboarding wizard, LoRA persona switching, and desktop-pet
 narration for coding agents.
 
 This project and its upstream are licensed under the GNU Affero General
 Public License v3.0 (AGPL-3.0-only); see [LICENSE](./LICENSE) for the
 full text. Source code is available at
-https://github.com/OpenBMB/MiniCPM-Desk-Pet.
+https://github.com/OpenBMB/Desk Pet-Desk-Pet.
 
 ---
 
@@ -25,18 +25,18 @@ https://github.com/OpenBMB/MiniCPM-Desk-Pet.
 
 The sidecar embeds [`llama-server`](https://github.com/ggml-org/llama.cpp)
 (MIT License, © 2023 Georgi Gerganov and llama.cpp contributors).
-MiniCPM5 tokenizer support landed upstream in
+the local GGUF model tokenizer support landed upstream in
 [PR #23384](https://github.com/ggml-org/llama.cpp/pull/23384), and the
 sources are included as a git submodule at `llama.cpp/`, pinned to the
 official [`ggml-org/llama.cpp` b9371 release](https://github.com/ggml-org/llama.cpp/releases/tag/b9371).
 See [.gitmodules](.gitmodules) for the URL and
-[minicpm-sidecar/README.md](minicpm-sidecar/README.md#official-llamacpp-release)
+[pet-sidecar/README.md](pet-sidecar/README.md#official-llamacpp-release)
 for the build notes.
 
-### MiniCPM model weights
+### Desk Pet model weights
 
 This project loads weights distributed by
-[OpenBMB/MiniCPM](https://github.com/OpenBMB/MiniCPM). Model weights are
+[OpenBMB/Desk Pet](https://github.com/OpenBMB/Desk Pet). Model weights are
 NOT bundled with this repository; users download GGUF files at first
 launch via the in-app onboarding wizard. Use of the weights is governed
 by OpenBMB's published model license.
@@ -62,5 +62,5 @@ artwork credits, etc.) — refer to that file for the authoritative list.
 
 The FastAPI gateway depends on, among others, `fastapi`, `uvicorn`,
 `httpx`, and `huggingface_hub`. See
-[minicpm-sidecar/pyproject.toml](minicpm-sidecar/pyproject.toml) and
+[pet-sidecar/pyproject.toml](pet-sidecar/pyproject.toml) and
 the generated `uv.lock` for the full transitive set and licenses.

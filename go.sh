@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# go.sh — [开发者快捷脚本] 一键起开发模式的 MiniCPM 桌宠
+# go.sh — [开发者快捷脚本] 一键起开发模式的 桌宠
 #
 # ┌────────────────────────────────────────────────────────────────┐
 # │  这是给「开发者」用的，不是给最终用户的。                       │
@@ -11,7 +11,7 @@
 # │  3) uv sync 给 gateway 装 fastapi/uvicorn 等轻量 deps           │
 # │  4) npm install + npm start 起 Electron（dev 模式）            │
 # │                                                                │
-# │  打包好的 .app / .dmg / .exe 已经内置 minicpm-sidecar 二进制，│
+# │  打包好的 .app / .dmg / .exe 已经内置 pet-sidecar 二进制，│
 # │  不依赖本脚本。                                                │
 # └────────────────────────────────────────────────────────────────┘
 #
@@ -25,7 +25,7 @@
 
 set -e
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SIDECAR_DIR="$HERE/minicpm-sidecar"
+SIDECAR_DIR="$HERE/pet-sidecar"
 APP_DIR="$HERE/clawd-on-desk"
 MODELS_DIR="$HERE/models"
 
@@ -127,7 +127,7 @@ check_environment() {
     red "找不到 $SIDECAR_DIR/pyproject.toml,你是不是没解压完整?"
     exit 1
   fi
-  green "    ✓ minicpm-sidecar/"
+  green "    ✓ pet-sidecar/"
 
   if [[ ! -f "$APP_DIR/package.json" ]]; then
     red "找不到 $APP_DIR/package.json"
@@ -206,17 +206,17 @@ start_pet() {
     exit 1
   fi
   # Hint the Electron host where to find the sidecar source and Python.
-  export MINICPM_SIDECAR_DIR="$SIDECAR_DIR"
-  export MINICPM_PYTHON="$SIDECAR_DIR/.venv/bin/python"
+  export PET_SIDECAR_DIR="$SIDECAR_DIR"
+  export PET_PYTHON="$SIDECAR_DIR/.venv/bin/python"
   # If the dev hasn't dropped a .gguf into <repo>/models/ yet, the sidecar
   # boots in "waiting for model" mode and Onboarding will offer to
   # download one.
   if [[ -d "$MODELS_DIR" ]]; then
-    export MINICPM_MODEL_DIR="$MODELS_DIR"
+    export PET_MODEL_DIR="$MODELS_DIR"
   fi
-  green "    MINICPM_SIDECAR_DIR=$MINICPM_SIDECAR_DIR"
-  green "    MINICPM_PYTHON=$MINICPM_PYTHON"
-  [[ -n "${MINICPM_MODEL_DIR:-}" ]] && green "    MINICPM_MODEL_DIR=$MINICPM_MODEL_DIR"
+  green "    PET_SIDECAR_DIR=$PET_SIDECAR_DIR"
+  green "    PET_PYTHON=$PET_PYTHON"
+  [[ -n "${PET_MODEL_DIR:-}" ]] && green "    PET_MODEL_DIR=$PET_MODEL_DIR"
   echo
   green "桌宠启动中... 关闭终端 (Ctrl+C) 即停止。"
   cd "$APP_DIR" && exec npm start

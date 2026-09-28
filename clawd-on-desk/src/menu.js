@@ -207,9 +207,9 @@ module.exports = function initMenu(ctx) {
     items.push(
       { type: "separator" },
       {
-        label: t("menuMinicpmChat"),
+        label: t("menuDeskPetChat"),
         click: () => {
-          if (typeof ctx.openMinicpmChat === "function") ctx.openMinicpmChat();
+          if (typeof ctx.openDeskPetChat === "function") ctx.openDeskPetChat();
         },
       },
       {
@@ -392,9 +392,9 @@ module.exports = function initMenu(ctx) {
       buildAutoApproveMenuItem(),
       { type: "separator" },
       {
-        label: t("menuMinicpmChat"),
+        label: t("menuDeskPetChat"),
         click: () => {
-          if (typeof ctx.openMinicpmChat === "function") ctx.openMinicpmChat();
+          if (typeof ctx.openDeskPetChat === "function") ctx.openDeskPetChat();
         },
       },
       {
@@ -486,8 +486,8 @@ module.exports = function initMenu(ctx) {
         click: () => auto.click({ checked: !ctx.autoApproveAllPermissions }),
       });
       data.push({ type: "separator" });
-      if (typeof ctx.openMinicpmChat === "function") {
-        data.push({ label: t("menuMinicpmChat"), icon: "💬", click: () => ctx.openMinicpmChat() });
+      if (typeof ctx.openDeskPetChat === "function") {
+        data.push({ label: t("menuDeskPetChat"), icon: "💬", click: () => ctx.openDeskPetChat() });
       }
       if (typeof ctx.openDashboard === "function") {
         data.push({ label: t("openDashboard"), icon: "📊", click: () => ctx.openDashboard() });

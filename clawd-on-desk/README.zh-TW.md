@@ -13,20 +13,20 @@
 </p>
 <p align="center">
   <a href="https://github.com/rullerzhou-afk/clawd-on-desk/releases"><img src="https://img.shields.io/github/v/release/rullerzhou-afk/clawd-on-desk" alt="Version"></a>
-  <img src="https://img.shields.io/badge/model-MiniCPM5--1B--GGUF-blue" alt="Model">
+  <img src="https://img.shields.io/badge/model-the local GGUF model--1B--GGUF-blue" alt="Model">
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey" alt="Platform">
   <img src="https://img.shields.io/badge/license-AGPL--3.0--only-green" alt="License">
 </p>
 
-Desk Pet 是由 MiniCPM 驅動的本地優先 AI 桌寵。它整合桌面寵物、本地 MiniCPM 聊天氣泡、首次啟動模型引導，以及 AI 程式設計 Agent 狀態回饋。
+Desk Pet 是由 Desk Pet 驅動的本地優先 AI 桌寵。它整合桌面寵物、本地 Desk Pet 聊天氣泡、首次啟動模型引導，以及 AI 程式設計 Agent 狀態回饋。
 
-本分支保留 MiniCPM 的產品身分、預設主題、模型引導、打包資源、sidecar 路徑與 adapter 路徑。0.8 到 0.10 的遷移集中在 Electron 前端、設定、Agent hook、狀態管理、打包配置與測試；inframodel 推理側程式碼保持不變。
+本分支保留 Desk Pet 的產品身分、預設主題、模型引導、打包資源、sidecar 路徑與 adapter 路徑。0.8 到 0.10 的遷移集中在 Electron 前端、設定、Agent hook、狀態管理、打包配置與測試；inframodel 推理側程式碼保持不變。
 
 ## 功能亮點
 
-- **本地 MiniCPM 對話**：首次啟動環境檢查、MiniCPM5-1B-GGUF 模型下載、預熱、聊天氣泡與本地模型狀態。
+- **本地 Desk Pet 對話**：首次啟動環境檢查、the local GGUF model-1B-GGUF 模型下載、預熱、聊天氣泡與本地模型狀態。
 - **模型管理**：支援 Hugging Face / ModelScope 下載流程、本地模型路徑選擇、後端重啟與日誌查看。
-- **人格 LoRA**：在 `設定...` -> `MiniCPM` 中管理 LoRA adapter；桌寵旁白仍固定使用 base 模型。
+- **人格 LoRA**：在 `設定...` -> `Desk Pet` 中管理 LoRA adapter；桌寵旁白仍固定使用 base 模型。
 - **桌寵狀態回饋**：根據受支援 Agent 的會話、工具呼叫、權限請求、完成、閒置、睡眠與 mini-mode 狀態切換動畫。
 - **按需 Agent 整合**：全新安裝預設只管理 Claude Code 和 Codex；其他遷移而來的 Agent 需在 Settings 中明確安裝。
 - **遠端/人控功能預設關閉**：Telegram approval/native bot、completion notification、Direct Send、mobile PWA、Hardware Buddy 與 auto-pilot 均只遷移程式碼，不預設啟用。
@@ -51,17 +51,17 @@ state-only 整合只回報狀態，不接管權限。網路與人控能力首次
 
 ## 快速開始
 
-從 [OpenBMB Desk Pet Releases](https://github.com/rullerzhou-afk/clawd-on-desk/releases) 下載預先建置安裝包。
+從 [Releases](https://github.com/rullerzhou-afk/clawd-on-desk/releases) 下載預先建置安裝包。
 
-- **macOS**：`MiniCPM-Desk-Pet-<version>-<arch>.dmg`
-- **Windows**：`MiniCPM-Desk-Pet-Setup-<version>-<arch>.exe`
+- **macOS**：`Desk Pet-Desk-Pet-<version>-<arch>.dmg`
+- **Windows**：`Desk Pet-Desk-Pet-Setup-<version>-<arch>.exe`
 - **Linux**：`.AppImage` 或 `.deb`
 
 開發或測試時從原始碼執行：
 
 ```bash
 git clone https://github.com/rullerzhou-afk/clawd-on-desk.git
-cd MiniCPM-Desk-Pet/clawd-on-desk
+cd Desk Pet-Desk-Pet/clawd-on-desk
 npm install
 npm start
 ```
@@ -70,7 +70,7 @@ npm start
 
 ## 開發說明
 
-- 保留 MiniCPM sidecar、adapter、模型資源與預設產品 metadata。
+- 保留 Desk Pet sidecar、adapter、模型資源與預設產品 metadata。
 - 未經獨立測試與發布任務，不啟用遠端審批、行動端預覽、Direct Send、Hardware Buddy 或 auto-pilot。
 - `task_plan.md`、`findings.md`、`progress.md` 和 `.planning/` 等 planning 產物已加入 Git 忽略。
 
@@ -83,4 +83,4 @@ npm start
 
 ## 致謝
 
-Desk Pet 使用 OpenBMB MiniCPM 模型資源，並在 [NOTICE.md](NOTICE.md) 中保留上游桌寵 UI 基礎的歸屬說明。模型權重與第三方資源遵循各自授權。
+Desk Pet 使用 local 模型資源，並在 [NOTICE.md](NOTICE.md) 中保留上游桌寵 UI 基礎的歸屬說明。模型權重與第三方資源遵循各自授權。

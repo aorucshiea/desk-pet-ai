@@ -77,7 +77,7 @@ describe("state agent icons", () => {
     assert.strictEqual(getAgentIconPath("kiro-cli"), path.join(AGENT_ICON_DIR, "kiro-cli.png"));
   });
 
-  it("keeps existing Pi and OpenClaw SVG icons from the MiniCPM baseline", () => {
+  it("keeps existing Pi and OpenClaw SVG icons from the Desk Pet baseline", () => {
     const iconUrl = getAgentIconUrl("pi");
 
     assert.strictEqual(new URL(iconUrl).protocol, "file:");

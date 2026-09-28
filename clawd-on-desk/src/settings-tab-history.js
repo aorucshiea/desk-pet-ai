@@ -3,7 +3,7 @@
 // Settings → 历史 (conversation history, last 24 hours).
 //
 // Data source: chat-history.json (persisted by the bubble renderer via
-// minicpm:save-history) read through minicpm-settings:get-history-file —
+// pet:save-history) read through pet-settings:get-history-file —
 // deliberately the FILE, not the bubble's in-memory array, so the
 // viewer works even when the bubble is closed. Messages stamped with
 // `ts` by _cleanHistoryForSave; the viewer filters to the last 24h
@@ -201,8 +201,8 @@
     try {
       var data = { themes: {} };
       try {
-        if (window.minicpmSettings && typeof window.minicpmSettings.getHistoryFile === "function") {
-          data = await window.minicpmSettings.getHistoryFile();
+        if (window.petSettings && typeof window.petSettings.getHistoryFile === "function") {
+          data = await window.petSettings.getHistoryFile();
         }
       } catch (e) { console.warn("history: load failed", e); }
       var themes = (data && data.themes) || {};

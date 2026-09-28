@@ -320,11 +320,11 @@ test("fetchOneAdapter rejects a downloaded stub instead of installing it", async
 test("the nekoqa preset destination keeps the persona-hint token", () => {
   const neko = REMOTE_ADAPTERS.find((a) => a.id === "preset:nekoqa");
   assert.ok(neko, "preset:nekoqa must exist");
-  // _persona_for() and the minicpm-chat filenameHint both key off "nekoqa"/
+  // _persona_for() and the pet-chat filenameHint both key off "nekoqa"/
   // "lora_nekoqa" in the path; losing it would break persona switching.
   assert.match(neko.dest, /lora_nekoqa/);
   assert.match(neko.dest, /\.gguf$/);
-  assert.equal(neko.repo, "DennisHuang648/MiniCPM5-1B-NekoQA-v2-LoRA-GGUF");
+  assert.equal(neko.repo, "DennisHuang648/local-gguf");
 });
 
 test("prebuild scripts fetch adapters before packaging", () => {

@@ -1,8 +1,8 @@
-name: Release MiniCPM Desk Pet
+name: Release Desk Pet
 
 # Cross-platform release pipeline. Each build job:
 #   1) downloads the official ggml-org/llama.cpp llama-server release
-#      into minicpm-sidecar/bin/<triple>/
+#      into pet-sidecar/bin/<triple>/
 #   2) builds our thin FastAPI gateway for the same target
 #   3) runs electron-builder in clawd-on-desk/; extraResources picks up
 #      both binaries automatically.
@@ -36,22 +36,22 @@ jobs:
           echo "$HOME/.local/bin" >> $GITHUB_PATH
 
       - name: Fetch official llama.cpp release
-        working-directory: minicpm-sidecar
+        working-directory: pet-sidecar
         env:
           TARGET_TRIPLE: mac-arm64
         run: bash ./scripts/fetch-llama-release.sh
 
       - name: Build gateway
-        working-directory: minicpm-sidecar
+        working-directory: pet-sidecar
         run: ./scripts/build-gateway.sh
 
       - name: Verify sidecar binaries
-        working-directory: minicpm-sidecar/bin/mac-arm64
+        working-directory: pet-sidecar/bin/mac-arm64
         run: |
           ls -la
-          chmod +x llama-server minicpm-sidecar
+          chmod +x llama-server pet-sidecar
           ./llama-server --version
-          ./minicpm-sidecar --help >/dev/null
+          ./pet-sidecar --help >/dev/null
 
       - name: Check signing credentials
         id: signing
@@ -149,23 +149,23 @@ jobs:
           echo "$HOME/.local/bin" >> $GITHUB_PATH
 
       - name: Fetch official llama.cpp release
-        working-directory: minicpm-sidecar
+        working-directory: pet-sidecar
         env:
           TARGET_TRIPLE: linux-x64
           LLAMA_BACKEND: cpu
         run: bash ./scripts/fetch-llama-release.sh
 
       - name: Build gateway
-        working-directory: minicpm-sidecar
+        working-directory: pet-sidecar
         run: ./scripts/build-gateway.sh
 
       - name: Verify sidecar binaries
-        working-directory: minicpm-sidecar/bin/linux-x64
+        working-directory: pet-sidecar/bin/linux-x64
         run: |
           ls -la
-          chmod +x llama-server minicpm-sidecar
+          chmod +x llama-server pet-sidecar
           ./llama-server --version
-          ./minicpm-sidecar --help >/dev/null
+          ./pet-sidecar --help >/dev/null
 
       - name: npm install
         working-directory: clawd-on-desk
@@ -208,29 +208,29 @@ jobs:
           Add-Content $env:GITHUB_PATH "$env:USERPROFILE\.local\bin"
 
       - name: Fetch official llama.cpp release
-        working-directory: minicpm-sidecar
+        working-directory: pet-sidecar
         run: |
           .\scripts\fetch-llama-release.ps1 -Backend cpu -Target win-x64
           .\scripts\fetch-llama-release.ps1 -Backend vulkan -Target win-x64
           .\scripts\fetch-llama-release.ps1 -Backend cpu -Target win-arm64
 
       - name: Build gateway
-        working-directory: minicpm-sidecar
+        working-directory: pet-sidecar
         run: |
           .\scripts\build-gateway.ps1 -Target win-x64
-          Copy-Item -Force bin\win-x64\minicpm-sidecar.exe bin\win-arm64\minicpm-sidecar.exe
+          Copy-Item -Force bin\win-x64\pet-sidecar.exe bin\win-arm64\pet-sidecar.exe
 
       - name: Verify sidecar binaries
-        working-directory: minicpm-sidecar
+        working-directory: pet-sidecar
         run: |
           Get-ChildItem -Recurse bin\win-x64 | Select-Object FullName,Length
           .\bin\win-x64\llama-server.exe --version
           .\bin\win-x64\backends\vulkan\llama-server.exe --version
-          .\bin\win-x64\minicpm-sidecar.exe --help | Out-Null
+          .\bin\win-x64\pet-sidecar.exe --help | Out-Null
           Write-Host "==> Verify win-arm64 files exist" -ForegroundColor Cyan
           Get-ChildItem -Recurse bin\win-arm64 | Select-Object FullName,Length
           if (-not (Test-Path bin\win-arm64\llama-server.exe)) { throw "win-arm64 llama-server missing" }
-          if (-not (Test-Path bin\win-arm64\minicpm-sidecar.exe)) { throw "win-arm64 gateway missing" }
+          if (-not (Test-Path bin\win-arm64\pet-sidecar.exe)) { throw "win-arm64 gateway missing" }
 
       - name: Download ARM64 VC++ Redistributable
         run: |

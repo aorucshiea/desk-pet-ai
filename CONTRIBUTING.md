@@ -1,4 +1,4 @@
-# Contributing to MiniCPM Desk Pet
+# Contributing to Desk Pet
 
 Thanks for your interest in this project. This file is the operational
 entry point for developers; deeper background lives in
@@ -13,14 +13,14 @@ entry point for developers; deeper background lives in
 > exact upstream commit we forked from.
 
 > Looking to just use the app? Grab a prebuilt installer from
-> [Releases](https://github.com/OpenBMB/MiniCPM-Desk-Pet/releases). This
+> [Releases](https://github.com/aorucshiea/desk-pet-ai/releases). This
 > document is only relevant if you plan to modify the code.
 
 ## Quickstart (dev mode)
 
 ```bash
-git clone git@github.com:OpenBMB/MiniCPM-Desk-Pet.git
-cd MiniCPM-Desk-Pet
+git clone git@github.com:aorucshiea/desk-pet-ai.git
+cd Desk Pet-Desk-Pet
 
 ./go.sh doctor    # check that node 18+, uv, cmake are present
 ./go.sh setup     # install deps + first-time build of llama-server (~5–10 min)
@@ -37,9 +37,9 @@ before starting `./go.sh`.
 ## Repository layout
 
 ```
-MiniCPM-Desk-Pet/
+Desk Pet-Desk-Pet/
 ├── clawd-on-desk/      Electron desktop pet (vendored fork)
-├── minicpm-sidecar/    llama.cpp + FastAPI gateway (inference service)
+├── pet-sidecar/    llama.cpp + FastAPI gateway (inference service)
 ├── adapters/           LoRA persona adapters (.gguf + safetensors source)
 ├── docs/               Developer docs + archived v0.7 design notes
 ├── skills/             Cursor Agent Skills (dev deployment helper)
@@ -56,7 +56,7 @@ Before opening a PR, please make sure both test suites pass:
 cd clawd-on-desk && npm test
 
 # Python gateway
-cd minicpm-sidecar && uv run pytest -q
+cd pet-sidecar && uv run pytest -q
 ```
 
 If you change CI workflows under `.github/workflows/`, run them via
@@ -76,7 +76,7 @@ Scope optional, e.g. `feat(sidecar): add /api/load-adapter endpoint`.
 
 ## Pull request checklist
 
-- [ ] Branch is rebased on the latest `minicpm-pet` (or target branch)
+- [ ] Branch is rebased on the latest `pet-pet` (or target branch)
 - [ ] `npm test` and `uv run pytest -q` pass locally
 - [ ] If you touch onboarding, sidecar lifecycle, or packaging, please
       include a short test plan (commands run, platform verified) in

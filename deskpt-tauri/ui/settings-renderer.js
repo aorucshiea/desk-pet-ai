@@ -4,7 +4,7 @@ const core = globalThis.ClawdSettingsCore;
 
 const SIDEBAR_TABS = [
   { id: "general", labelKey: "sidebarGeneral", available: true },
-  { id: "minicpm", labelKey: "sidebarMinicpm", available: true },
+  { id: "pet", labelKey: "sidebarDeskPet", available: true },
   { id: "agents", labelKey: "sidebarAgents", available: true },
   { id: "theme", labelKey: "sidebarTheme", available: true },
   { id: "animMap", labelKey: "sidebarAnimMap", available: true },
@@ -97,7 +97,7 @@ if (globalThis.ClawdSettingsTabTelegramApproval) globalThis.ClawdSettingsTabTele
 globalThis.ClawdSettingsTabAbout.init(core);
 if (globalThis.ClawdSettingsTabRemoteSsh) globalThis.ClawdSettingsTabRemoteSsh.init(core);
 if (globalThis.ClawdSettingsTabMobile) globalThis.ClawdSettingsTabMobile.init(core);
-if (globalThis.ClawdSettingsTabMinicpm) globalThis.ClawdSettingsTabMinicpm.init(core);
+if (globalThis.ClawdSettingsTabDeskPet) globalThis.ClawdSettingsTabDeskPet.init(core);
 if (globalThis.ClawdSettingsTabScreenClick) globalThis.ClawdSettingsTabScreenClick.init(core);
 if (globalThis.ClawdSettingsTabSkills) globalThis.ClawdSettingsTabSkills.init(core);
 if (globalThis.ClawdSettingsTabProviders) globalThis.ClawdSettingsTabProviders.init(core);

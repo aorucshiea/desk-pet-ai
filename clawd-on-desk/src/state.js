@@ -145,7 +145,7 @@ let currentHitBox = HIT_BOXES.default;
 let currentState = "idle";
 let previousState = "idle";
 let currentSvg = null;
-// Current pet emotion, set from [EMOTION:xxx] tags forwarded by the MiniCPM
+// Current pet emotion, set from [EMOTION:xxx] tags forwarded by the DeskPet
 // gateway. Used by resolveVisualBinding to prefer emotion-tagged animation
 // variants (e.g. attention-happy.gif over plain attention.gif) when present.
 // Resets to "neutral" on auto-return to idle so a fleeting reaction doesn't

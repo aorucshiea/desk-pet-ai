@@ -145,7 +145,7 @@ describe("theme-loader strict mode", () => {
   });
   after(() => fixture && fixture.cleanup());
 
-  it("lenient load falls back to the MiniCPM default theme when theme missing", () => {
+  it("lenient load falls back to the Desk Pet default theme when theme missing", () => {
     const theme = themeLoader.loadTheme("doesNotExist");
     assert.strictEqual(theme._id, DEFAULT_THEME_ID);
   });

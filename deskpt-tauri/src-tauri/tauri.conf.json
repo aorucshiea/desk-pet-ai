@@ -42,8 +42,8 @@
       },
       {
         "label": "chat",
-        "url": "minicpm-chat.html",
-        "title": "MiniCPM",
+        "url": "pet-chat.html",
+        "title": "Desk Pet",
         "width": 300,
         "height": 140,
         "visible": false,

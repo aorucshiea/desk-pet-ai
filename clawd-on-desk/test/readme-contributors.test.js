@@ -23,10 +23,10 @@ test("README files keep Desk Pet as the product identity", () => {
     const markdown = readReadme(filename);
     assert.match(markdown, /<h1 align="center">Desk Pet<\/h1>/, `${filename} should use the Desk Pet product title`);
     assert.ok(markdown.includes("assets/tray-icon.png"), `${filename} should use the Desk Pet tray icon asset`);
-    assert.ok(markdown.includes("MiniCPM5-1B-GGUF"), `${filename} should describe the MiniCPM model`);
-    // No OpenBMB product branding: the upstream repo link is the fork
-    // source (clawd-on-desk), not an OpenBMB product page.
-    assert.ok(!markdown.includes("OpenBMB/MiniCPM-Desk-Pet"), `${filename} must not link to the OpenBMB product repo`);
+    assert.ok(markdown.includes("the local GGUF model-1B-GGUF"), `${filename} should describe the Desk Pet model`);
+    // No upstream product branding: the upstream repo link is the fork
+    // source (clawd-on-desk), not an upstream product page.
+    assert.ok(!markdown.includes("aorucshiea/desk-pet-ai"), `${filename} must not link to the upstream product repo`);
   }
 });
 
