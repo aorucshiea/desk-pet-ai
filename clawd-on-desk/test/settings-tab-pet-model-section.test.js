@@ -7,13 +7,17 @@ const path = require("path");
 
 const SRC_DIR = path.join(__dirname, "..", "src");
 
-// ── 2026-08-30 regression guards ─────────────────────────────────────
-// Incident: a model switch + slow local chat left the Electron MAIN
-// process hung (Windows Application Hang, all windows ghosted). Root
-// contributor: window.alert() in settings renderer code — in Electron,
-// alert() blocks the main process until dismissed. Also: the Desk Pet
-// model section had a read-only info row duplicating the picker's
-// description text, reading like a second switcher.
+// ── Regression guards ─────────────────────────────────────────────────
+// Incident (2026-08-30): a model switch + slow local chat left the
+// Electron MAIN process hung (Windows Application Hang, all windows
+// ghosted). Root contributor: window.alert() in settings renderer code —
+// in Electron, alert() blocks the main process until dismissed.
+//
+// 2026-09 redesign: the model page was restructured into ONE picker row
+// (current model + path + actions), a collapsed scanned-folders
+// disclosure, a switch-driven engine runtime row, and the engine install
+// location moved into Advanced. These tests lock that shape so a future
+// edit doesn't quietly re-stack the wall of rows.
 
 test("settings-tab-pet.js never calls window.alert (blocks the main process)", () => {
   const code = fs.readFileSync(path.join(SRC_DIR, "settings-tab-pet.js"), "utf8");
@@ -22,19 +26,60 @@ test("settings-tab-pet.js never calls window.alert (blocks the main process)", (
   assert.match(code, /ops\.showToast\(/, "notifyError must route through ops.showToast");
 });
 
-test("settings-tab-pet.js model section merges info row into the picker row", () => {
+test("model section is a single picker row with the path merged into it", () => {
   const code = fs.readFileSync(path.join(SRC_DIR, "settings-tab-pet.js"), "utf8");
   // The read-only info row is gone (the engine section's own info row
   // is a different construct and must remain).
   assert.doesNotMatch(code, /const infoRow = el\(/);
-  // The picker row carries the canonical "模型" label and pre-selects
-  // the current model (its ✓ flag doubles as the info display).
+  // The picker row carries the canonical "当前模型" label and pre-selects
+  // the current model (its ✓ flag doubles as the status display).
   assert.match(code, /className: "row pet-model-picker-row"/);
-  assert.match(code, /t\("petRowModelInfo"\)/);
+  assert.match(code, /t\("petRowCurrentModel"\)/);
   assert.match(code, /const currentPath = /);
   assert.match(code, /picker\.value = currentPath \|\| "";/);
   // The duplicate-description picker label key is no longer used here.
   assert.doesNotMatch(code, /t\("petModelPickerLabel"\)/);
+  // No standalone path row anymore — the truncated path lives in the
+  // picker row's description (pet-path-value class).
+  assert.doesNotMatch(code, /className: "row pet-path-row"/);
+  assert.match(code, /row-desc pet-path-value/);
+});
+
+test("scanned folders live behind a collapsed disclosure", () => {
+  const code = fs.readFileSync(path.join(SRC_DIR, "settings-tab-pet.js"), "utf8");
+  assert.match(code, /let foldersExpanded = false;/);
+  assert.match(code, /pet-folders-trigger/);
+  assert.match(code, /pet-folders-body/);
+  // Empty model list surfaces the folder manager automatically.
+  assert.match(code, /foldersExpanded = true;/);
+});
+
+test("engine runtime is a switch and version actions stay on one row", () => {
+  const code = fs.readFileSync(path.join(SRC_DIR, "settings-tab-pet.js"), "utf8");
+  assert.match(code, /switchRow\(\s*\n\s*t\("petRowEngineRunning"\)/);
+  assert.match(code, /window\.petSettings\.engineStart : window\.petSettings\.engineStop/);
+  // Engine failures must not read as "保存失败" — dedicated prefix.
+  assert.match(code, /failureMessage: t\("petEngineStartFail"\)/);
+  // Slow-network help is one collapsed link, not an always-visible row.
+  assert.match(code, /t\("petEngineSlowLink"\)/);
+  assert.doesNotMatch(code, /t\("petEngineSlowShow"\)/);
+  assert.match(code, /pet-engine-progress-row/);
+});
+
+test("engine install location is debug info and lives in Advanced", () => {
+  const code = fs.readFileSync(path.join(SRC_DIR, "settings-tab-pet.js"), "utf8");
+  const occurrences = code.split('t("petRowEngineLocation")').length - 1;
+  assert.equal(occurrences, 1, "petRowEngineLocation must appear exactly once (in the Advanced section)");
+  const advanced = code.slice(code.indexOf("function renderAdvancedSection"));
+  assert.match(advanced, /t\("petRowEngineLocation"\)/);
+});
+
+test("health tick never rebuilds a card the user is interacting with", () => {
+  const code = fs.readFileSync(path.join(SRC_DIR, "settings-tab-pet.js"), "utf8");
+  // An open <select> would snap shut if the tick rebuilt its card.
+  assert.match(code, /function boxInteractionBusy\(/);
+  assert.match(code, /if \(!boxInteractionBusy\(ctx\.modelBox\)\) renderModelSection/);
+  assert.match(code, /if \(!boxInteractionBusy\(ctx\.engineBox\)\) await renderEngineSection/);
 });
 
 test("pet-chat.js loadModel allows long CPU model reloads", () => {

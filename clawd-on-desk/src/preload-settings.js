@@ -182,6 +182,7 @@ contextBridge.exposeInMainWorld("petSettings", {
   listModelFolders: () => ipcRenderer.invoke("pet-settings:list-model-folders"),
   addModelFolder: () => ipcRenderer.invoke("pet-settings:add-model-folder"),
   addModelFile: () => ipcRenderer.invoke("pet-settings:add-model-file"),
+  setEngineParams: (params) => ipcRenderer.invoke("pet-settings:set-engine-params", { params }),
   removeModelFolder: (folder) => ipcRenderer.invoke("pet-settings:remove-model-folder", { folder }),
   resetModelDir: () => ipcRenderer.invoke("pet-settings:reset-model-dir"),
   rerunOnboarding: () => ipcRenderer.invoke("pet-settings:rerun-onboarding"),
@@ -195,6 +196,8 @@ contextBridge.exposeInMainWorld("petSettings", {
   engineUpdateCheck: () => ipcRenderer.invoke("settings:engine-update-check"),
   engineStart: () => ipcRenderer.invoke("settings:engine-start"),
   engineStop: () => ipcRenderer.invoke("settings:engine-stop"),
+  engineParams: () => ipcRenderer.invoke("settings:engine-params"),
+  engineBenchmark: (nPredict) => ipcRenderer.invoke("settings:engine-benchmark", { nPredict }),
   engineUpdateApply: () => ipcRenderer.invoke("settings:engine-update-apply"),
   engineUpdateApplyDir: () => ipcRenderer.invoke("settings:engine-update-apply-dir"),
   onEngineUpdateProgress: (cb) => {

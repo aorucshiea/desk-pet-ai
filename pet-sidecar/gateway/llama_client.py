@@ -317,6 +317,13 @@ class LlamaServer:
         extra_args: Optional[list[str]] = None,
         adapters: Optional[list[Path]] = None,
         mmproj_path: Optional[Path] = None,
+        load_mode: Optional[str] = "mmap",
+        cache_type_k: Optional[str] = None,
+        cache_type_v: Optional[str] = None,
+        flash_attn: Optional[bool] = None,
+        n_cpu_moe: Optional[int] = None,
+        batch_size: Optional[int] = None,
+        ubatch_size: Optional[int] = None,
     ) -> None:
         self.model_path: Optional[Path] = Path(model_path).expanduser().resolve() if model_path else None
         # Optional CLIP-style vision projector. When the active model is a
@@ -331,6 +338,19 @@ class LlamaServer:
         self.n_gpu_layers = int(n_gpu_layers)
         self.device = _normalise_device()
         self.threads = threads
+        # ── Tunable runtime knobs (surfaced in Settings → Engine) ────────
+        # load_mode controls how weights reach RAM: "mmap" pages them in
+        # on demand (LM Studio's default is mmap+mlock); "none" reads the
+        # whole file (big RAM spike — wrong for 20 GB+ checkpoints).
+        self.load_mode = (load_mode or "").strip() or None
+        self.cache_type_k = (cache_type_k or "").strip() or None
+        self.cache_type_v = (cache_type_v or "").strip() or None
+        self.flash_attn = flash_attn
+        # MoE-only: keep the first N expert layers on CPU. This is what
+        # lets a 35B MoE fit a 16 GB card (LM Studio exposes the same knob).
+        self.n_cpu_moe = n_cpu_moe
+        self.batch_size = batch_size
+        self.ubatch_size = ubatch_size
         self.extra_args: list[str] = list(extra_args or [])
         # Ordered list of GGUF LoRA paths pre-loaded into llama-server via
         # `--lora`. Index in this list matches the integer `id` llama-server
@@ -392,6 +412,24 @@ class LlamaServer:
             argv += ["--gpu-layers", str(self.n_gpu_layers)]
         if self.threads:
             argv += ["--threads", str(self.threads)]
+        # Weight loading: explicit mmap keeps a 20 GB+ checkpoint from being
+        # read into RAM wholesale (the "why is it eating all my memory"
+        # report). Anything else (mlock / none / mmap+mlock) is the user's
+        # deliberate choice from Settings → Engine → Advanced.
+        if self.load_mode:
+            argv += ["--load-mode", self.load_mode]
+        if self.cache_type_k:
+            argv += ["--cache-type-k", self.cache_type_k]
+        if self.cache_type_v:
+            argv += ["--cache-type-v", self.cache_type_v]
+        if self.flash_attn is not None:
+            argv += ["--flash-attn", "on" if self.flash_attn else "off"]
+        if self.n_cpu_moe:
+            argv += ["--n-cpu-moe", str(self.n_cpu_moe)]
+        if self.batch_size:
+            argv += ["--batch-size", str(self.batch_size)]
+        if self.ubatch_size:
+            argv += ["--ubatch-size", str(self.ubatch_size)]
         # Multimodal: if a CLIP/mmproj projector was paired with the model,
         # pass it through. llama-server only loads it when --mmproj is set
         # alongside --model, so the two flags must land in the same argv.
@@ -762,3 +800,55 @@ class LlamaServer:
         r = await self._client.post("/completion", json=body)
         r.raise_for_status()
         return r.json()
+
+    @property
+    def argv_preview(self) -> list[str]:
+        """The exact command line that would launch llama-server right now.
+        Settings → Engine shows this so the user can verify what their
+        knobs actually produce (no guessing, no hidden flags)."""
+        try:
+            return self._build_argv()
+        except Exception:
+            return []
+
+    async def benchmark(self, *, n_predict: int = 128) -> dict:
+        """Measure generation speed so the user can SEE what a settings
+        change bought them. llama.cpp reports its own timings, which is
+        more accurate than wall-clock guessing (it excludes HTTP and
+        template overhead).
+
+        Returns {ok, tps, prompt_tps, n_predict, n_prompt, ms}
+        """
+        if not self._client:
+            raise RuntimeError("llama-server client not initialised; did you await start()?")
+        body = {
+            "model": "pet",
+            # Deterministic prose prompt: long enough to measure prompt
+            # ingestion, short enough to finish in seconds on CPU-offloaded
+            # MoE checkpoints.
+            "prompt": "请用中文写一段关于清晨的短文。",
+            "n_predict": int(max(32, n_predict)),
+            "temperature": 0.0,
+            "stream": False,
+            "cache_prompt": False,  # we want a real prompt-eval measurement
+        }
+        t0 = time.perf_counter()
+        r = await self._client.post("/completion", json=body)
+        r.raise_for_status()
+        wall_ms = round((time.perf_counter() - t0) * 1000)
+        data = r.json() or {}
+        timings = data.get("timings") or {}
+        predicted = timings.get("predicted_n")
+        tps = timings.get("predicted_per_second")
+        prompt_tps = timings.get("prompt_per_second")
+        if tps is None and predicted:
+            # Fallback: derive from wall clock when timings are missing
+            tps = round(predicted / max(0.001, wall_ms / 1000), 2)
+        return {
+            "ok": True,
+            "tps": round(float(tps), 2) if tps else None,
+            "prompt_tps": round(float(prompt_tps), 2) if prompt_tps else None,
+            "n_predict": predicted,
+            "n_prompt": timings.get("prompt_n"),
+            "ms": wall_ms,
+        }

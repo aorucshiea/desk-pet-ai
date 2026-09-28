@@ -77,7 +77,19 @@ carrier: local
 - 使用半角 `[ ]`，不要用全角 `【 】`
 - 包含 `MCP:` 前缀
 - server 名是 `builtin`
+- **参数必须是花括号 JSON**：没有参数就写 `{}`。不要用引号、不要留空、不要省略 `MCP:`
 - 如果 system prompt 中已有 `【用户当前屏幕内容】` 段落，说明系统已自动截图，不需要再调用工具
+
+**正例 / 反例（重要）**
+
+```
+✅ 有效：[MCP:builtin/capture_screen:{}]
+❌ 无效：[builtin/capture_screen:""]     ← 丢了 MCP: 前缀，且用引号代替花括号
+❌ 无效：[builtin/capture_screen:]       ← 参数位置为空
+❌ 无效：[MCP:builtin/capture_screen]    ← 没有参数区
+```
+
+格式写错会导致整轮对话直接结束（工具不会执行，你也不会有下文），所以**每次都用正例那一种写法**。
 
 ## 完整示例
 

@@ -4,14 +4,26 @@
 //
 // Page layout (top → bottom):
 //   • Page header: title + subtitle on the left, sidecar status pill on the right
-//   • 行为 / Behavior              — narration + default thinking switches
-//   • 模型 / Model                  — fixed model label + truncated path + buttons
-//   • 高级设置 / Advanced (collapsed by default) — restart Sidecar, open logs
+//   • 模型 / Model               — ONE picker row: current model dropdown (with
+//                                  size + ✓), the model path as the row
+//                                  description, and Load / Browse actions
+//                                — collapsed "scanned folders" disclosure
+//                                  (auto-expands when no model is found)
+//   • 推理引擎 / Engine           — runtime switch (start/stop llama-server),
+//                                  version row with check / update / install
+//                                  from folder + inline progress + slow-network
+//                                  link, backend segmented control (Windows)
+//   • 高级 / Advanced (collapsed) — install location, restart Sidecar, open logs
+//
+// 2026-09 redesign: the old page stacked ~11 flat rows and 8 buttons; the
+// path row duplicated the picker, the folder manager was always expanded,
+// and the engine block mixed runtime/version/backend/download hints into
+// one wall of controls. Every capability is kept, but each card now has a
+// single primary action and low-frequency tools live behind disclosures.
 //
 // Sidecar health is polled at most once a minute (5s during cold-start
-// grace), and now only re-renders the header pill. The rest of the page
-// stays stable across ticks so the user can interact with switches and
-// buttons without re-mount flicker.
+// grace). Ticks re-render only the header pill and cards the user is NOT
+// interacting with, so an open dropdown or an in-flight click survives.
 
 (function initSettingsTabDeskPet(root) {
   let core = null;
@@ -31,14 +43,14 @@
   let healthTimer = null;
   let visibilityHandler = null;
   let mounted = false;
-  // Survives re-renders within the same Settings session so the user
-  // doesn't have to re-expand Advanced every time they revisit the tab.
+  // Survive re-renders within the same Settings session so the user
+  // doesn't have to re-expand a disclosure every time they revisit the tab.
   let advancedExpanded = false;
+  let foldersExpanded = false;
 
   // The product surface treats DeskPet5 0.9B as the canonical bundled
-  // model. Showing the actual gguf filename here would create noise once
-  // users sideload variants — we still expose that in the path row.
-  const MODEL_INFO_LABEL = "Local model";
+  // model. Showing the actual gguf filename as the page title would create
+  // noise once users sideload variants — the picker and path row expose it.
   const PATH_TRUNCATE_MAX = 56;
 
   const HEALTH_INTERVAL_MS_SLOW = 60_000;
@@ -132,7 +144,9 @@
   }
 
   // ── Switch row (committed-vs-pending; rolls back on IPC failure) ──────
-  function switchRow(label, hint, checked, onChange) {
+  // `opts.failureMessage` replaces the generic "保存失败" prefix when the
+  // row drives something that is not a preference save (e.g. engine start).
+  function switchRow(label, hint, checked, onChange, opts = {}) {
     const row = el("div", { className: "row" });
     const text = el("div", { className: "row-text" });
     text.appendChild(el("span", { className: "row-label" }, label));
@@ -162,8 +176,9 @@
     }
 
     function notifyFailure(message) {
+      const prefix = opts.failureMessage || t("toastSaveFailed");
       if (ops && typeof ops.showToast === "function") {
-        ops.showToast(t("toastSaveFailed") + (message || "unknown error"), { error: true });
+        ops.showToast(prefix + (message || "unknown error"), { error: true });
       }
     }
 
@@ -269,6 +284,13 @@
     return generic && generic !== "petOpenModelPathGeneric" ? generic : t("petOpenModelPath");
   }
 
+  // True when the user's focus (e.g. an open <select>) lives inside the
+  // box — the automatic health tick must not rebuild it mid-interaction.
+  function boxInteractionBusy(box) {
+    const active = typeof document !== "undefined" ? document.activeElement : null;
+    return !!(active && box && box.contains(active));
+  }
+
   // ── Header (title + subtitle on left, status pill on right) ───────────
   function renderHeader(ctx) {
     ctx.headerBox.innerHTML = "";
@@ -328,69 +350,100 @@
   // and reset the buttons (leading to a spurious "另一个更新正在进行").
   let engineUpdating = false;
 
-  function pickLabelFromPath(p) {
-    if (!p) return t("petModelPathUnset");
-    const m = String(p).match(/([^\\/]+?)(?:\.gguf)?$/i);
-    return m ? m[1] : String(p);
-  }
   function formatSize(bytes) {
     if (!Number.isFinite(bytes) || bytes <= 0) return "";
     if (bytes >= 1024 * 1024 * 1024) return (bytes / 1073741824).toFixed(2) + " GB";
     return (bytes / 1048576).toFixed(0) + " MB";
   }
 
+  // ── Model section ─────────────────────────────────────────────────────
+  //
+  // One picker row tells the whole story: label + size + ✓ for the loaded
+  // model in the dropdown, the full path as the row description (truncated
+  // with a restoring tooltip), and Load / Browse actions. The scanned-
+  // folders manager collapses behind a disclosure — it is setup-time UI,
+  // not something to stare at on every visit.
   function renderModelSection(box, ctx) {
     box.innerHTML = "";
     const snap = ctx.healthSnapshot || {};
     const modelDir = snap.modelDir || "";
     const hasPath = !!modelDir;
-    const truncated = hasPath ? truncatePath(modelDir, PATH_TRUNCATE_MAX) : t("petModelPathUnset");
 
     box.appendChild(sectionTitle(t("petSectionModel")));
     const section = helpers.buildSection("", []);
     const rows = section.querySelector(".section-rows");
 
-    // ── Model picker row (merged) ────────────────────────────────
-    // ONE row for the whole story: the dropdown marks the currently
-    // loaded model with ✓ (a separate read-only info row used to sit
-    // above this one, duplicating the description text and reading like
-    // a second switcher), and any other scanned .gguf is one click away.
-    // Drop a .gguf into a scanned folder and it shows up here without a
-    // file picker.
+    // ── Row 1: current model ──────────────────────────────────────────
     const pickerRow = el("div", { className: "row pet-model-picker-row" });
     const pickerText = el("div", { className: "row-text" });
-    pickerText.appendChild(el("span", { className: "row-label" }, t("petRowModelInfo")));
-    const pickerDesc = el("span", { className: "row-desc" }, t("petModelPickerDesc"));
-    pickerText.appendChild(pickerDesc);
+    pickerText.appendChild(el("span", { className: "row-label" }, t("petRowCurrentModel")));
+    const pathDesc = el("span", {
+      className: "row-desc pet-path-value" + (hasPath ? "" : " is-unset"),
+    }, hasPath ? truncatePath(modelDir, PATH_TRUNCATE_MAX) : t("petModelPathUnset"));
+    if (hasPath) pathDesc.setAttribute("title", modelDir);
+    pickerText.appendChild(pathDesc);
     pickerRow.appendChild(pickerText);
 
     const pickerCtl = el("div", { className: "row-control pet-model-picker-control" });
     const picker = el("select", {
       className: "setting-select pet-model-picker",
-      style: { minWidth: "0", fontSize: "13px", maxWidth: "320px", flex: "1" },
+      style: { minWidth: "0", fontSize: "13px" },
     });
     picker.appendChild(el("option", { value: "" }, "—"));
     pickerCtl.appendChild(picker);
 
-    const pickerBtn = softBtn(t("petPickModelButton"), async () => {
+    const loadBtn = softBtn(t("petModelLoadButton"), async () => {
       const target = picker.value;
       if (!target) return;
       if (!window.petSettings || typeof window.petSettings.useModelDir !== "function") return;
-      pickerBtn.disabled = true;
-      const origLabel = pickerBtn.textContent;
-      pickerBtn.textContent = t("petPickModelBusy");
+      loadBtn.disabled = true;
+      const origLabel = loadBtn.textContent;
+      loadBtn.textContent = t("petPickModelBusy");
       try {
         const ret = await window.petSettings.useModelDir(target);
         if (ret && !ret.ok && ret.error) notifyError(t("petReloadError") + ret.error);
         if (ret && ret.ok && ret.reloadError) notifyError(t("petReloadError") + ret.reloadError);
       } finally {
-        pickerBtn.disabled = false;
-        pickerBtn.textContent = origLabel;
+        loadBtn.disabled = false;
+        loadBtn.textContent = origLabel;
         void ctx.refreshAll();
       }
     }, { accent: true });
-    pickerBtn.disabled = true;
-    pickerCtl.appendChild(pickerBtn);
+    loadBtn.disabled = true;
+    pickerCtl.appendChild(loadBtn);
+
+    // Browse: the IPC handler registers the picked file's folder in the
+    // scan list AND hot-loads that .gguf (mmproj-* sibling auto-detected).
+    // Primary action while nothing is loaded yet; secondary afterwards —
+    // the dropdown covers the "switch to a known model" case.
+    const browseLabel = t("petChangeModel");
+    const browseBtn = softBtn(browseLabel, async () => {
+      if (browseBtn.disabled) return;
+      loadBtn.disabled = true;
+      browseBtn.disabled = true;
+      browseBtn.classList.add("is-busy");
+      browseBtn.textContent = t("petChangeModelBusy");
+      let ret = null;
+      try {
+        ret = await window.petSettings.pickModelDir();
+      } catch (err) {
+        notifyError(t("petReloadError") + (err && err.message || err));
+      }
+      // refreshAll() rebuilds the model section from scratch (replacing
+      // these buttons), so restoring the busy state explicitly is only
+      // necessary on the canceled / error paths.
+      if (ret && ret.ok) {
+        if (ret.reloadError) notifyError(t("petReloadError") + ret.reloadError);
+        void ctx.refreshAll();
+        return;
+      }
+      if (ret && !ret.canceled && ret.error) notifyError(ret.error);
+      browseBtn.classList.remove("is-busy");
+      browseBtn.textContent = browseLabel;
+      browseBtn.disabled = false;
+      loadBtn.disabled = !picker.value || picker.value === (picker.dataset.current || "");
+    }, { accent: !hasPath });
+    pickerCtl.appendChild(browseBtn);
     pickerRow.appendChild(pickerCtl);
     rows.appendChild(pickerRow);
 
@@ -404,6 +457,10 @@
         picker.innerHTML = "";
         if (models.length === 0) {
           picker.appendChild(el("option", { value: "" }, t("petModelPathUnset")));
+          // Nothing to switch to — surface the folder manager so the user
+          // can point the scan at a directory (or a single file).
+          foldersExpanded = true;
+          applyFoldersExpanded();
           return;
         }
         for (const m of models) {
@@ -414,34 +471,42 @@
             `${m.label}${sizeLabel ? "  ·  " + sizeLabel : ""}${flag}`);
           picker.appendChild(opt);
         }
-        // Selecting a DIFFERENT entry enables the Pick button.
+        picker.dataset.current = currentPath || "";
+        // Selecting a DIFFERENT entry enables the Load button.
         picker.addEventListener("change", () => {
-          pickerBtn.disabled = !picker.value || picker.value === currentPath;
+          loadBtn.disabled = !picker.value || picker.value === currentPath;
         });
         // Pre-select the currently loaded model (its ✓ flag makes the
-        // row double as the old info row) — with nothing to switch to,
+        // row double as the status display) — with nothing to switch to,
         // the button stays disabled.
         picker.value = currentPath || "";
-        pickerBtn.disabled = !picker.value || picker.value === currentPath;
+        loadBtn.disabled = !picker.value || picker.value === currentPath;
       }).catch(() => {
         picker.innerHTML = "";
         picker.appendChild(el("option", { value: "" }, t("petNoAdditionalModels")));
       });
     }
 
-    // ── User-added model folders row ──────────────────────────────────
-    // Lets the user point the picker at any directory on disk — e.g.
-    // D:\LM\models — without copying files into userData. Each listed
-    // folder is scanned for *.gguf every time the picker is rendered.
-    const foldersRow = el("div", { className: "row pet-model-folders-row" });
-    const foldersText = el("div", { className: "row-text" });
-    foldersText.appendChild(el("span", { className: "row-label" }, t("petModelsFolderLabel")));
-    foldersRow.appendChild(foldersText);
+    // ── Row 2: scanned folders (collapsed disclosure) ─────────────────
+    const trigger = el("button", {
+      type: "button",
+      className: "pet-advanced-trigger pet-folders-trigger" + (foldersExpanded ? " open" : ""),
+      "aria-expanded": foldersExpanded ? "true" : "false",
+    });
+    const chev = el("span", { className: "pet-advanced-chevron", "aria-hidden": "true" });
+    chev.innerHTML = SVG_CHEVRON;
+    trigger.appendChild(chev);
+    trigger.appendChild(el("span", { className: "section-title pet-advanced-title" }, t("petModelsFolderLabel")));
+    trigger.appendChild(el("span", { className: "row-desc pet-folders-trigger-desc" }, t("petFoldersDesc")));
 
-    const foldersCtl = el("div", { className: "row-control pet-model-folders-control" });
+    const foldersSection = helpers.buildSection("", []);
+    foldersSection.classList.add("pet-folders-body");
+    const foldersRows = foldersSection.querySelector(".section-rows");
+
     const foldersListEl = el("div", { className: "pet-model-folders-list" });
-    foldersCtl.appendChild(foldersListEl);
+    foldersRows.appendChild(foldersListEl);
 
+    const actionsRow = el("div", { className: "pet-folders-actions" });
     const addFolderBtn = softBtn("+ " + t("petModelsFolderAdd"), async () => {
       addFolderBtn.disabled = true;
       try {
@@ -456,11 +521,8 @@
         addFolderBtn.disabled = false;
       }
     });
-    foldersCtl.appendChild(addFolderBtn);
+    actionsRow.appendChild(addFolderBtn);
 
-    // Direct file pick: registers the file's folder in the scan list AND
-    // hot-loads that .gguf (mmproj-* sibling auto-detected). One pick
-    // instead of "add folder → find model in dropdown → switch".
     const addFileBtn = softBtn("+ " + t("petModelsFileAdd"), async () => {
       addFileBtn.disabled = true;
       try {
@@ -478,25 +540,23 @@
         addFileBtn.disabled = false;
       }
     });
-    foldersCtl.appendChild(addFileBtn);
-    foldersRow.appendChild(foldersCtl);
-    rows.appendChild(foldersRow);
+    actionsRow.appendChild(addFileBtn);
+    foldersRows.appendChild(actionsRow);
 
     // Render + populate folder list. Defined inline so it can refresh
     // when the user adds/removes folders without a full tab re-render.
-    const renderFolderRow = (folder, idx) => {
+    const renderFolderRow = (folder) => {
       const row = el("div", { className: "pet-model-folder-item" });
       const path = el("span", { className: "pet-model-folder-path", title: folder }, folder);
       row.appendChild(path);
-      const rm = el("button", { className: "soft-btn", style: { fontSize: "11px", padding: "2px 8px", marginLeft: "auto" } },
-        t("petModelsFolderRemove"));
-      rm.addEventListener("click", async () => {
+      const rm = softBtn(t("petModelsFolderRemove"), async () => {
         try {
           await window.petSettings.removeModelFolder(folder);
           const cur = await window.petSettings.listModelFolders();
           renderFoldersList(cur.folders || []);
         } catch {}
       });
+      rm.classList.add("pet-model-folder-remove");
       row.appendChild(rm);
       return row;
     };
@@ -504,7 +564,7 @@
       foldersListEl.innerHTML = "";
       if (!folders || folders.length === 0) {
         foldersListEl.appendChild(el("div", {
-          style: { fontSize: "11px", color: "var(--text-secondary)", fontStyle: "italic", padding: "4px 0" },
+          className: "pet-model-folder-empty",
         }, t("petModelsFolderEmpty")));
         return;
       }
@@ -514,67 +574,33 @@
       window.petSettings.listModelFolders().then((ret) => {
         renderFoldersList((ret && ret.folders) || []);
       }).catch(() => renderFoldersList([]));
+    } else {
+      renderFoldersList([]);
     }
-    // ── Model path row (truncated + tooltip + two buttons) ────────────
-    const pathRow = el("div", { className: "row pet-path-row" });
-    const pathText = el("div", { className: "row-text" });
-    pathText.appendChild(el("span", { className: "row-label" }, t("petRowModelPath")));
-    const pathDesc = el("span", {
-      className: "row-desc pet-path-value" + (hasPath ? "" : " is-unset"),
-    }, truncated);
-    if (hasPath) pathDesc.setAttribute("title", modelDir);
-    pathText.appendChild(pathDesc);
-    pathRow.appendChild(pathText);
 
-    const ctl = el("div", { className: "row-control pet-path-actions" });
-    const showBtn = softBtn(modelPathOpenLabel(), async () => {
-      const ret = await window.petSettings.openModelDir();
-      if (ret && !ret.ok) notifyError(ret.error || t("petOpenModelDirFailed"));
-    });
-    if (!hasPath) showBtn.disabled = true;
-    const changeLabel = t("petChangeModel");
-    // The IPC handler also kicks off /api/load-model after persisting, so
-    // resolution may take 5–30s depending on model size. Show a busy state
-    // on both buttons so the user gets immediate feedback rather than
-    // staring at a frozen dialog while llama-server re-spawns.
-    const changeBtn = softBtn(changeLabel, async () => {
-      if (changeBtn.disabled) return;
-      showBtn.disabled = true;
-      changeBtn.disabled = true;
-      changeBtn.classList.add("is-busy");
-      changeBtn.textContent = t("petChangeModelBusy");
-      let ret = null;
-      try {
-        ret = await window.petSettings.pickModelDir();
-      } catch (err) {
-        notifyError(t("petReloadError") + (err && err.message || err));
-      }
-      // refreshAll() rebuilds the model section from scratch (replacing
-      // these buttons), so restoring the busy state explicitly is only
-      // necessary on the canceled / error paths.
-      if (ret && ret.ok) {
-        if (ret.reloadError) notifyError(t("petReloadError") + ret.reloadError);
-        void ctx.refreshAll();
-        return;
-      }
-      if (ret && !ret.canceled && ret.error) notifyError(ret.error);
-      changeBtn.classList.remove("is-busy");
-      changeBtn.textContent = changeLabel;
-      changeBtn.disabled = false;
-      showBtn.disabled = !hasPath;
-    }, { accent: true });
-    ctl.appendChild(showBtn);
-    ctl.appendChild(changeBtn);
-    pathRow.appendChild(ctl);
-    rows.appendChild(pathRow);
+    function applyFoldersExpanded() {
+      // The async model-list callback may fire after a health-tick rebuild
+      // replaced this DOM — toggling detached nodes is a no-op, not a crash.
+      if (!trigger.isConnected) return;
+      trigger.classList.toggle("open", foldersExpanded);
+      trigger.setAttribute("aria-expanded", foldersExpanded ? "true" : "false");
+      foldersSection.style.display = foldersExpanded ? "" : "none";
+    }
 
     box.appendChild(section);
+    box.appendChild(trigger);
+    box.appendChild(foldersSection);
+    applyFoldersExpanded();
+    trigger.addEventListener("click", () => {
+      foldersExpanded = !foldersExpanded;
+      applyFoldersExpanded();
+    });
   }
 
   // ── Engine (llama.cpp binary) section ─────────────────────────────────
-  // One-click self-update of the inference engine: check the official
-  // GitHub release, then apply (download → swap → auto-restart). The
-  // sidecar endpoints live in gateway/sidecar_updater.py.
+  // Three rows: runtime switch, version row (check / update / install from
+  // folder + inline progress + slow-network link), backend segmented
+  // control. The install location moved to Advanced — it is debug info.
   async function renderEngineSection(box, ctx) {
     // Never rebuild while an update is in flight — the health tick
     // calls this repeatedly and would tear down the live progress bar.
@@ -586,22 +612,47 @@
     const engSection = helpers.buildSection("", []);
     const engRows = engSection.querySelector(".section-rows");
 
-    const engInfoRow = el("div", { className: "row pet-info-row" });
-    const engInfoText = el("div", { className: "row-text" });
-    engInfoText.appendChild(el("span", { className: "row-label" }, t("petRowEngineVersion")));
-    engInfoText.appendChild(el("span", { className: "row-desc" }, t("petEngineSectionDesc")));
-    engInfoRow.appendChild(engInfoText);
-    const engInfoVal = el("div", {
-      className: "row-control pet-info-value",
-    }, t("petEngineUnchecked"));
-    engInfoRow.appendChild(engInfoVal);
-    engRows.appendChild(engInfoRow);
+    // ── Row 1: runtime switch ───────────────────────────────────────────
+    // Start uses the currently configured model (errors loudly when none
+    // is picked), stop kills llama-server. The engine still auto-starts
+    // for local inference — this switch is for people who want the switch
+    // in their hand. After a toggle we refresh ONLY the header pill: the
+    // health tick repaints the card later, and rebuilding the row the
+    // user just clicked would make the switch visibly jump.
+    const llamaReady = !!(ctx && ctx.healthSnapshot && ctx.healthSnapshot.llamaReady);
+    engRows.appendChild(switchRow(
+      t("petRowEngineRunning"),
+      llamaReady ? t("petEngineRunningYes") : t("petEngineRunningNo"),
+      llamaReady,
+      async (next) => {
+        const fn = next ? window.petSettings.engineStart : window.petSettings.engineStop;
+        const ret = await fn();
+        if (ret && ret.status === "error") return { ok: false, error: ret.message || "" };
+        await probeHealth(ctx);
+        syncStatusPill(ctx);
+        return { ok: true };
+      },
+      { failureMessage: t("petEngineStartFail") },
+    ));
 
-    const engBtnRow = el("div", { className: "row" });
-    const engBtnCtl = el("div", { className: "row-control pet-path-actions" });
+    // ── Row 2: version + update actions ─────────────────────────────────
+    // One-click self-update of the inference engine: check the official
+    // GitHub release, then apply (download → swap → auto-restart). The
+    // sidecar endpoints live in gateway/sidecar_updater.py.
+    const verRow = el("div", { className: "row pet-engine-version-row" });
+    const verText = el("div", { className: "row-text" });
+    verText.appendChild(el("span", { className: "row-label" }, t("petRowEngineVersion")));
+    const engValue = el("span", { className: "row-desc pet-engine-value" }, t("petEngineUnchecked"));
+    verText.appendChild(engValue);
+    // Slow-network escape hatch: collapsed by default, one quiet link.
+    const slowLink = el("button", { type: "button", className: "pet-slow-link" }, t("petEngineSlowLink"));
+    verText.appendChild(slowLink);
+    verRow.appendChild(verText);
+
+    const verCtl = el("div", { className: "row-control pet-path-actions" });
 
     // Live download progress bar (hidden until an update starts).
-    const progRow = el("div", { style: { display: "none", margin: "10px 0 0 0" } });
+    const progRow = el("div", { className: "pet-engine-progress-row", style: { display: "none" } });
     const progTrack = el("div", {
       style: {
         height: "6px", borderRadius: "3px",
@@ -624,14 +675,22 @@
     progTrack.appendChild(progFill);
     progRow.appendChild(progTrack);
     progRow.appendChild(progText);
-    engRows.appendChild(progRow);
+
+    const slowPanel = el("div", {
+      className: "pet-slow-panel",
+      style: { display: "none" },
+    });
+    slowPanel.innerHTML = t("petEngineSlowSolution");
+    slowLink.addEventListener("click", () => {
+      slowPanel.style.display = slowPanel.style.display === "none" ? "block" : "none";
+    });
 
     const updateBtn = softBtn(t("petEngineUpdateButton"), async () => {
       if (updateBtn.disabled) return;
       updateBtn.disabled = true;
       checkBtn.disabled = true;
       updateBtn.textContent = t("petEngineUpdateBusy");
-      engInfoVal.textContent = "…";
+      engValue.textContent = "…";
       progRow.style.display = "";
       progFill.style.width = "0%";
       progText.textContent = "…";
@@ -687,12 +746,12 @@
       try {
         const ret = await window.petSettings.engineUpdateApply();
         if (ret && ret.status === "ok") {
-          engInfoVal.textContent = t("petEngineUpdateDone");
+          engValue.textContent = t("petEngineUpdateDone");
           progText.textContent = "✓ " + t("petEngineUpdateDone");
           engineCheckCache = null; // local build changed — re-check next render
         } else {
           const msg = t("petEngineUpdateFailed") + ((ret && ret.message) || "");
-          engInfoVal.textContent = msg;
+          engValue.textContent = msg;
           progText.textContent = msg;
         }
         updateBtn.disabled = true;
@@ -743,12 +802,12 @@
           return;
         }
         if (ret && ret.status === "ok") {
-          engInfoVal.textContent = t("petEngineUpdateDone");
+          engValue.textContent = t("petEngineUpdateDone");
           progText.textContent = "✓ " + t("petEngineUpdateDone");
           engineCheckCache = null;
         } else {
           const msg = t("petEngineUpdateFailed") + ((ret && ret.message) || "");
-          engInfoVal.textContent = msg;
+          engValue.textContent = msg;
           progText.textContent = msg;
         }
       } finally {
@@ -765,6 +824,14 @@
       if (checkBtn.disabled) return;
       await runEngineCheck();
     });
+
+    verCtl.appendChild(checkBtn);
+    verCtl.appendChild(updateBtn);
+    verCtl.appendChild(dirBtn);
+    verRow.appendChild(verCtl);
+    engRows.appendChild(verRow);
+    engRows.appendChild(progRow);
+    engRows.appendChild(slowPanel);
 
     // Auto-check on every render so the user always sees which engine
     // build is installed — no need to click anything first.
@@ -788,11 +855,11 @@
       // 1. Local build first — fast, no sidecar needed.
       const haveLocal = await fetchLocalVersion();
       if (haveLocal) {
-        engInfoVal.textContent = `build ${localBuild}`;
+        engValue.textContent = `build ${localBuild}`;
         updateBtn.disabled = true;
       } else {
         // No llama-server on disk — say so plainly instead of "build ?".
-        engInfoVal.textContent = t("petEngineNotInstalled");
+        engValue.textContent = t("petEngineNotInstalled");
         updateBtn.disabled = false; // "update" doubles as "install"
       }
       // 2. Remote check (sidecar + GitHub) upgrades the line.
@@ -806,9 +873,9 @@
           // being unreachable.
           const reason = (ret && ret.message) || (ret && ret.error) || "";
           if (haveLocal) {
-            engInfoVal.textContent = `build ${localBuild}（${t("petEngineUnreachable")}${reason ? `: ${reason}` : ""}）`;
+            engValue.textContent = `build ${localBuild}（${t("petEngineUnreachable")}${reason ? `: ${reason}` : ""}）`;
           } else {
-            engInfoVal.textContent = t("petEngineNotInstalled") + "（" + t("petEngineUnreachable") + (reason ? `: ${reason}` : "") + "）";
+            engValue.textContent = t("petEngineNotInstalled") + "（" + t("petEngineUnreachable") + (reason ? `: ${reason}` : "") + "）";
           }
           return;
         }
@@ -837,7 +904,7 @@
             text = t("petEngineUpToDate").replace("{local}", localLabel);
           }
         }
-        engInfoVal.textContent = text;
+        engValue.textContent = text;
         updateBtn.disabled = !hasUpdate;
         engineCheckCache = { at: Date.now(), text, hasUpdate, installRoot: info.install_root || "" };
       } finally {
@@ -846,64 +913,8 @@
       }
     }
 
-    engBtnCtl.appendChild(checkBtn);
-    engBtnCtl.appendChild(updateBtn);
-    engBtnCtl.appendChild(dirBtn);
-    engBtnRow.appendChild(engBtnCtl);
-    engRows.appendChild(engBtnRow);
-
-    // ── Runtime status row: is llama-server actually alive? ────────────
-    // Now WITH manual control: start uses the currently configured model
-    // (errors loudly when none is picked), stop kills llama-server. The
-    // engine still auto-starts for local inference — these buttons are
-    // for people who want the switch in their hand.
-    const runRow = el("div", { className: "row" });
-    const runText = el("div", { className: "row-text" });
-    runText.appendChild(el("span", { className: "row-label" }, t("petRowEngineRunning")));
-    runText.appendChild(el("span", { className: "row-desc" }, t("petRowEngineRunningDesc")));
-    runRow.appendChild(runText);
-    const llamaReady = !!(ctx && ctx.healthSnapshot && ctx.healthSnapshot.llamaReady);
-    const runCtl = el("div", { className: "row-control" });
-    const engineToggle = softBtn(
-      llamaReady ? t("petEngineStop") : t("petEngineStart"),
-      async () => {
-        engineToggle.disabled = true;
-        engineToggle.textContent = t("petEngineBusy");
-        try {
-          const fn = llamaReady ? window.petSettings.engineStop : window.petSettings.engineStart;
-          const ret = await fn();
-          if (ret && ret.status === "error") {
-            notifyError(t("petEngineStartFail") + (ret.message || ""));
-          }
-        } catch (err) {
-          notifyError(t("petEngineStartFail") + (err && err.message || err));
-        } finally {
-          void ctx.refreshAll();
-        }
-      },
-    );
-    runCtl.appendChild(engineToggle);
-    runRow.appendChild(runCtl);
-    runRow.appendChild(el("div", { className: "row-control pet-info-value" },
-      llamaReady ? t("petEngineRunningYes") : t("petEngineRunningNo")));
-    engRows.appendChild(runRow);
-
-    // ── Install location row: where the binary actually lives ─────────
-    // Sourced from the sidecar's own resolution (same candidate list the
-    // launcher uses), so it can never disagree with what really runs.
-    const locRow = el("div", { className: "row" });
-    const locText = el("div", { className: "row-text" });
-    locText.appendChild(el("span", { className: "row-label" }, t("petRowEngineLocation")));
-    const locHint = (engineCheckCache && engineCheckCache.installRoot)
-      || "pet-sidecar\\bin\\win-x64\\llama-server.exe";
-    const locVal = el("span", { className: "row-desc pet-path-value", title: locHint }, locHint);
-    locText.appendChild(locVal);
-    locRow.appendChild(locText);
-    engRows.appendChild(locRow);
-
-    // ── Backend selector (moved here from the old Behavior section) ────
+    // ── Row 3: backend selector ─────────────────────────────────────────
     // cpu / vulkan IS an engine property — it decides which binary runs.
-    // It lived in Behavior because that section predates the engine UI.
     const backendMode = window.petSettings.getBackendMode
       ? window.petSettings.getBackendMode()
       : null;
@@ -959,28 +970,164 @@
       }
     }
 
-    // ── Slow-download hint: Watt Toolkit (Steam++) acceleration ────────
-    // The panel must live in its OWN row: stuffing it inside the hint row
-    // squeezes the label column down to a few px and the title renders
-    // vertically (one char per line).
-    const slowRow = el("div", { className: "row" });
-    const slowText = el("div", { className: "row-text" });
-    slowText.appendChild(el("span", { className: "row-label", style: { whiteSpace: "nowrap" } }, t("petEngineSlowHint")));
-    slowRow.appendChild(slowText);
-    const slowToggle = softBtn(t("petEngineSlowShow"), () => {
-      const panel = document.getElementById("petEngineSlowPanel");
-      if (!panel) return;
-      panel.style.display = panel.style.display === "none" ? "block" : "none";
-    });
-    slowRow.appendChild(el("div", { className: "row-control" }, slowToggle));
-    engRows.appendChild(slowRow);
+    // ── Advanced parameters (LM-Studio-style knobs) ────────────────────
+    // Each row maps 1:1 to a llama-server CLI flag. Values persist to
+    // prefs and reach the engine as PET_* env vars on the next spawn —
+    // which is why Apply restarts the sidecar.
+    let paramsInfo = null;
+    try { paramsInfo = await window.petSettings.engineParams(); } catch {}
+    const curParams = (paramsInfo && paramsInfo.params) || {};
 
-    const slowPanel = el("div", {
-      id: "petEngineSlowPanel",
-      style: { display: "none", padding: "8px 12px", fontSize: "12px", lineHeight: "1.6" },
+    const advTitle = el("div", { className: "row" });
+    advTitle.appendChild(el("div", { className: "row-text" },
+      el("span", { className: "row-label" }, t("petEngineAdvanced"))));
+    engRows.appendChild(advTitle);
+    engRows.appendChild(el("div", { className: "row-desc", style: { margin: "0 0 6px" } },
+      t("petEngineAdvancedDesc")));
+
+    const inputs = {};
+    const mkSelectRow = (labelKey, key, options, curVal) => {
+      const row = el("div", { className: "row" });
+      const text = el("div", { className: "row-text" });
+      text.appendChild(el("span", { className: "row-label" }, t(labelKey)));
+      row.appendChild(text);
+      const sel = el("select", { className: "pet-engine-adv-input" });
+      for (const o of options) {
+        const opt = el("option", { value: o.v }, o.label);
+        if (String(curVal || "") === o.v) opt.selected = true;
+        sel.appendChild(opt);
+      }
+      inputs[key] = sel;
+      row.appendChild(el("div", { className: "row-control" }, sel));
+      engRows.appendChild(row);
+    };
+    const mkNumberRow = (labelKey, key, curVal) => {
+      const row = el("div", { className: "row" });
+      const text = el("div", { className: "row-text" });
+      text.appendChild(el("span", { className: "row-label" }, t(labelKey)));
+      row.appendChild(text);
+      const inp = el("input", { type: "number", className: "pet-engine-adv-input", min: "1" });
+      if (curVal != null) inp.value = String(curVal);
+      inputs[key] = inp;
+      row.appendChild(el("div", { className: "row-control" }, inp));
+      engRows.appendChild(row);
+    };
+
+    mkSelectRow("petEngineLoadMode", "load_mode", [
+      { v: "mmap", label: t("petEngineLoadMmap") },
+      { v: "mmap+mlock", label: t("petEngineLoadMmapMlock") },
+      { v: "none", label: t("petEngineLoadNone") },
+    ], curParams.load_mode || "mmap");
+    mkNumberRow("petEngineNGpuLayers", "n_gpu_layers", curParams.n_gpu_layers);
+    mkNumberRow("petEngineCtxSize", "ctx_size", curParams.ctx_size);
+    mkNumberRow("petEngineNCpuMoe", "n_cpu_moe", curParams.n_cpu_moe);
+    mkSelectRow("petEngineCacheTypeK", "cache_type_k", [
+      { v: "", label: t("petEngineCacheDefault") },
+      { v: "q8_0", label: "q8_0" },
+      { v: "q4_0", label: "q4_0" },
+    ], curParams.cache_type_k || "");
+    mkSelectRow("petEngineCacheTypeV", "cache_type_v", [
+      { v: "", label: t("petEngineCacheDefault") },
+      { v: "q8_0", label: "q8_0" },
+      { v: "q4_0", label: "q4_0" },
+    ], curParams.cache_type_v || "");
+    const mkFlashRow = () => {
+      const row = el("div", { className: "row" });
+      const text = el("div", { className: "row-text" });
+      text.appendChild(el("span", { className: "row-label" }, t("petEngineFlashAttn")));
+      row.appendChild(text);
+      const sel = el("select", { className: "pet-engine-adv-input" });
+      for (const o of [
+        { v: "", label: t("petEngineCacheDefault") },
+        { v: "1", label: "on" },
+        { v: "0", label: "off" },
+      ]) {
+        const opt = el("option", { value: o.v }, o.label);
+        if (String(curParams.flash_attn === true ? "1" : curParams.flash_attn === false ? "0" : "") === o.v) opt.selected = true;
+        sel.appendChild(opt);
+      }
+      inputs.flash_attn = sel;
+      row.appendChild(el("div", { className: "row-control" }, sel));
+      engRows.appendChild(row);
+    };
+    mkFlashRow();
+    mkNumberRow("petEngineBatchSize", "batch_size", curParams.batch_size);
+    mkNumberRow("petEngineUbatchSize", "ubatch_size", curParams.ubatch_size);
+
+    // Buttons: apply (persist + restart) and speed test.
+    const advBtnRow = el("div", { className: "row" });
+    advBtnRow.appendChild(el("div", { className: "row-text" },
+      el("span", { className: "row-label" }, t("petEngineApply"))));
+    const advCtl = el("div", { className: "row-control pet-path-actions" });
+    const applyBtn = softBtn(t("petEngineApplyBtn"), async () => {
+      applyBtn.disabled = true;
+      applyBtn.classList.add("is-busy");
+      try {
+        const payload = {};
+        for (const [key, node] of Object.entries(inputs)) {
+          const v = (node.value || "").trim();
+          if (v === "") continue;
+          if (key === "flash_attn") payload[key] = v === "1";
+          else if (["n_cpu_moe", "batch_size", "ubatch_size"].includes(key)) payload[key] = Number(v);
+          else payload[key] = v;
+        }
+        // load_mode always sent so the default (mmap) is explicit.
+        payload.load_mode = (inputs.load_mode && inputs.load_mode.value) || "mmap";
+        const ret = await window.petSettings.setEngineParams(payload);
+        if (!ret || !ret.ok) {
+          notifyError(t("toastSaveFailed") + ((ret && ret.error) || ""));
+          return;
+        }
+        if (ops && typeof ops.showToast === "function") {
+          ops.showToast(t("petEngineApplyRestarting"), { ttl: 4000 });
+        }
+        // Restart the sidecar so the new flags take effect, then refresh.
+        try { await window.petSettings.restartSidecar(); } catch {}
+        void ctx.refreshAll();
+      } finally {
+        applyBtn.disabled = false;
+        applyBtn.classList.remove("is-busy");
+      }
     });
-    slowPanel.innerHTML = t("petEngineSlowSolution");
-    engRows.appendChild(slowPanel);
+    advCtl.appendChild(applyBtn);
+
+    const benchBtn = softBtn(t("petEngineBenchBtn"), async () => {
+      benchBtn.disabled = true;
+      benchBtn.classList.add("is-busy");
+      benchResult.textContent = t("petEngineBenchRunning");
+      try {
+        const ret = await window.petSettings.engineBenchmark(128);
+        if (!ret || ret.status === "error" || ret.ok === false) {
+          benchResult.textContent = t("petEngineBenchFail") + ((ret && (ret.message || ret.error)) || "");
+        } else if (ret.tps) {
+          benchResult.textContent = `${ret.tps} tok/s`
+            + (ret.prompt_tps ? `  ·  prompt ${ret.prompt_tps} tok/s` : "")
+            + (ret.ms ? `  ·  ${(ret.ms / 1000).toFixed(1)}s / ${ret.n_predict || 0} tokens` : "");
+        } else {
+          benchResult.textContent = t("petEngineBenchFail");
+        }
+      } catch (err) {
+        benchResult.textContent = t("petEngineBenchFail") + (err && err.message || err);
+      } finally {
+        benchBtn.disabled = false;
+        benchBtn.classList.remove("is-busy");
+      }
+    });
+    advCtl.appendChild(benchBtn);
+    advBtnRow.appendChild(advCtl);
+    engRows.appendChild(advBtnRow);
+
+    const benchResult = el("div", { className: "row-desc", style: { margin: "0 0 6px" } }, "");
+    engRows.appendChild(benchResult);
+
+    // Live view of the exact command line these knobs produce.
+    const argv = (paramsInfo && Array.isArray(paramsInfo.argv) && paramsInfo.argv.length)
+      ? paramsInfo.argv.join(" ")
+      : "";
+    if (argv) {
+      engRows.appendChild(el("div", { className: "row-desc" }, t("petEngineArgvLabel")));
+      engRows.appendChild(el("pre", { className: "pet-engine-argv" }, argv));
+    }
 
     box.appendChild(engSection);
 
@@ -988,20 +1135,20 @@
     // this section repeatedly, and re-hitting the GitHub API every tick
     // would flicker "…" and spam the network.
     if (engineCheckCache && Date.now() - engineCheckCache.at < 60000) {
-      engInfoVal.textContent = engineCheckCache.text;
+      engValue.textContent = engineCheckCache.text;
       updateBtn.disabled = !engineCheckCache.hasUpdate;
     } else {
       void runEngineCheck();
     }
   }
 
-  // ── Advanced (collapsible) — restart Sidecar + open logs ──────────────
+  // ── Advanced (collapsible) — install location + restart Sidecar + logs ─
   //
   // Hand-rolled instead of using helpers.buildCollapsibleGroup so the
   // disclosure trigger can sit in the small-caps section-title style. The
-  // body is just a standard section-rows block of two rows; we toggle its
-  // visibility with display:none rather than a height animation because
-  // the row count is tiny (2) and reflow is instant.
+  // body is just a standard section-rows block; we toggle its visibility
+  // with display:none rather than a height animation because the row count
+  // is tiny and reflow is instant.
   function renderAdvancedSection(box, ctx) {
     box.innerHTML = "";
     const wrap = el("section", { className: "section pet-advanced-section" });
@@ -1020,6 +1167,20 @@
     const section = helpers.buildSection("", []);
     section.classList.add("pet-advanced-body");
     const rows = section.querySelector(".section-rows");
+
+    // ── Install location row: where the binary actually lives ──────────
+    // Sourced from the sidecar's own resolution (same candidate list the
+    // launcher uses), so it can never disagree with what really runs.
+    // Debug info — belongs here, not in the main engine card.
+    const locHint = (engineCheckCache && engineCheckCache.installRoot)
+      || "pet-sidecar\\bin\\win-x64\\llama-server.exe";
+    const locRow = el("div", { className: "row" });
+    const locText = el("div", { className: "row-text" });
+    locText.appendChild(el("span", { className: "row-label" }, t("petRowEngineLocation")));
+    const locVal = el("span", { className: "row-desc pet-path-value", title: locHint }, locHint);
+    locText.appendChild(locVal);
+    locRow.appendChild(locText);
+    rows.appendChild(locRow);
 
     rows.appendChild(buildAdvancedRow({
       icon: SVG_RESTART,
@@ -1106,8 +1267,8 @@
     return HEALTH_INTERVAL_MS_SLOW;
   }
 
-  // The polling loop refreshes only the status pill + model path (cheap)
-  // so switches and the advanced collapsible state stay put across ticks.
+  // The polling loop refreshes only the status pill + cards the user is
+  // not interacting with, so open dropdowns and in-flight clicks survive.
   function startHealthPolling(ctx) {
     if (healthTimer) {
       clearTimeout(healthTimer);
@@ -1119,10 +1280,12 @@
       const wasHealthy = ctx.everHealthy;
       await probeHealth(ctx);
       syncStatusPill(ctx);
-      // Path may have switched after a load-model — keep the model card
-      // honest, but never re-render Behavior/Advanced (would lose focus).
-      renderModelSection(ctx.modelBox, ctx);
-      await renderEngineSection(ctx.engineBox, ctx);
+      // Path may have switched after a load-model — keep the cards
+      // honest, but never rebuild one the user is mid-interaction with
+      // (an open <select> would snap shut) and never touch Advanced
+      // (would lose focus / expanded state).
+      if (!boxInteractionBusy(ctx.modelBox)) renderModelSection(ctx.modelBox, ctx);
+      if (!boxInteractionBusy(ctx.engineBox)) await renderEngineSection(ctx.engineBox, ctx);
       if (!ctx.everHealthy && ctx.fastAttemptsLeft > 0) ctx.fastAttemptsLeft -= 1;
       if (!wasHealthy && ctx.everHealthy) ctx.fastAttemptsLeft = 0;
       healthTimer = setTimeout(tick, nextHealthDelay(ctx));
@@ -1189,7 +1352,7 @@
         void (async () => {
           await probeHealth(ctx);
           syncStatusPill(ctx);
-          renderModelSection(ctx.modelBox, ctx);
+          if (!boxInteractionBusy(ctx.modelBox)) renderModelSection(ctx.modelBox, ctx);
         })();
         startHealthPolling(ctx);
       }

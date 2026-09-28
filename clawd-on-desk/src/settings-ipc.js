@@ -809,6 +809,21 @@ function registerSettingsIpc(options = {}) {
     return { status: "ok", ...r.json };
   });
 
+  handle("settings:engine-params", async () => {
+    const r = await sidecarJson("GET", "/api/engine/params", 5000);
+    if (!r.ok) return { status: "error", message: r.error || "sidecar unreachable" };
+    return { status: "ok", ...r.json };
+  });
+
+  handle("settings:engine-benchmark", async (_e, { nPredict } = {}) => {
+    // Generation test can take a while on CPU-offloaded MoE checkpoints.
+    const r = await sidecarJson("POST", "/api/engine/benchmark", 180000, {
+      n_predict: nPredict || 128,
+    });
+    if (!r.ok) return { status: "error", message: r.error || "sidecar unreachable" };
+    return { status: "ok", ...r.json };
+  });
+
   handle("settings:get-memory-view", async () => {
     // Settings → Memory viewer: identity notes + episodic events +
     // mood for the CURRENT theme (换身体 = 换灵魂).

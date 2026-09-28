@@ -187,6 +187,32 @@ def parse_mcp_calls(text: str) -> list[dict]:
                 prefix = text[after_marker:colon_pos]  # tool_name
                 balanced = _find_balanced_json(text, colon_pos + 1)
                 if balanced is None:
+                    # Malformed args such as [builtin/tool:""] / [builtin/tool:]
+                    # — quantized models emit these often. The marker is still
+                    # a real call, so treat a non-JSON payload as empty args
+                    # instead of silently skipping: skipping used to end the
+                    # turn with no execution, no error and no log ("tool call
+                    # with no reaction").
+                    name = prefix.strip()
+                    if name:
+                        payload = ""
+                        if close_pos > colon_pos:
+                            payload = text[colon_pos + 1:close_pos].strip()
+                        args = {}
+                        if payload.startswith("{"):
+                            try:
+                                args = json.loads(payload)
+                            except json.JSONDecodeError:
+                                args = {}
+                        results.append({
+                            "server_name": "builtin",
+                            "name": name,
+                            "arguments": args,
+                        })
+                        end_pos = (close_pos + 1) if close_pos >= 0 else colon_pos + 1
+                        used_ranges.append((marker_pos, end_pos))
+                        idx = end_pos
+                        continue
                     idx = colon_pos + 1
                     continue
                 json_str, _, json_end = balanced

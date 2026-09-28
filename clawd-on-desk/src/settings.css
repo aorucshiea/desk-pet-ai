@@ -599,7 +599,42 @@ html, body {
   flex: 1;
   min-width: 0;
 }
-.row-label {
+/* ── Engine advanced parameters (Settings → Engine) ── */
+.pet-engine-adv-input {
+  width: 220px;
+  max-width: 46vw;
+  padding: 4px 8px;
+  font-size: 12px;
+  color: var(--text-primary);
+  background: var(--bg-elevated, var(--bg-secondary));
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.pet-engine-adv-input:focus {
+  outline: none;
+  border-color: var(--accent, #4a9eff);
+}
+.pet-engine-argv {
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 160px;
+  overflow: auto;
+}
+.pet-engine-bench-result {
+  margin-left: 10px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}.row-label {
   font-size: 13px;
   font-weight: 500;
   color: var(--text-primary);
@@ -3511,6 +3546,135 @@ html, body {
 .pet-backend-segmented {
   white-space: nowrap;
 }
+/* ── Model picker row (2026-09 redesign: single row = model + path + actions) ── */
+.pet-model-picker-row {
+  align-items: center;
+  gap: 12px;
+}
+.pet-model-picker-row .row-text {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.pet-model-picker-control {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+.pet-model-picker {
+  min-width: 190px;
+  max-width: 300px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-bg);
+  color: var(--text-primary);
+  font-size: 13px;
+  font-family: inherit;
+  /* Native dropdown popup follows the OS scheme, matching the
+     media-query-driven palette flip used across the settings window. */
+  color-scheme: light dark;
+}
+.pet-model-picker:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-color: var(--accent);
+}
+.pet-model-picker-control .soft-btn {
+  font-size: 12px;
+  padding: 5px 12px;
+  white-space: nowrap;
+}
+/* ── Scanned-folders disclosure (collapsed by default) ── */
+.pet-folders-trigger {
+  margin-top: 10px;
+}
+.pet-folders-trigger-desc {
+  margin: 0 0 0 6px;
+}
+.pet-folders-body {
+  margin-bottom: 4px;
+}
+.pet-model-folders-list {
+  min-width: 0;
+}
+.pet-model-folder-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 9px 16px;
+}
+.pet-model-folder-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pet-model-folder-remove {
+  font-size: 11px;
+  padding: 3px 10px;
+  flex: 0 0 auto;
+}
+.pet-model-folder-empty {
+  padding: 10px 16px 2px;
+  font-size: 11px;
+  font-style: italic;
+  color: var(--text-secondary);
+}
+.pet-folders-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 16px;
+  border-top: 1px solid var(--row-border);
+}
+.pet-folders-actions .soft-btn {
+  font-size: 12px;
+}
+/* ── Engine version row ── */
+.pet-engine-value {
+  font-weight: 500;
+  color: var(--text-primary);
+  font-size: 12px;
+}
+.pet-slow-link {
+  display: block;
+  margin-top: 4px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font-size: 11px;
+  font-family: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+.pet-slow-link:hover {
+  text-decoration: underline;
+}
+.pet-slow-panel {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+  padding: 10px 16px;
+  border-top: 1px dashed var(--row-border);
+}
+.pet-slow-panel a {
+  color: var(--accent);
+}
+.pet-engine-progress-row {
+  padding: 2px 16px 12px;
+}
 .pet-adapter-row {
   align-items: flex-start;
 }
@@ -3751,11 +3915,13 @@ html, body {
     padding-top: 0;
   }
   .pet-path-row,
+  .pet-model-picker-row,
   .pet-adapter-row,
   .pet-adapter-actions-row {
     flex-direction: column;
     align-items: stretch;
   }
+  .pet-model-picker-control,
   .pet-path-actions,
   .pet-adapter-actions-row .row-control {
     justify-content: flex-start;

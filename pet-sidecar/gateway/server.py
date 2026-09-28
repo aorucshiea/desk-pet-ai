@@ -429,6 +429,24 @@ def build_app(
         except FileNotFoundError:
             log.warning("PET_ACTIVE_ADAPTER points at missing file: %s", _env_active)
 
+    def _env_int(name: str) -> Optional[int]:
+        raw = (os.environ.get(name) or "").strip()
+        if not raw:
+            return None
+        try:
+            return int(raw)
+        except ValueError:
+            log.warning("%s=%r is not an int; ignoring", name, raw)
+            return None
+
+    def _env_bool(name: str) -> Optional[bool]:
+        raw = (os.environ.get(name) or "").strip().lower()
+        if raw in ("1", "true", "on", "yes"):
+            return True
+        if raw in ("0", "false", "off", "no"):
+            return False
+        return None
+
     server = LlamaServer(
         model_path=initial_model,
         ctx_size=ctx_size,
@@ -438,6 +456,17 @@ def build_app(
         # Boot-time multimodal pairing: picked up if the bundled model
         # ships with a corresponding `mmproj-*.gguf` in the same dir.
         mmproj_path=find_sibling_mmproj(initial_model) if initial_model else None,
+        # Advanced runtime knobs, injected by the Electron host from
+        # Settings → Engine → Advanced parameters. Defaults keep the
+        # engine's own behaviour except load-mode, which we pin to mmap
+        # (a 20 GB+ checkpoint must not be read into RAM wholesale).
+        load_mode=(os.environ.get("PET_LOAD_MODE") or "mmap").strip() or "mmap",
+        cache_type_k=(os.environ.get("PET_CACHE_TYPE_K") or "").strip() or None,
+        cache_type_v=(os.environ.get("PET_CACHE_TYPE_V") or "").strip() or None,
+        flash_attn=_env_bool("PET_FLASH_ATTN"),
+        n_cpu_moe=_env_int("PET_N_CPU_MOE"),
+        batch_size=_env_int("PET_BATCH_SIZE"),
+        ubatch_size=_env_int("PET_UBATCH_SIZE"),
     )
 
     # In-memory adapter state. Single source of truth for what the
@@ -1779,6 +1808,45 @@ def build_app(
         await server.stop()
         return {"ok": True, "was_running": was}
 
+    @app.get("/api/engine/params")
+    async def engine_params():
+        """Current runtime knobs + the exact argv they produce, so the
+        Settings page can show reality instead of guessing."""
+        return {
+            "ok": True,
+            "running": server.alive(),
+            "params": {
+                "load_mode": server.load_mode,
+                "cache_type_k": server.cache_type_k,
+                "cache_type_v": server.cache_type_v,
+                "flash_attn": server.flash_attn,
+                "n_cpu_moe": server.n_cpu_moe,
+                "batch_size": server.batch_size,
+                "ubatch_size": server.ubatch_size,
+                "ctx_size": server.ctx_size,
+                "n_gpu_layers": server.n_gpu_layers,
+                "threads": server.threads,
+            },
+            "argv": server.argv_preview,
+        }
+
+    @app.post("/api/engine/benchmark")
+    async def engine_benchmark(payload: dict = None):
+        """One-shot speed test: returns llama.cpp's own tokens/sec."""
+        if not server.alive():
+            return JSONResponse(
+                {"ok": False, "error": "引擎未运行，先点「启动引擎」再测速"},
+                status_code=409,
+            )
+        try:
+            n = int((payload or {}).get("n_predict") or 128)
+        except Exception:
+            n = 128
+        try:
+            return await server.benchmark(n_predict=n)
+        except Exception as exc:
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+
     @app.post("/api/upload-model")
     async def upload_model(file: UploadFile = File(...)):
         """Accept a .gguf file upload, save to models dir, and auto-load."""
@@ -2794,6 +2862,10 @@ async def _stream_chat_provider(
         now = datetime.now(timezone.utc).strftime("%Y年%m月%d日 %H:%M:%S")
         return _NOW_ANCHOR_RE.sub(f"（现在是{now}。", sys_text, count=1)
 
+    # One syntax-correction retry per turn: quantized models mangle the
+    # tool-call syntax (dropped "MCP:" prefix, quotes instead of {}).
+    _tool_syntax_retry_done = False
+
     while iteration < MAX_TOOL_ITERATIONS:
         iteration += 1
         tool_occurred = False
@@ -2883,6 +2955,29 @@ async def _stream_chat_provider(
                         "name": mc["name"],
                         "arguments": mc["arguments"],
                     })
+            elif "[builtin/" in full_text or "[MCP:" in full_text:
+                # A marker is present but nothing parsed. Never end the turn
+                # silently — that reads as "the pet froze".
+                log.warning(
+                    "tool marker present but unparsed; raw tail=%r",
+                    full_text[-220:],
+                )
+                # Give the model one correction shot with the canonical form
+                # spelled out, instead of dropping the turn.
+                if not _tool_syntax_retry_done:
+                    _tool_syntax_retry_done = True
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            "[系统] 你刚才的工具调用格式有误，没有被识别。"
+                            "正确格式是：方括号 + MCP: 前缀 + server/工具名 + 冒号 + 花括号 JSON（参数为空就写 {}，"
+                            "不要用引号、不要省略 MCP:）。例如：\n"
+                            "[MCP:builtin/capture_screen:{}]\n"
+                            "请只重新输出这一行，不要解释。"
+                        ),
+                    })
+                    tool_occurred = True
+                    continue
 
         if not tool_occurred:
             break

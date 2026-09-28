@@ -503,6 +503,40 @@ class Sidecar {
     return out;
   }
 
+  // llama-server CLI knobs persisted by Settings → Engine → Advanced
+  // parameters. Read from prefs so they survive restarts; the sidecar
+  // reads PET_* at boot and turns them into argv flags. load_mode is
+  // always sent (default "mmap") because reading a 20 GB checkpoint into
+  // RAM wholesale is the failure mode users actually notice.
+  _engineParamsToEnv() {
+    let p = {};
+    try {
+      const raw = readDeskPetPrefsRaw();
+      p = (raw && raw.engine_params) || {};
+    } catch { p = {}; }
+    const num = (v) => {
+      const n = Number(v);
+      return Number.isFinite(n) && n > 0 ? String(Math.trunc(n)) : "";
+    };
+    const out = { PET_LOAD_MODE: String(p.load_mode || "mmap") };
+    if (p.cache_type_k) out.PET_CACHE_TYPE_K = String(p.cache_type_k);
+    if (p.cache_type_v) out.PET_CACHE_TYPE_V = String(p.cache_type_v);
+    if (typeof p.flash_attn === "boolean") out.PET_FLASH_ATTN = p.flash_attn ? "1" : "0";
+    // These two ride the long-standing PET_GPU_LAYERS / PET_CTX names the
+    // gateway already reads.
+    const gpuLayers = num(p.n_gpu_layers);
+    if (gpuLayers) out.PET_GPU_LAYERS = gpuLayers;
+    const ctx = num(p.ctx_size);
+    if (ctx) out.PET_CTX = ctx;
+    const moe = num(p.n_cpu_moe);
+    if (moe) out.PET_N_CPU_MOE = moe;
+    const bs = num(p.batch_size);
+    if (bs) out.PET_BATCH_SIZE = bs;
+    const ubs = num(p.ubatch_size);
+    if (ubs) out.PET_UBATCH_SIZE = ubs;
+    return out;
+  }
+
   async ensureRunning(initialModelDir) {
     if (await this.isHealthy(initialModelDir)) return { status: "already-running" };
     if (this.starting) return this.starting;
@@ -639,6 +673,13 @@ class Sidecar {
           return (typeof ctx.getActiveThemeId === "function" && ctx.getActiveThemeId()) || "default";
         } catch { return "default"; }
       })(),
+      // Advanced inference knobs (Settings → Engine → Advanced parameters).
+      // Injected at spawn time because they are llama-server CLI flags:
+      // changing them requires an engine restart, which is exactly what
+      // the Apply button does. Defaults: load-mode mmap (never read a
+      // 20 GB checkpoint into RAM wholesale); everything else unset so
+      // llama.cpp keeps its own default.
+      ...this._engineParamsToEnv(),
     };
 
     // Strip proxy environment variables to avoid socksio dependency issues.
@@ -3237,6 +3278,30 @@ module.exports = function initDeskPetChat(ctx) {
     },
     "pet-settings:remove-model-folder": async (_e, { folder } = {}) => {
       return removeModelFolder(folder);
+    },
+
+    // Advanced inference knobs (Settings → Engine → 高级参数). Persisted to
+    // prefs; they become PET_* env vars on the next sidecar spawn, i.e.
+    // llama-server CLI flags — that is why applying them restarts the engine.
+    "pet-settings:set-engine-params": async (_e, { params } = {}) => {
+      if (!params || typeof params !== "object") {
+        return { ok: false, error: "invalid params" };
+      }
+      const clean = {};
+      const pick = (key, allowed) => {
+        const v = params[key];
+        if (typeof v === "string" && v && allowed.includes(v)) clean[key] = v;
+      };
+      pick("load_mode", ["mmap", "mmap+mlock", "mlock", "none", "direct-io"]);
+      pick("cache_type_k", ["f16", "q8_0", "q4_0", "bf16"]);
+      pick("cache_type_v", ["f16", "q8_0", "q4_0", "bf16"]);
+      if (typeof params.flash_attn === "boolean") clean.flash_attn = params.flash_attn;
+      for (const key of ["n_cpu_moe", "batch_size", "ubatch_size", "n_gpu_layers", "ctx_size"]) {
+        const n = Number(params[key]);
+        if (Number.isFinite(n) && n > 0) clean[key] = Math.trunc(n);
+      }
+      const ok = mergeDeskPetPrefs({ engine_params: clean });
+      return { ok, params: clean };
     },
 
     "pet-settings:use-model-dir": async (_e, { path: modelPath, mmproj: mmprojPath } = {}) => {
