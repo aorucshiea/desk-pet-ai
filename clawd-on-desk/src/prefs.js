@@ -46,7 +46,10 @@ const {
 const { DEFAULT_THEME_ID } = require("./default-theme");
 
 const CURRENT_VERSION = 13;
-const DEFAULT_INTEGRATION_INSTALLED_IDS = Object.freeze(["claude-code", "codex"]);
+// Coding-agent integrations are OFF by default in this build — the product
+// is a desktop pet, not a coding-agent companion. Nothing is pre-registered
+// as "installed"; the list is kept so callers/tests still have the helper.
+const DEFAULT_INTEGRATION_INSTALLED_IDS = Object.freeze([]);
 const DEFAULT_INTEGRATION_INSTALLED_SET = new Set(DEFAULT_INTEGRATION_INSTALLED_IDS);
 
 function isDefaultIntegrationInstalled(agentId) {
@@ -100,7 +103,7 @@ const SCHEMA = {
   lang: { type: "string", default: "system", enum: ["system", "en", "zh", "zh-TW", "ko", "ja"] },
   showTray: { type: "boolean", default: true },
   showDock: { type: "boolean", default: true },
-  manageClaudeHooksAutomatically: { type: "boolean", default: true },
+  manageClaudeHooksAutomatically: { type: "boolean", default: false },
   autoStartWithClaude: { type: "boolean", default: false },
   // System-backed: actual truth lives in OS login items / autostart files.
   // `openAtLoginHydrated` starts false; main.js's startup hydrate helper imports
@@ -225,31 +228,27 @@ const SCHEMA = {
   agents: {
     type: "object",
     defaultFactory: () => ({
-      // subagentPermissionsEnabled (#451): bubbles for PermissionRequests
-      // fired inside a Task subagent. Only claude-code carries the flag —
-      // normalizeAgents drops it for agents whose default entry lacks it.
-      "claude-code": { integrationInstalled: true, enabled: true, permissionsEnabled: true, subagentPermissionsEnabled: true, notificationHookEnabled: true },
-      "codex": { integrationInstalled: true, enabled: true, permissionsEnabled: true, notificationHookEnabled: true, permissionMode: "intercept", nativeNotificationSoundEnabled: false },
-      "copilot-cli": { integrationInstalled: false, enabled: false, permissionsEnabled: true, notificationHookEnabled: true },
-      "cursor-agent": { integrationInstalled: false, enabled: false, permissionsEnabled: true, notificationHookEnabled: true },
-      "gemini-cli": { integrationInstalled: false, enabled: false, permissionsEnabled: true, notificationHookEnabled: true },
-      // Antigravity is state-only post-D2 — Clawd never surfaces a permission
-      // bubble for agy regardless of this flag (see server-route-permission.js
-      // antigravity branch). Default kept as false so legacy reads don't see a
-      // stale "true" implying bubbles are enabled.
+      // NOTE: coding-agent integration is OFF by default. This build ships
+      // as a plain desktop pet, not a coding-agent companion — no hooks are
+      // installed, no agent events drive the pet. The keys stay in the
+      // schema so existing prefs files keep parsing.
+      "claude-code": { integrationInstalled: false, enabled: false, permissionsEnabled: false, subagentPermissionsEnabled: false, notificationHookEnabled: false },
+      "codex": { integrationInstalled: false, enabled: false, permissionsEnabled: false, notificationHookEnabled: false, permissionMode: "intercept", nativeNotificationSoundEnabled: false },
+      "copilot-cli": { integrationInstalled: false, enabled: false, permissionsEnabled: false, notificationHookEnabled: false },
+      "cursor-agent": { integrationInstalled: false, enabled: false, permissionsEnabled: false, notificationHookEnabled: false },
+      "gemini-cli": { integrationInstalled: false, enabled: false, permissionsEnabled: false, notificationHookEnabled: false },
       "antigravity-cli": { integrationInstalled: false, enabled: false, permissionsEnabled: false },
-      "codebuddy": { integrationInstalled: false, enabled: false, permissionsEnabled: true, notificationHookEnabled: true },
-      "kiro-cli": { integrationInstalled: false, enabled: false, permissionsEnabled: true, notificationHookEnabled: true },
-      "kimi-cli": { integrationInstalled: false, enabled: false, permissionsEnabled: true, notificationHookEnabled: true },
-      "qwen-code": { integrationInstalled: false, enabled: false, permissionsEnabled: true, notificationHookEnabled: true },
-      "codewhale": { integrationInstalled: false, enabled: false, permissionsEnabled: false, notificationHookEnabled: true },
-      "opencode": { integrationInstalled: false, enabled: false, permissionsEnabled: true, notificationHookEnabled: true },
-      "pi": { integrationInstalled: false, enabled: false, permissionsEnabled: false, notificationHookEnabled: true },
-      "openclaw": { integrationInstalled: false, enabled: false, permissionsEnabled: false, notificationHookEnabled: true },
-      "hermes": { integrationInstalled: false, enabled: false, permissionsEnabled: true, notificationHookEnabled: true },
-      // Qoder is state-only (Phase 1) — permission bubbles default off.
-      "qoder": { integrationInstalled: false, enabled: false, permissionsEnabled: false, notificationHookEnabled: true },
-      "reasonix": { integrationInstalled: false, enabled: false, permissionsEnabled: false, notificationHookEnabled: true },
+      "codebuddy": { integrationInstalled: false, enabled: false, permissionsEnabled: false, notificationHookEnabled: false },
+      "kiro-cli": { integrationInstalled: false, enabled: false, permissionsEnabled: false, notificationHookEnabled: false },
+      "kimi-cli": { integrationInstalled: false, enabled: false, permissionsEnabled: false, notificationHookEnabled: false },
+      "qwen-code": { integrationInstalled: false, enabled: false, permissionsEnabled: false, notificationHookEnabled: false },
+      "codewhale": { integrationInstalled: false, enabled: false, permissionsEnabled: false, notificationHookEnabled: false },
+      "opencode": { integrationInstalled: false, enabled: false, permissionsEnabled: false, notificationHookEnabled: false },
+      "pi": { integrationInstalled: false, enabled: false, permissionsEnabled: false, notificationHookEnabled: false },
+      "openclaw": { integrationInstalled: false, enabled: false, permissionsEnabled: false, notificationHookEnabled: false },
+      "hermes": { integrationInstalled: false, enabled: false, permissionsEnabled: false, notificationHookEnabled: false },
+      "qoder": { integrationInstalled: false, enabled: false, permissionsEnabled: false, notificationHookEnabled: false },
+      "reasonix": { integrationInstalled: false, enabled: false, permissionsEnabled: false, notificationHookEnabled: false },
     }),
     normalize: normalizeAgents,
   },
@@ -674,9 +673,9 @@ function normalizeAgents(value, defaultsValue) {
     const base = (defaultsValue && defaultsValue[id])
       || {
         integrationInstalled: isDefaultIntegrationInstalled(id),
-        enabled: true,
-        permissionsEnabled: true,
-        notificationHookEnabled: true,
+        enabled: false,
+        permissionsEnabled: false,
+        notificationHookEnabled: false,
       };
     const merged = { ...base };
     let touched = false;

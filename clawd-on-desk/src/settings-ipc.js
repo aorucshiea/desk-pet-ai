@@ -283,7 +283,7 @@ function registerSettingsIpc(options = {}) {
   }));
   const now = options.now || (() => Date.now());
   const aboutHeroSvgPath = options.aboutHeroSvgPath
-    || path.join(__dirname, "..", "assets", "svg", "minicpm-logo.svg");
+    || path.join(__dirname, "..", "assets", "svg", "model-mark.svg");
   const disposers = [];
 
   function handle(channel, listener) {

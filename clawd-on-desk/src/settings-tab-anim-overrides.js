@@ -697,6 +697,12 @@
     return applyPendingAnimOverrideCard(getAnimOverrideCardById(card.id) || card);
   }
 
+  // Page visibility: this section renders inside the "animMap" tab
+  // (Animation map), so both ids count as "visible".
+  function isOverridesVisible() {
+    return !!state && (state.activeTab === "animOverrides" || state.activeTab === "animMap");
+  }
+
   function runAnimationOverrideCommand(card, patch) {
     const payload = buildAnimOverrideRequest(card, patch);
     const timingOnly = isTimingOnlyPatch(patch);
@@ -719,11 +725,11 @@
         reconcilePendingAnimationOverrideEdits();
         reconcilePendingWideHitboxOverrideEdits();
         ops.normalizeAssetPickerSelection();
-        if (timingOnly && state.activeTab === "animOverrides") {
+        if (timingOnly && isOverridesVisible()) {
           syncMountedTimingSliders();
           syncMountedWideHitboxToggles();
           syncMountedOverrideStatusControls();
-        } else if (state.activeTab === "animOverrides") {
+        } else if (isOverridesVisible()) {
           ops.requestRender({ content: true });
         }
         ops.requestRender({ modal: true });
@@ -923,7 +929,7 @@
       loading.textContent = t("animOverridesLoading");
       parent.appendChild(loading);
       ops.fetchAnimationOverridesData().then(() => {
-        if (state.activeTab === "animOverrides") ops.requestRender({ content: true });
+        if (isOverridesVisible()) ops.requestRender({ content: true });
       });
       return;
     }
@@ -984,7 +990,7 @@
 
   function refreshSoundOverridesUi() {
     return ops.fetchAnimationOverridesData().then(() => {
-      if (state.activeTab === "animOverrides") ops.requestRender({ content: true });
+      if (isOverridesVisible()) ops.requestRender({ content: true });
     });
   }
 
@@ -1437,7 +1443,7 @@
         if (options.clearPendingOnSuccess) clearPendingWideHitboxOverrideEdit(pendingToken);
         reconcilePendingWideHitboxOverrideEdits();
         ops.normalizeAssetPickerSelection();
-        if (state.activeTab === "animOverrides") {
+        if (isOverridesVisible()) {
           syncMountedTimingSliders();
           syncMountedWideHitboxToggles();
           syncMountedOverrideStatusControls();

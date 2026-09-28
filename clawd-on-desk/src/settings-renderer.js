@@ -4,24 +4,26 @@ const core = globalThis.ClawdSettingsCore;
 
 const SIDEBAR_TABS = [
   { id: "general", labelKey: "sidebarGeneral", available: true },
-  { id: "minicpm", labelKey: "sidebarMinicpm", available: true },
-  { id: "agents", labelKey: "sidebarAgents", available: true },
+  // One "Models" page: the local MiniCPM tab renders the API provider
+  // section inside it (see the tab-merge wrapper near the bottom of this
+  // file). The separate "providers" entry is gone on purpose.
+  { id: "minicpm", labelKey: "sidebarModels", available: true },
+  // "agents" tab intentionally removed: this is a desktop pet, not a
+  // coding-agent companion. See AGENTS.md / hooks/ for the removed
+  // integration layer.
+  // One "Theme" page (picker only) and one "Animation map" page (map rows +
+  // animation/sound overrides, wrapped above).
   { id: "theme", labelKey: "sidebarTheme", available: true },
   { id: "animMap", labelKey: "sidebarAnimMap", available: true },
-  { id: "animOverrides", labelKey: "sidebarAnimOverrides", available: true },
   { id: "emotion", labelKey: "sidebarEmotion", available: true },
   { id: "proactive", labelKey: "sidebarProactive", available: true },
   { id: "shortcuts", labelKey: "sidebarShortcuts", available: true },
-  { id: "remote-ssh", labelKey: "sidebarRemoteSsh", available: true },
   { id: "skills", labelKey: "sidebarSkills", available: true },
   { id: "screenclick", labelKey: "sidebarScreenClick", available: true },
-  { id: "providers", labelKey: "sidebarProviders", available: true },
   { id: "mcp", labelKey: "sidebarMcp", available: true },
   { id: "evolve", labelKey: "sidebarEvolve", available: true },
   { id: "memory", labelKey: "sidebarMemory", available: true },
   { id: "history", labelKey: "sidebarHistory", available: true },
-  { id: "telegram-approval", labelKey: "sidebarTelegramApproval", available: true },
-  { id: "mobile", labelKey: "sidebarMobile", available: true },
   { id: "about", labelKey: "sidebarAbout", available: true },
 ];
 
@@ -35,12 +37,8 @@ function renderSidebar() {
   const sidebar = document.getElementById("sidebar");
   if (!sidebar) return;
   sidebar.innerHTML = "";
-  if (
-    globalThis.ClawdSettingsDoctorModal
-    && typeof globalThis.ClawdSettingsDoctorModal.renderSidebarIndicator === "function"
-  ) {
-    globalThis.ClawdSettingsDoctorModal.renderSidebarIndicator(sidebar, core);
-  }
+  // The Doctor / diagnostics sidebar entry was removed — it is an
+  // upstream coding-agent feature; this build is a plain desktop pet.
   for (const tab of SIDEBAR_TABS) {
     const item = document.createElement("div");
     item.className = "sidebar-item";
@@ -89,7 +87,9 @@ core.ops.installRenderHooks({
 });
 
 globalThis.ClawdSettingsTabGeneral.init(core);
-globalThis.ClawdSettingsTabAgents.init(core);
+// agents tab removed — see SIDEBAR_TABS above. Must stay guarded anyway:
+// a bare `.init()` on a missing global aborts the rest of this file.
+if (globalThis.ClawdSettingsTabAgents) globalThis.ClawdSettingsTabAgents.init(core);
 globalThis.ClawdSettingsTabTheme.init(core);
 globalThis.ClawdSettingsTabAnimMap.init(core);
 globalThis.ClawdSettingsTabAnimOverrides.init(core);
@@ -99,7 +99,6 @@ globalThis.ClawdSettingsTabShortcuts.init(core);
 if (globalThis.ClawdSettingsTabTelegramApproval) globalThis.ClawdSettingsTabTelegramApproval.init(core);
 globalThis.ClawdSettingsTabAbout.init(core);
 if (globalThis.ClawdSettingsTabRemoteSsh) globalThis.ClawdSettingsTabRemoteSsh.init(core);
-if (globalThis.ClawdSettingsTabMobile) globalThis.ClawdSettingsTabMobile.init(core);
 if (globalThis.ClawdSettingsTabMinicpm) globalThis.ClawdSettingsTabMinicpm.init(core);
 if (globalThis.ClawdSettingsTabScreenClick) globalThis.ClawdSettingsTabScreenClick.init(core);
 if (globalThis.ClawdSettingsTabSkills) globalThis.ClawdSettingsTabSkills.init(core);
@@ -108,6 +107,50 @@ if (globalThis.ClawdSettingsTabMcp) globalThis.ClawdSettingsTabMcp.init(core);
 if (globalThis.ClawdSettingsTabEvolve) globalThis.ClawdSettingsTabEvolve.init(core);
 if (globalThis.ClawdSettingsTabMemory) globalThis.ClawdSettingsTabMemory.init(core);
 if (globalThis.ClawdSettingsTabHistory) globalThis.ClawdSettingsTabHistory.init(core);
+// ── Split "Theme" and "Animation map" back into two pages ─────────────
+// The theme page hosts only the theme picker again. The animation-map page
+// hosts the map rows plus the animation/sound-override section (each with
+// its own container; the overrides tab owns timers via onExit).
+if (core.tabs.animMap && core.tabs.animOverrides) {
+  const animMapRender = core.tabs.animMap.render;
+  const overridesRender = core.tabs.animOverrides.render;
+
+  core.tabs.animMap.render = (parent) => {
+    animMapRender(parent);
+    const ovHolder = document.createElement("div");
+    ovHolder.id = "themeAnimOverridesSection";
+    parent.appendChild(ovHolder);
+    overridesRender(ovHolder);
+  };
+
+  const animMapPatch = core.tabs.animMap.patchInPlace;
+  core.tabs.animMap.patchInPlace = (changes, ctx) => {
+    if (core.tabs.animOverrides.patchInPlace && core.tabs.animOverrides.patchInPlace(changes, ctx)) return true;
+    return typeof animMapPatch === "function" ? animMapPatch(changes, ctx) : false;
+  };
+
+  const overridesExit = core.tabs.animOverrides.onExit;
+  if (typeof overridesExit === "function") {
+    core.tabs.animMap.onExit = (c) => overridesExit(c);
+  }
+}
+
+// ── Merge the API-provider page into the single "Models" page ─────────
+// The sidebar exposes one "Models" entry (the minicpm tab). We wrap its
+// render() so the API-provider section is appended underneath inside its
+// own container: settings-tab-providers wipes its parent on every render,
+// so it must never be handed the DOM that holds the MiniCPM sections.
+if (core.tabs.minicpm && core.tabs.providers) {
+  const minicpmRender = core.tabs.minicpm.render;
+  const providersRender = core.tabs.providers.render;
+  core.tabs.minicpm.render = (parent) => {
+    minicpmRender(parent);                     // sync-appends the MiniCPM boxes
+    const apiHolder = document.createElement("div");
+    apiHolder.id = "modelsProviderSection";
+    parent.appendChild(apiHolder);             // lands *after* the MiniCPM boxes
+    providersRender(apiHolder);
+  };
+}
 
 if (window.settingsAPI && typeof window.settingsAPI.onChanged === "function") {
   window.settingsAPI.onChanged((payload) => core.ops.applyChanges(payload));

@@ -62,10 +62,10 @@
   }
 
   function renderHeader(parent) {
-    parent.appendChild(el("div", { style: { padding: "0 0 16px 0", borderBottom: "1px solid var(--border)" } },
-      el("h2", { style: { margin: "0 0 4px 0", fontSize: "18px", fontWeight: "600" } }, t("sidebarProviders")),
-      el("p", { style: { margin: "0", fontSize: "13px", color: "var(--text-secondary)" } }, "Choose AI models for chat. Supports any OpenAI-compatible API."),
-    ));
+    // Intentionally a no-op: this section is merged into the "Models" page
+    // (settings-renderer.js wraps the minicpm tab's render), which already
+    // provides the page title. The API card below carries its own heading.
+    void parent;
   }
 
   function renderContent(parent) {

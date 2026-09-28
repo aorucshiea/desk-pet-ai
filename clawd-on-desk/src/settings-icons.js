@@ -19,14 +19,13 @@ const ICONS = {
     '<path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/>' +
     '</svg>',
 
-  // MiniCPM — official brand mark (sparkle / burst).
-  // Source: assets/svg/minicpm-logo.svg. Filled path; we keep the
-  // original 483x486 viewBox and let CSS shrink it into the 18x18
-  // sidebar slot. fill=currentColor so it picks up the sidebar text
-  // colour in both light and dark mode.
+  // Models tab — generic wireframe cube (the previous icon was the
+  // MiniCPM vendor brand mark, removed along with the vendor branding).
+  // 24x24, stroke-only, same weight as the rest of the set.
   minicpm:
-    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 483 486" fill="currentColor" width="100%" height="100%">' +
-    '<path d="M377.155 0L342.607 89.4753L278.432 255.678L372.466 264.715L423.047 269.575L380.443 297.333L317.266 338.491L430.581 409.397L483 442.198L421.206 442.271L234.596 442.489L241.294 479.049L206.392 485.475L195.85 427.942L192.007 406.969L213.28 406.944L359.37 406.771L274.848 353.882L251.22 339.097L274.574 323.882L318.499 295.263L251.743 288.849L228.439 286.61L236.889 264.725L274.966 166.109L203.457 245.266L184.916 265.79L174.005 240.353L148.719 181.411L141.971 249.893L138.774 282.326L113.293 262.083L79.638 235.344L102.221 295.148L113.983 326.294L81.6193 318.771L0.798157 299.985L8.81415 265.333L57.2705 276.594L23.6994 187.692L0.948303 127.445L51.314 167.457L109.852 213.961L120.175 109.251L126.942 40.5891L154.132 103.974L195.692 200.864L312.909 71.1169L377.155 0Z"/>' +
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" width="100%" height="100%">' +
+    '<path d="M12 2.9 3.4 7.4v9.2L12 21.1l8.6-4.5V7.4L12 2.9Z"/>' +
+    '<path d="M12 12.1 3.4 7.4M12 12.1l8.6-4.7M12 12.1v9"/>' +
     '</svg>',
 
   // 📖 — book (skills)

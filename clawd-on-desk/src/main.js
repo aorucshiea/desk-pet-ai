@@ -3239,7 +3239,7 @@ registerSettingsIpc({
     ? hardwareBuddyAdapter.createQuickCommand(payload)
     : { status: "error", code: "quick_commands_unavailable", message: "Quick Commands are unavailable" },
   checkForUpdates,
-  aboutHeroSvgPath: path.join(__dirname, "..", "assets", "svg", "minicpm-logo.svg"),
+  aboutHeroSvgPath: path.join(__dirname, "..", "assets", "svg", "model-mark.svg"),
   getLanWsServer: () => _lanWss,
   getMinicpmChat: () => _minicpmChat,
 });

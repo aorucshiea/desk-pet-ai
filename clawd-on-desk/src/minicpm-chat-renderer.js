@@ -29,7 +29,7 @@ function applyLang(lang) {
     CLASSIFIER_PROMPT = minicpmI18n.getClassifierPrompt(lang);
   }
   try { document.documentElement.setAttribute("lang", lang); } catch {}
-  try { document.title = "MiniCPM"; } catch {}
+  try { document.title = "Chat"; } catch {}
   // Update statically-rendered strings (update pill, ask placeholder, etc.).
   refreshStaticUi();
 }
@@ -1135,7 +1135,7 @@ async function showCommandReply(cmd) {
 }
 
 // Same visual as showCommandReply, but pinned in place — no fade — used
-// while a long-running command (adapter swap, model update) is mid-flight.
+// while a long-running command (engine or model update) is mid-flight.
 async function showCommandProgress(text) {
   clearFade();
   phase = "narration";
@@ -1170,7 +1170,7 @@ async function tryHandleAsCommand(text, onProgress) {
 
   // ── Stage 2: LLM classifier (≈1-2s) — gated ──
   // Only run when using local model. API providers don't need
-  // adapter/persona management, and the classifier uses local model anyway.
+  // model and engine management, and the classifier uses the local model anyway.
   if (t.length <= 50 && COMMAND_HINTS.test(t)) {
     let prov = "local";
     try {
@@ -1208,21 +1208,6 @@ function matchByRegex(text) {
   if (RGX.lup && RGX.lup.test(text)) return { intent: "llama_update" };
   if (RGX.uapply && RGX.uapply.test(text)) return { intent: "update_apply" };
   if (RGX.ucheck && RGX.ucheck.test(text)) return { intent: "update_check" };
-  if (RGX.list && RGX.list.test(text))   return { intent: "list" };
-  if (RGX.off && RGX.off.test(text))    return { intent: "off" };
-  if (RGX.off2 && RGX.off2.test(text))   return { intent: "off" };
-  if (RGX.swap) {
-    const m = text.match(RGX.swap);
-    if (m) {
-      // Some languages capture the persona name in group 1, others in
-      // group 2 — pick whichever non-trivial group we get.
-      const candidate = (m[2] || m[1] || "").trim();
-      if (candidate) {
-        const kw = candidate.replace(TRAILING_PARTICLES, "").trim();
-        if (kw) return { intent: "switch", keyword: kw };
-      }
-    }
-  }
   return null;
 }
 
@@ -1243,7 +1228,6 @@ async function classifyIntentWithLLM(text) {
     top_p: 1,
     repetition_penalty: 1.0,
     silent: true,
-    disable_adapter: true,
   };
   const resp = await sidecarFetch(sidecarUrl + "/api/chat", {
     method: "POST",
@@ -1262,25 +1246,15 @@ async function classifyIntentWithLLM(text) {
   // Search anywhere in the reply for one of the known labels — handles
   // any leading garbage the model leaks through.
   if (/\bNONE\b/i.test(reply))             return null;
-  if (/\bLIST_ADAPTER\b/i.test(reply))     return { intent: "list" };
-  if (/\bDISABLE_ADAPTER\b/i.test(reply))  return { intent: "off" };
   if (/\bUPDATE_CHECK\b/i.test(reply))     return { intent: "update_check" };
   if (/\bUPDATE_APPLY\b/i.test(reply))     return { intent: "update_apply" };
   if (/\bSTATUS\b/i.test(reply))           return { intent: "status" };
-  const m = reply.match(/SWITCH_TO\s*=\s*([^\s,。]+)/i);
-  if (m) {
-    const kw = m[1].replace(/[「」『』"'""''.。]/g, "").trim();
-    if (kw) return { intent: "switch", keyword: kw };
-  }
   return null;
 }
 
 async function dispatch(intent, fullMsg, progress) {
   switch (intent.intent) {
     case "status":       return runStatusQuery();
-    case "list":         return runAdapterList();
-    case "off":          return runAdapterOff(progress);
-    case "switch":       return runAdapterSwitchByKeyword(intent.keyword, fullMsg, progress);
     case "update_check": return runUpdateCheck();
     case "update_apply": return runUpdateApply(progress);
     case "llama_update": return runLlamaUpdate(progress);
@@ -1320,10 +1294,7 @@ async function runStatusQuery() {
   const d = await r.json();
   const persona = d.persona || "default";
   const model = d.model_name || "(unknown)";
-  const adapter = d.adapter ? (d.adapter.split("/").pop()) : null;
-  const text = adapter
-    ? t("chatStatusWithAdapter", { model, adapter, persona })
-    : t("chatStatusNoAdapter", { model, persona });
+  const text = t("chatStatusNoAdapter", { model });
   return { ok: true, text };
 }
 
@@ -1355,159 +1326,6 @@ async function runUpdateApply(progress) {
     text: t("chatUpdateApplyDone"),
     resetHistory: true,
   };
-}
-
-async function runAdapterList() {
-  const r = await sidecarFetch(sidecarUrl + "/api/adapters");
-  const d = await r.json();
-  if (!d.items || !d.items.length) {
-    return { ok: true, text: t("chatAdapterListEmpty") };
-  }
-  const lines = d.items.map((a) => t("chatAdapterListItem", { name: a.name }) + (a.path === d.current ? "  ←" : ""));
-  return {
-    ok: true,
-    text: t("chatAdapterListIntro") + "\n" + lines.join("\n"),
-  };
-}
-
-async function runAdapterOff(progress) {
-  await (progress || (() => {}))(t("chatAdapterUnloading"));
-  // Route through the main-proc IPC so we get the same 90s timeout
-  // and the same `active_adapter_id` persistence the Settings tab
-  // enjoys. Direct fetch from the renderer used to hit a shorter
-  // implicit timeout on cold restart of llama-server and skipped
-  // the prefs write, leaving the user's choice unsaved across
-  // sidecar restarts.
-  const d = (window.minicpm && window.minicpm.loadAdapter)
-    ? await window.minicpm.loadAdapter(null)
-    : null;
-  if (!d || !d.ok) {
-    return { ok: false, text: t("chatUpdateApplyFail", { err: (d && d.error) || t("chatSidecarUnknownError") }) };
-  }
-  return {
-    ok: true,
-    text: t("chatAdapterOff"),
-    resetHistory: true,  // submit() will skip pushing this turn AND wipe `history`
-  };
-}
-
-// Keywords that mean "stop using any LoRA" rather than "switch to a
-// specific persona". These stay hardcoded because they're product
-// vocabulary, not adapter metadata; the rest of the routing is fully
-// data-driven from the manifest exposed via /api/adapters.
-// Cross-language vocabulary for "go back to the base model". These are
-// product-level keywords (not localized strings the user reads), so we
-// keep them as a single Set covering all supported UI langs.
-const DISABLE_ADAPTER_KEYWORDS = new Set([
-  // English
-  "base", "default", "vanilla", "plain", "original",
-  // 简体中文
-  "原版", "默认", "原始", "裸", "纯净", "普通",
-  // 繁體中文
-  "原版", "預設", "純淨", "純净",
-  // 한국어
-  "원본", "기본", "순정", "디폴트",
-  // 日本語
-  "素", "デフォルト", "オリジナル", "ベース",
-]);
-
-// Find the manifest item that best matches `kw` (already lowercased).
-// Strategies in descending confidence:
-//   1) exact alias hit
-//   2) alias substring (tolerates classifier truncation like "猫娘"→"娘")
-//   3) displayName substring
-//   4) filename substring (legacy fallback for adapters without a
-//      manifest entry — preserves the pre-manifest UX)
-function pickAdapterByKeyword(items, kw) {
-  const probe = (kw || "").toLowerCase().trim();
-  if (!probe) return null;
-  const visible = items.filter((it) => !it.missing);
-  // 1) exact alias
-  for (const it of visible) {
-    const aliases = Array.isArray(it.aliases) ? it.aliases : [];
-    if (aliases.some((a) => String(a).toLowerCase() === probe)) return it;
-  }
-  // 2) alias substring
-  for (const it of visible) {
-    const aliases = Array.isArray(it.aliases) ? it.aliases : [];
-    if (aliases.some((a) => {
-      const al = String(a).toLowerCase();
-      return al && (al.includes(probe) || probe.includes(al));
-    })) return it;
-  }
-  // 3) displayName substring
-  for (const it of visible) {
-    const dn = String(it.displayName || "").toLowerCase();
-    if (dn && (dn.includes(probe) || probe.includes(dn))) return it;
-  }
-  // 4) filename substring fallback
-  for (const it of visible) {
-    if (String(it.name || "").toLowerCase().includes(probe)) return it;
-  }
-  return null;
-}
-
-async function runAdapterSwitchByKeyword(keyword, fullMessage, progress) {
-  const onProgress = progress || (async () => {});
-  const kw = (keyword || "").toLowerCase().trim();
-
-  // Disable keywords short-circuit before we even touch /api/adapters,
-  // so "切回原版" still works when the user has no LoRAs registered.
-  if (DISABLE_ADAPTER_KEYWORDS.has(kw)) {
-    return runAdapterOff(onProgress);
-  }
-
-  const r = await sidecarFetch(sidecarUrl + "/api/adapters");
-  const d = await r.json();
-  const items = (d && Array.isArray(d.items)) ? d.items : [];
-  if (!items.length) {
-    return { ok: true, text: t("chatAdapterListEmpty") };
-  }
-
-  const pick = pickAdapterByKeyword(items, kw);
-  if (!pick) {
-    return { ok: true, text: t("chatAdapterNotFound", { keyword }) };
-  }
-  if (pick.path === d.current) {
-    return { ok: true, text: t("chatAdapterSwitched", { name: pick.displayName || pick.name }) };
-  }
-  return await doSwap(pick);
-
-  async function doSwap(picked) {
-    const label = picked.displayName || picked.name;
-    await onProgress(t("chatAdapterSwitching", { name: label }));
-    // Route through the main-proc IPC (same handler the Settings tab
-    // uses) so we share its 90s timeout + the `active_adapter_id`
-    // persistence. The direct-fetch flow used to skip both: chat-side
-    // switches worked in the current session but didn't survive a
-    // sidecar restart, and a cold reload (Base → LoRA) sometimes
-    // hit shorter renderer timeouts.
-    const sd = (window.minicpm && window.minicpm.loadAdapter)
-      ? await window.minicpm.loadAdapter(picked.path)
-      : null;
-    if (!sd || !sd.ok) {
-      return { ok: false, text: t("chatUpdateApplyFail", { err: (sd && sd.error) || t("chatSidecarUnknownError") }) };
-    }
-
-    // Persona-LoRAs don't follow the <think> chat template, so flip
-    // thinking off when switching INTO one. Going back to base leaves
-    // the user's preference alone.
-    const newPersona = sd.persona || "default";
-    let chatParams = {};
-    try {
-      chatParams = (window.minicpm && typeof window.minicpm.getChatParams === "function")
-        ? (await window.minicpm.getChatParams()) || {}
-        : {};
-    } catch {}
-    if (newPersona !== "default" && resolveThinking(chatParams)) {
-      thinkingOverride = false;
-    }
-    return {
-      ok: true,
-      text: t("chatAdapterSwitched", { name: label }),
-      resetHistory: true,
-    };
-  }
 }
 
 // ── Skills context injection ──
@@ -1726,12 +1544,12 @@ async function submit(text) {
   try {
     const cmd = await tryHandleAsCommand(text, async (progressText) => {
       // Show interim progress immediately so the user knows the request
-      // is being worked on (adapter swaps take ~3-4 s).
+      // is being worked on (model/engine swaps take ~3-4 s).
       await showCommandProgress(progressText);
     });
     if (cmd) {
       if (cmd.resetHistory) {
-        // Adapter / model swap: the chat "voice" just changed, so we wipe
+        // Model swap: the chat "voice" just changed, so we wipe
         // the entire prior history AND we don't even keep this admin turn
         // — meta-config chatter shouldn't anchor the new model.
         replaceActiveHistory([]);
@@ -2287,7 +2105,7 @@ if (window.minicpm) {
   if (window.minicpm.onDismiss) window.minicpm.onDismiss(cmdDismiss);
   if (window.minicpm.onReset) window.minicpm.onReset(cmdReset);
   if (window.minicpm.onToggleThinking) window.minicpm.onToggleThinking(async () => {
-    // When a persona LoRA is loaded, thinking-mode is broken (the model
+    // On some local checkpoints thinking-mode is broken (the model
     // doesn't emit </think>). Warn instead of letting the user flip it on
     // and stare at an empty bubble.
     let persona = "default";
@@ -2326,7 +2144,7 @@ if (window.minicpm) {
     });
   }
   // Out-of-band system messages (e.g. "已切换到 X" pushed from the
-  // Settings panel after an adapter swap). Routed to the same
+  // Settings panel after a model swap). Routed to the same
   // showCommandReply path the in-chat commands use, with optional
   // history wipe so the new persona starts clean.
   if (window.minicpm.onCmdReply) window.minicpm.onCmdReply(async (cmd) => {

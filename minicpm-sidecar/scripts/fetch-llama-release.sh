@@ -62,14 +62,42 @@ case "$TARGET" in
 esac
 
 OUT="${LLAMA_OUT_DIR:-$ROOT/bin/$TARGET}"
-URL="https://github.com/ggml-org/llama.cpp/releases/download/${TAG}/${ASSET}"
+REL_URL="https://github.com/ggml-org/llama.cpp/releases/download/${TAG}/${ASSET}"
 TMP="$(mktemp -d)"
 cleanup() { rm -rf "$TMP"; }
 trap cleanup EXIT
 
-cyan "==> Fetch official llama.cpp ${TAG}: ${ASSET}"
+# GitHub direct is unusable from mainland China (measured 0.01 MB/s on a 252 MB
+# asset). Mirrors measured 1.1-1.5 MB/s, so try them first, official last.
+# Override with: LLAMA_CPP_MIRRORS="https://a/https://github.com/...,https://b/..."
+MIRRORS="$REL_URL"
+for prefix in https://ghfast.top https://ghproxy.net https://gh-proxy.com; do
+  MIRRORS="${prefix}/${REL_URL} ${MIRRORS}"
+done
+if [[ -n "${LLAMA_CPP_MIRRORS:-}" ]]; then
+  MIRRORS="${LLAMA_CPP_MIRRORS//,/ }"
+fi
+
+cyan "==> Fetch llama.cpp ${TAG}: ${ASSET}"
 mkdir -p "$OUT"
-curl -L --fail --retry 5 --retry-delay 2 -o "$TMP/$ASSET" "$URL"
+GOT=0
+for url in $MIRRORS; do
+  echo "  try: $url"
+  rm -f "$TMP/$ASSET"
+  if curl -sL --fail --noproxy '*' --max-time 1800 --retry 2 --retry-delay 2 \
+       -o "$TMP/$ASSET" "$url"; then
+    if [[ -s "$TMP/$ASSET" ]]; then
+      green "  got it from: $url"
+      GOT=1
+      break
+    fi
+  fi
+  echo "    failed, next source"
+done
+if [[ "$GOT" != "1" ]]; then
+  red "all download sources failed for ${ASSET} (set LLAMA_CPP_MIRRORS to override)"
+  exit 1
+fi
 mkdir -p "$TMP/extract"
 tar -xzf "$TMP/$ASSET" -C "$TMP/extract"
 

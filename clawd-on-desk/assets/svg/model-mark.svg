@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+  <!-- Generic model mark: an isometric cube (no vendor branding).
+       Inherits currentColor so it works on any background. -->
+  <path d="M64 14 18 40v48l46 26 46-26V40L64 14Z"/>
+  <path d="M64 74 18 40M64 74l46-34M64 74v54"/>
+  <circle cx="64" cy="74" r="6" fill="currentColor" stroke="none" opacity="0.5"/>
+</svg>

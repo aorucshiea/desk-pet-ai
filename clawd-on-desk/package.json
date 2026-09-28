@@ -67,8 +67,9 @@
   "license": "AGPL-3.0-only",
   "repository": {
     "type": "git",
-    "url": "https://github.com/rullerzhou-afk/clawd-on-desk.git"
+    "url": "https://github.com/aorucshiea/desk-pet-ai.git"
   },
+  "homepage": "https://github.com/aorucshiea/desk-pet-ai",
   "upstreamRepository": "https://github.com/rullerzhou-afk/clawd-on-desk",
   "type": "commonjs",
   "build": {

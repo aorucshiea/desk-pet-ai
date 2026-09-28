@@ -5,12 +5,13 @@
   // from default-theme.js; the literal fallback keeps isolated tests working.
   const { DEFAULT_THEME_ID } = (typeof globalThis !== "undefined" && globalThis.ClawdDefaultTheme)
     || { DEFAULT_THEME_ID: "cybercat" };
-  const ANIM_MAP_ROWS = [
-    { stateKey: "error", labelKey: "animMapErrorLabel", descKey: "animMapErrorDesc" },
-    { stateKey: "notification", labelKey: "animMapNotificationLabel", descKey: "animMapNotificationDesc" },
-    { stateKey: "sweeping", labelKey: "animMapSweepingLabel", descKey: "animMapSweepingDesc" },
-    { stateKey: "attention", labelKey: "animMapAttentionLabel", descKey: "animMapAttentionDesc" },
-    { stateKey: "carrying", labelKey: "animMapCarryingLabel", descKey: "animMapCarryingDesc" },
+// All five original rows (task complete / error flash / context sweep /
+// notification / worktree carry) were coding-agent scenarios and are gone —
+// the pet is not task-driven anymore. The map page now only hosts the
+// animation/sound override section (appended by the wrapper in
+// settings-renderer.js). New rows can be added back here when the pet
+// grows states that deserve manual mapping.
+const ANIM_MAP_ROWS = [
   ];
 
   let state = null;

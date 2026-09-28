@@ -117,11 +117,9 @@ module.exports = function initOnboarding(ctx) {
   let internalClose = false;
 
   // ── sentinel file (records "did the user already finish onboarding") ───
-  function readSentinel() {
-    try {
-      return JSON.parse(fs.readFileSync(userDataPath(SENTINEL_FILE), "utf-8"));
-    } catch { return null; }
-  }
+  // Note: shouldShow() no longer reads the sentinel (the wizard is off by
+  // default), but we keep writing it on complete so a forced run
+  // (MINICPM_FORCE_ONBOARDING=1) still leaves an audit trail.
   function writeSentinel(extra = {}) {
     const payload = {
       complete: true,
@@ -139,17 +137,10 @@ module.exports = function initOnboarding(ctx) {
   function shouldShow() {
     // Force-rerun via env (developer override).
     if (process.env.MINICPM_FORCE_ONBOARDING === "1") return true;
-    // External backend (e.g. OpenVINO skill) manages its own model —
-    // skip onboarding entirely when MINICPM_BACKEND is set.
-    if (process.env.MINICPM_BACKEND) return false;
-    const s = readSentinel();
-    if (!s || s.complete !== true) return true;
-    // Future-proof: a schema bump invalidates older sentinels.
-    if (typeof s.version === "number" && s.version < CURRENT_VERSION) return true;
-    // No model-required gate: finishing the wizard once is enough.
-    // A missing model must NOT re-open onboarding on every launch —
-    // the user can add one anytime from Settings. (API providers and
-    // MINICPM_BACKEND already bypass the wizard entirely.)
+    // Wizard disabled by default: launch straight to the desktop pet.
+    // The pet works out of the box in API mode (Settings -> Model
+    // Providers), and a local GGUF can be added later from Settings or
+    // onboarding can be re-opened with MINICPM_FORCE_ONBOARDING=1.
     return false;
   }
   function reset() {

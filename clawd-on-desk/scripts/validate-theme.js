@@ -169,7 +169,7 @@ if (raw.eyeTracking && raw.eyeTracking.enabled) {
   // All eye tracking states must reference .svg files
   if (raw.states && raw.eyeTracking.states) {
     for (const stateName of raw.eyeTracking.states) {
-      const stateFiles = getStateFiles(raw.states[stateName]);
+      const stateFiles = fileNamesOf(raw.states[stateName]);
       const files = stateFiles.length > 0
         ? stateFiles
         : (raw.miniMode && raw.miniMode.states && raw.miniMode.states[stateName]);
@@ -193,13 +193,24 @@ const assetsDirExists = fs.existsSync(assetsDir);
 check(assetsDirExists, `assets/ directory exists`);
 
 /** Collect all referenced asset filenames */
+// Flatten a state binding into plain file names. getStateFiles() preserves
+// the {file, emotion} object form on purpose (the emotion-aware resolver
+// needs it downstream), but everything in THIS script treats entries as
+// path strings — so normalise here. Fixes the path.join(Object) crash on
+// themes that use emotion variants or fallbackTo bindings.
+function fileNamesOf(entry) {
+  return getStateFiles(entry)
+    .map((f) => (typeof f === "string" ? f : (f && typeof f === "object" && typeof f.file === "string" ? f.file : null)))
+    .filter(Boolean);
+}
+
 function collectFiles() {
   const files = new Set();
   // States
   if (raw.states) {
     for (const [key, entry] of Object.entries(raw.states)) {
       if (key.startsWith("_")) continue; // skip _comment
-      getStateFiles(entry).forEach((f) => files.add(f));
+      fileNamesOf(entry).forEach((f) => files.add(f));
     }
   }
   // Mini mode states
@@ -291,7 +302,7 @@ if (raw.eyeTracking && raw.eyeTracking.enabled && assetsDirExists) {
   // Check each eye tracking SVG
   const eyeStates = raw.eyeTracking.states || [];
   for (const stateName of eyeStates) {
-    const stateFiles = getStateFiles(raw.states && raw.states[stateName]);
+    const stateFiles = fileNamesOf(raw.states && raw.states[stateName]);
     const files = stateFiles.length > 0
       ? stateFiles
       : (raw.miniMode && raw.miniMode.states && raw.miniMode.states[stateName]) || [];
@@ -488,7 +499,7 @@ function collectBaseAssetFiles(base) {
   }
   if (base.states) {
     for (const entry of Object.values(base.states)) {
-      for (const f of getStateFiles(entry)) files.add(f);
+      for (const f of fileNamesOf(entry)) files.add(f);
     }
   }
   if (base.miniMode && base.miniMode.states) {

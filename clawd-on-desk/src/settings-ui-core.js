@@ -1007,7 +1007,7 @@
     });
     if (!result || !result.valid || !result.applied) return;
     requestAnimationPosterRender({
-      content: state.activeTab === "animOverrides" && runtime.animOverridesSubtab === "animations",
+      content: (state.activeTab === "animOverrides" || state.activeTab === "animMap") && runtime.animOverridesSubtab === "animations",
       modal: !!runtime.assetPicker.state,
     });
   }
@@ -1194,7 +1194,7 @@
     }
     const shouldPreserveAnimOverridesData = !!(
       needsAnimOverridesRefresh
-      && (state.activeTab === "animOverrides" || runtime.assetPicker.state)
+      && (state.activeTab === "animOverrides" || state.activeTab === "animMap" || runtime.assetPicker.state)
     );
     if (needsAnimOverridesRefresh && !shouldPreserveAnimOverridesData) {
       runtime.animationOverridesData = null;
@@ -1226,7 +1226,7 @@
       }
     }
 
-    if (needsAnimOverridesRefresh && (state.activeTab === "animOverrides" || runtime.assetPicker.state)) {
+    if (needsAnimOverridesRefresh && (state.activeTab === "animOverrides" || state.activeTab === "animMap" || runtime.assetPicker.state)) {
       fetchAnimationOverridesData().then(() => {
         normalizeAssetPickerSelection();
         requestRender({ sidebar: true, content: true, modal: true });

@@ -2206,9 +2206,8 @@ module.exports = function initMinicpmChat(ctx) {
       situation += tnar("eventLastSaid", { summary });
     }
 
-    // Narration always runs the base model (`disable_adapter: true`) so
-    // the persona LoRA doesn't bias output toward cuteness over info
-    // density.
+    // Narration runs the base model so output stays functional and
+    // information-dense rather than performative.
     return {
       system: narration.systemPrompt,
       user: `事件:${situation}\n回复:`,
@@ -2231,7 +2230,6 @@ module.exports = function initMinicpmChat(ctx) {
         top_p: 0.9,
         repetition_penalty: 1.15,
         silent: true,            // don't push pet animation states for narrator
-        disable_adapter: true,   // bypass persona LoRA — narration must be functional/informative
       });
       const r = await httpJson("POST", `${sidecar.baseUrl()}/api/chat`, JSON.parse(body), 30000);
       let text = (r.json && (r.json.content || "")).trim();

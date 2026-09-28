@@ -136,7 +136,7 @@
   // ── EN strings ──
   const EN_STRINGS = {
     // Menu / shared
-    menuMinicpmChat: "MiniCPM Chat",
+    menuMinicpmChat: "Chat",
     // Onboarding window + steps
     onboardingWindowTitle: "Desk Pet — First Launch",
     onboardingStepEnvCheck: "Environment",
@@ -156,7 +156,7 @@
     onboardingBack: "Back",
     // Step 2: model
     onboardingModelTitle: "Set up the model",
-    onboardingModelLede: "Install MiniCPM5 0.9B",
+    onboardingModelLede: "Install the local model",
     onboardingDownloadCardTitle: "Download online",
     onboardingDownloadCardDesc: "Default GGUF Q8_0; the source is auto-selected based on your network.",
     onboardingDownloadProgressInit: "Preparing…",
@@ -185,11 +185,11 @@
     onboardingHotkeyToggleChat: "toggle chat bubble",
     onboardingHotkeyToggleThinking: "toggle thinking mode",
     onboardingHotkeyEscClose: "close the bubble when input is focused",
-    onboardingMoreHint: "Want to swap models, see resource usage, or restart the sidecar? Open the right-click menu's Settings → MiniCPM.",
+    onboardingMoreHint: "Want to swap models, see resource usage, or restart the sidecar? Open the right-click menu's Settings → Model.",
     onboardingSkipModelHint: "No model yet? That's fine - add one anytime from Settings (Model tab).",
     onboardingFinish: "Let the pet appear",
     // File picker dialog
-    onboardingPickerDialogTitle: "Choose a local MiniCPM model (a .gguf file or a directory containing one)",
+    onboardingPickerDialogTitle: "Choose a local model (a .gguf file or a directory containing one)",
     onboardingPickerDialogMessage: "Pick a single .gguf file, or a directory containing .gguf files",
     onboardingPickerInvalidDir: "The selected directory has no .gguf files:\n{path}",
     onboardingPickerInvalidFile: "Please pick a .gguf file:\n{path}",
@@ -213,8 +213,7 @@
     chatUpdatePillUpdating: "Updating…",
     chatUpdatePillTitleUpdating: "Updating the model… don't close the pet.",
     // Chat command replies
-    chatStatusWithAdapter: "Currently {model}, with the {adapter} LoRA loaded (persona: {persona})",
-    chatStatusNoAdapter: "Currently {model}, no LoRA loaded (persona: {persona})",
+    chatStatusNoAdapter: "Currently using {model}",
     chatUpdateNoConn: "Can't reach the update source — try again in a bit",
     chatUpdateAvailable: "v{remote} is out! You're on {local}. Reply \"update\" and I'll pull it.",
     chatUpdateUpToDate: "You're already on the latest ({local}); nothing to do",
@@ -224,15 +223,6 @@
     chatEngineUpToDate: "Engine is already the latest (build {local}); nothing to do",
     chatEngineUpdateStart: "Updating the inference engine — it'll restart for a few seconds",
     chatEngineUpdateDone: "Engine updated to {remote}; restarted with the new build",
-    chatAdapterListEmpty: "No personas configured.",
-    chatAdapterListIntro: "Available personas:",
-    chatAdapterListItem: "• {name}",
-    chatAdapterOff: "Switched off; back to the base model",
-    chatAdapterAlreadyOff: "No persona was loaded already",
-    chatAdapterSwitched: "Switched to {name}",
-    chatAdapterNotFound: "Couldn't find a persona matching \"{keyword}\"",
-    chatAdapterSwitching: "Switching to {name}…",
-    chatAdapterUnloading: "Unloading the persona…",
     // Chat sidecar errors
     chatSidecarMissingBin: "sidecar binary not found. Packaged builds should ship sidecar-bin/; for dev mode, run cd minicpm-sidecar && uv sync.",
     chatSidecarMissingPython: "Python interpreter not found. Install the packaged build (recommended), or cd minicpm-sidecar && uv sync.",
@@ -251,34 +241,21 @@
     chatSkillNotFoundReply: "Skill「{name}」not found",
   };
   const EN_PATTERNS = {
-    status: /\b(what|which|current|now)\b.{0,30}\b(model|persona|adapter|lora)\b/i,
-    list: /\b(list|show|what).{0,12}\b(personas?|adapters?|loras?|skins?)\b/i,
-    off: /\b(disable|remove|unload|turn off|take off|drop)\b.{0,12}\b(adapter|lora|persona|skin)\b/i,
-    off2: /\b(back to|reset to|use)\b.{0,12}\b(base|default|original|plain|vanilla)\b/i,
-    swap: /\b(switch to|change to|put on|use|load)\b\s+([\w\u4e00-\u9fff-]{1,16})/i,
+    status: /\b(what|which|current|now)\b.{0,30}\b(model)\b/i,
     ucheck: /\b(check|any|is there).{0,12}\bupdates?\b|\b(update|new\s*version)\b\s*(?:available|out|yet)?\??/i,
     lup: /\b(engine|llama).{0,10}\b(update|upgrade)\b|\b(update|upgrade)\b.{0,10}\b(engine|llama)\b/i,
     uapply: /^(update|upgrade|pull).{0,15}(now|please|it)?\b/i,
-    hints: /\b(adapter|lora|persona|skin|model|update|upgrade|version|switch|load|disable|unload|hf|huggingface|default|vanilla|base|engine|llama)\b/i,
+    hints: /\b(adapter|model|update|upgrade|version|switch|load|disable|unload|hf|huggingface|default|vanilla|base|engine|llama)\b/i,
   };
   const EN_CLASSIFIER =
     "You are a command classifier. Map the user's message to one of the labels below and output ONLY the label:\n" +
-    "LIST_ADAPTER / SWITCH_TO=name / DISABLE_ADAPTER / UPDATE_CHECK / UPDATE_APPLY / STATUS / NONE\n\n" +
-    "User: list personas → LIST_ADAPTER\n" +
-    "User: show me the available LoRAs → LIST_ADAPTER\n" +
-    "User: switch to neko → SWITCH_TO=neko\n" +
-    "User: load the cat persona → SWITCH_TO=cat\n" +
-    "User: put on neko → SWITCH_TO=neko\n" +
-    "User: back to default → DISABLE_ADAPTER\n" +
-    "User: take off the persona → DISABLE_ADAPTER\n" +
-    "User: I don't want neko anymore → DISABLE_ADAPTER\n" +
+    "UPDATE_CHECK / UPDATE_APPLY / STATUS / NONE\n\n" +
     "User: which model are you using → STATUS\n" +
     "User: check for updates → UPDATE_CHECK\n" +
     "User: update now → UPDATE_APPLY\n" +
     "User: hi → NONE\n" +
     "User: what's the weather → NONE\n" +
     "User: what is 1+1 → NONE\n" +
-    "User: explain LoRA → NONE\n" +
     "Now classify the next line:";
   const EN_NARRATION = {
     eventStopFailureWithSubject: "The owner ran into an error while working with AI on {subject}",
@@ -310,12 +287,12 @@
   };
   // ── ZH strings ──
   const ZH_STRINGS = {
-    menuMinicpmChat: "MiniCPM Chat",
-    onboardingWindowTitle: "MiniCPM 桌宠 — 首次启动",
+    menuMinicpmChat: "Chat",
+    onboardingWindowTitle: "桌宠 — 首次启动",
     onboardingStepEnvCheck: "环境检查",
     onboardingStepModel: "准备模型",
     onboardingStepReady: "就绪",
-    onboardingEnvWelcome: "欢迎使用 MiniCPM 桌宠",
+    onboardingEnvWelcome: "欢迎使用桌宠",
     onboardingEnvCheckDisk: "磁盘空间",
     onboardingEnvCheckChip: "芯片",
     onboardingDetecting: "检测中…",
@@ -327,7 +304,7 @@
     onboardingNext: "下一步",
     onboardingBack: "上一步",
     onboardingModelTitle: "准备模型",
-    onboardingModelLede: "安装 MiniCPM5 0.9B",
+    onboardingModelLede: "安装本地模型",
     onboardingDownloadCardTitle: "在线下载",
     onboardingDownloadCardDesc: "默认 GGUF Q8_0，会根据你的网络情况自动选择下载源。",
     onboardingDownloadProgressInit: "准备中...",
@@ -355,10 +332,10 @@
     onboardingHotkeyToggleChat: "开关聊天气泡",
     onboardingHotkeyToggleThinking: "切换思考模式",
     onboardingHotkeyEscClose: "在气泡内焦点时关闭气泡",
-    onboardingMoreHint: "想换模型、查看资源占用、重启 sidecar？打开右键菜单的 Settings → MiniCPM。",
+    onboardingMoreHint: "想换模型、查看资源占用、重启 sidecar？打开右键菜单的 Settings → Model。",
     onboardingSkipModelHint: "还没有模型？没关系，之后随时可以在设置页的模型 tab 里添加。",
     onboardingFinish: "让桌宠登场",
-    onboardingPickerDialogTitle: "选择本地 MiniCPM 模型 (.gguf 文件或包含 .gguf 的目录)",
+    onboardingPickerDialogTitle: "选择本地模型 (.gguf 文件或包含 .gguf 的目录)",
     onboardingPickerDialogMessage: "可以是单个 .gguf 文件，或包含 .gguf 的目录",
     onboardingPickerInvalidDir: "所选目录不包含 .gguf：\n{path}",
     onboardingPickerInvalidFile: "请选择 .gguf 文件：\n{path}",
@@ -378,8 +355,7 @@
     chatUpdatePillTitle: "点击更新模型",
     chatUpdatePillUpdating: "更新中…",
     chatUpdatePillTitleUpdating: "正在更新模型…，更新完成前请勿关闭桌宠。",
-    chatStatusWithAdapter: "当前是 {model}，套着 {adapter} 这个 LoRA（人格: {persona}）",
-    chatStatusNoAdapter: "当前是 {model}，没套 LoRA（人格: {persona}）",
+    chatStatusNoAdapter: "当前是 {model}",
     chatUpdateNoConn: "查不动更新源诶，待会儿再问",
     chatUpdateAvailable: "有新版 {remote}！本地是 {local}。回我\"更新\"我就拉。",
     chatUpdateUpToDate: "已经是最新啦（{local}），不用动",
@@ -389,15 +365,6 @@
     chatEngineUpToDate: "推理引擎已经是最新版（build {local}），不用更新",
     chatEngineUpdateStart: "正在更新推理引擎——它会重启几秒，别关桌宠",
     chatEngineUpdateDone: "引擎已更新到 {remote}，已用新版本重启",
-    chatAdapterListEmpty: "还没有配置任何人格。",
-    chatAdapterListIntro: "可用人格：",
-    chatAdapterListItem: "• {name}",
-    chatAdapterOff: "已脱掉，回到原版模型",
-    chatAdapterAlreadyOff: "本来就没套 LoRA",
-    chatAdapterSwitched: "已切到 {name}",
-    chatAdapterNotFound: "找不到叫\"{keyword}\"的人格",
-    chatAdapterSwitching: "正在切到 {name}…",
-    chatAdapterUnloading: "正在卸下当前人格…",
     chatSidecarMissingBin: "找不到 sidecar。打包模式下应内置 sidecar-bin/，开发模式请 cd minicpm-sidecar && uv sync。",
     chatSidecarMissingPython: "找不到 Python 解释器。请安装应用打包版（推荐），或 cd minicpm-sidecar && uv sync。",
     chatSidecarPyExited: "Python 进程提前退出。stderr 末尾：\n{tail}",
@@ -416,33 +383,19 @@
   };
   const ZH_PATTERNS = {
     status: /(你现在|当前|目前|现在).{0,4}(是什么|是啥|用的什么|用啥|什么模型|什么人格|哪个模型|哪个人格|是哪个)/,
-    list: /(看看|看下|查看|有啥|有什么|哪些|列|列出).{0,5}(adapter|插件|皮肤|人格|风格|lora)/i,
-    off: /(关掉|关闭|去掉|不要|脱掉|取消|卸|卸载).{0,4}(adapter|人格|皮肤|lora)/i,
-    off2: /(用回|回到|切到|切回|换成|换到|去).{0,4}(原版|默认|base|普通|原始|裸|本来|纯净)/i,
-    swap: /(切到|换到|换成|切换到|切换成|换上|穿上|戴上|启用|载入|加载|装上|套上|挂上).{0,2}([\u4e00-\u9fff\w-]{1,16})/i,
     ucheck: /(检查|看看|查|有没|看一下).{0,4}(更新|新版|新版本)|(更新|新版).{0,4}(吗|么|嘛|没|？|\?)/,
     lup: /(更新|升级).{0,3}(引擎|llama)|(引擎|llama).{0,3}(更新|升级)/i,
     uapply: /^(更新|升级|马上更新|去更新|更新一下|开始更新|马上升级|拉新版)\b/,
-    hints: /(adapter|lora|人格|皮肤|风格|默认|原版|裸|纯净|普通|猫娘|宝宝|更新|升级|新版|hf|hugging|切|换|装|穿|戴|脱|关掉|关闭|启用|禁用|卸|挂上|套上|不要|别|去掉|取消|废|废掉|model|模型|皮|引擎|llama)/i,
+    hints: /(adapter|默认|原版|裸|纯净|普通|更新|升级|新版|hf|hugging|切|换|装|穿|戴|脱|关掉|关闭|启用|禁用|卸|挂上|套上|不要|别|去掉|取消|废|废掉|model|模型|引擎|llama)/i,
   };
   const ZH_CLASSIFIER =
     "你是命令分类器。把用户的话归到下面一个标签，只输出标签本身：\n" +
-    "LIST_ADAPTER / SWITCH_TO=名字 / DISABLE_ADAPTER / UPDATE_CHECK / UPDATE_APPLY / STATUS / NONE\n\n" +
-    "用户：看看有哪些人格 → LIST_ADAPTER\n" +
-    "用户：列出 lora → LIST_ADAPTER\n" +
-    "用户：切到猫娘 → SWITCH_TO=猫娘\n" +
-    "用户：把猫娘装上 → SWITCH_TO=猫娘\n" +
-    "用户：来个 neko → SWITCH_TO=neko\n" +
-    "用户：回到原版 → DISABLE_ADAPTER\n" +
-    "用户：脱掉皮肤 → DISABLE_ADAPTER\n" +
-    "用户：我不要用猫娘了 → DISABLE_ADAPTER\n" +
     "用户：你现在用什么模型 → STATUS\n" +
     "用户：检查更新 → UPDATE_CHECK\n" +
     "用户：去更新一下 → UPDATE_APPLY\n" +
     "用户：你好 → NONE\n" +
     "用户：今天天气真好 → NONE\n" +
     "用户：1+1 等于几 → NONE\n" +
-    "用户：解释一下 LoRA 是什么 → NONE\n" +
     "现在分类下面这句：";
   const ZH_NARRATION = {
     eventStopFailureWithSubject: "主人和 AI 处理{subject}的时候出错了",
@@ -473,12 +426,12 @@
   };
   // ── ZH-TW strings ──
   const ZH_TW_STRINGS = {
-    menuMinicpmChat: "MiniCPM Chat",
-    onboardingWindowTitle: "MiniCPM 桌寵 — 首次啟動",
+    menuMinicpmChat: "Chat",
+    onboardingWindowTitle: "桌寵 — 首次啟動",
     onboardingStepEnvCheck: "環境檢查",
     onboardingStepModel: "準備模型",
     onboardingStepReady: "就緒",
-    onboardingEnvWelcome: "歡迎使用 MiniCPM 桌寵",
+    onboardingEnvWelcome: "歡迎使用桌寵",
     onboardingEnvCheckDisk: "磁碟空間",
     onboardingEnvCheckChip: "晶片",
     onboardingDetecting: "偵測中…",
@@ -490,7 +443,7 @@
     onboardingNext: "下一步",
     onboardingBack: "上一步",
     onboardingModelTitle: "準備模型",
-    onboardingModelLede: "安裝 MiniCPM5 0.9B",
+    onboardingModelLede: "安裝本機模型",
     onboardingDownloadCardTitle: "線上下載",
     onboardingDownloadCardDesc: "預設 GGUF Q8_0，會根據你的網路狀況自動選擇下載來源。",
     onboardingDownloadProgressInit: "準備中...",
@@ -518,10 +471,10 @@
     onboardingHotkeyToggleChat: "開關聊天對話框",
     onboardingHotkeyToggleThinking: "切換思考模式",
     onboardingHotkeyEscClose: "在對話框輸入時關閉對話框",
-    onboardingMoreHint: "想換模型、查看資源占用、重啟 sidecar？開啟右鍵選單的 Settings → MiniCPM。",
+    onboardingMoreHint: "想換模型、查看資源占用、重啟 sidecar？開啟右鍵選單的 Settings → Model。",
     onboardingSkipModelHint: "還沒有模型？沒關係，之後隨時可以在設定頁的模型 tab 裡新增。",
     onboardingFinish: "讓桌寵登場",
-    onboardingPickerDialogTitle: "選擇本機 MiniCPM 模型 (.gguf 檔案或包含 .gguf 的目錄)",
+    onboardingPickerDialogTitle: "選擇本機模型 (.gguf 檔案或包含 .gguf 的目錄)",
     onboardingPickerDialogMessage: "可以是單一 .gguf 檔案，或包含 .gguf 的目錄",
     onboardingPickerInvalidDir: "所選目錄不包含 .gguf：\n{path}",
     onboardingPickerInvalidFile: "請選擇 .gguf 檔案：\n{path}",
@@ -541,8 +494,7 @@
     chatUpdatePillTitle: "點擊更新模型",
     chatUpdatePillUpdating: "更新中…",
     chatUpdatePillTitleUpdating: "正在更新模型…，更新完成前請勿關閉桌寵。",
-    chatStatusWithAdapter: "目前是 {model}，套著 {adapter} 這個 LoRA（人格: {persona}）",
-    chatStatusNoAdapter: "目前是 {model}，沒套 LoRA（人格: {persona}）",
+    chatStatusNoAdapter: "目前是 {model}",
     chatUpdateNoConn: "查不到更新來源耶，等一下再問",
     chatUpdateAvailable: "有新版 {remote}！本機是 {local}。回我「更新」我就拉。",
     chatUpdateUpToDate: "已經是最新囉（{local}），不用動",
@@ -552,15 +504,6 @@
     chatEngineUpToDate: "推理引擎已經是最新版（build {local}），不用更新",
     chatEngineUpdateStart: "正在更新推理引擎——它會重啟幾秒，別關桌寵",
     chatEngineUpdateDone: "引擎已更新到 {remote}，已用新版本重啟",
-    chatAdapterListEmpty: "還沒有設定任何人格。",
-    chatAdapterListIntro: "可用人格：",
-    chatAdapterListItem: "• {name}",
-    chatAdapterOff: "已脫掉，回到原版模型",
-    chatAdapterAlreadyOff: "本來就沒套 LoRA",
-    chatAdapterSwitched: "已切到 {name}",
-    chatAdapterNotFound: "找不到叫「{keyword}」的人格",
-    chatAdapterSwitching: "正在切到 {name}…",
-    chatAdapterUnloading: "正在卸下目前人格…",
     chatSidecarMissingBin: "找不到 sidecar。打包模式下應內建 sidecar-bin/，開發模式請 cd minicpm-sidecar && uv sync。",
     chatSidecarMissingPython: "找不到 Python 直譯器。請安裝應用打包版（建議），或 cd minicpm-sidecar && uv sync。",
     chatSidecarPyExited: "Python 程序提前結束。stderr 末尾：\n{tail}",
@@ -579,33 +522,19 @@
   };
   const ZH_TW_PATTERNS = {
     status: /(你現在|目前|現在).{0,4}(是什麼|是啥|用的什麼|什麼模型|什麼人格|哪個模型|哪個人格|是哪個)/,
-    list: /(看看|看一下|查看|有啥|有什麼|哪些|列|列出).{0,5}(adapter|外掛|皮膚|人格|風格|lora)/i,
-    off: /(關掉|關閉|去掉|不要|脫掉|取消|卸|卸載).{0,4}(adapter|人格|皮膚|lora)/i,
-    off2: /(用回|回到|切到|切回|換成|換到|去).{0,4}(原版|預設|base|普通|原始|裸|本來|純淨)/i,
-    swap: /(切到|換到|換成|切換到|切換成|換上|穿上|戴上|啟用|載入|裝上|套上|掛上).{0,2}([\u4e00-\u9fff\w-]{1,16})/i,
     ucheck: /(檢查|看看|查|有沒|看一下).{0,4}(更新|新版|新版本)|(更新|新版).{0,4}(嗎|沒|？|\?)/,
     lup: /(更新|升級).{0,3}(引擎|llama)|(引擎|llama).{0,3}(更新|升級)/i,
     uapply: /^(更新|升級|馬上更新|去更新|更新一下|開始更新|馬上升級|拉新版)\b/,
-    hints: /(adapter|lora|人格|皮膚|風格|預設|原版|裸|純淨|普通|貓娘|寶寶|更新|升級|新版|hf|hugging|切|換|裝|穿|戴|脫|關掉|關閉|啟用|禁用|卸|掛上|套上|不要|別|去掉|取消|廢|model|模型|皮|引擎|llama)/i,
+    hints: /(adapter膚|預設|原版|裸|純淨|普通|更新|升級|新版|hf|hugging|切|換|裝|穿|戴|脫|關掉|關閉|啟用|禁用|卸|掛上|套上|不要|別|去掉|取消|廢|model|模型|引擎|llama)/i,
   };
   const ZH_TW_CLASSIFIER =
     "你是命令分類器。把使用者的話歸到下面一個標籤，只輸出標籤本身：\n" +
-    "LIST_ADAPTER / SWITCH_TO=名字 / DISABLE_ADAPTER / UPDATE_CHECK / UPDATE_APPLY / STATUS / NONE\n\n" +
-    "使用者：看看有哪些人格 → LIST_ADAPTER\n" +
-    "使用者：列出 lora → LIST_ADAPTER\n" +
-    "使用者：切到貓娘 → SWITCH_TO=貓娘\n" +
-    "使用者：把貓娘裝上 → SWITCH_TO=貓娘\n" +
-    "使用者：來個 neko → SWITCH_TO=neko\n" +
-    "使用者：回到原版 → DISABLE_ADAPTER\n" +
-    "使用者：脫掉皮膚 → DISABLE_ADAPTER\n" +
-    "使用者：我不要用貓娘了 → DISABLE_ADAPTER\n" +
     "使用者：你現在用什麼模型 → STATUS\n" +
     "使用者：檢查更新 → UPDATE_CHECK\n" +
     "使用者：去更新一下 → UPDATE_APPLY\n" +
     "使用者：你好 → NONE\n" +
     "使用者：今天天氣真好 → NONE\n" +
     "使用者：1+1 等於幾 → NONE\n" +
-    "使用者：解釋一下 LoRA 是什麼 → NONE\n" +
     "現在分類下面這句：";
   const ZH_TW_NARRATION = {
     eventStopFailureWithSubject: "主人和 AI 處理{subject}時出錯了",
@@ -636,12 +565,12 @@
   };
   // ── KO strings ──
   const KO_STRINGS = {
-    menuMinicpmChat: "MiniCPM Chat",
-    onboardingWindowTitle: "MiniCPM 데스크 펫 — 첫 실행",
+    menuMinicpmChat: "Chat",
+    onboardingWindowTitle: "데스크 펫 — 첫 실행",
     onboardingStepEnvCheck: "환경 검사",
     onboardingStepModel: "모델 준비",
     onboardingStepReady: "준비 완료",
-    onboardingEnvWelcome: "MiniCPM 데스크 펫에 오신 것을 환영합니다",
+    onboardingEnvWelcome: "데스크 펫에 오신 것을 환영합니다",
     onboardingEnvCheckDisk: "디스크 공간",
     onboardingEnvCheckChip: "칩",
     onboardingDetecting: "확인 중…",
@@ -653,7 +582,7 @@
     onboardingNext: "다음",
     onboardingBack: "이전",
     onboardingModelTitle: "모델 준비",
-    onboardingModelLede: "MiniCPM5 0.9B 설치",
+    onboardingModelLede: "로컬 모델 설치",
     onboardingDownloadCardTitle: "온라인 다운로드",
     onboardingDownloadCardDesc: "기본 GGUF Q8_0; 네트워크 환경에 맞춰 다운로드 소스가 자동 선택됩니다.",
     onboardingDownloadProgressInit: "준비 중...",
@@ -681,10 +610,10 @@
     onboardingHotkeyToggleChat: "채팅 말풍선 토글",
     onboardingHotkeyToggleThinking: "생각 모드 토글",
     onboardingHotkeyEscClose: "입력에 포커스가 있을 때 말풍선 닫기",
-    onboardingMoreHint: "모델 변경, 리소스 사용량 확인, sidecar 재시작? 우클릭 메뉴의 Settings → MiniCPM에서 가능합니다.",
+    onboardingMoreHint: "모델 변경, 리소스 사용량 확인, sidecar 재시작? 우클릭 메뉴의 Settings → Model에서 가능합니다.",
     onboardingSkipModelHint: "모델이 아직 없나요? 괜찮아요 - 나중에 설정의 모델 탭에서 언제든 추가할 수 있어요.",
     onboardingFinish: "펫 등장",
-    onboardingPickerDialogTitle: "로컬 MiniCPM 모델 선택 (.gguf 파일 또는 .gguf가 포함된 디렉터리)",
+    onboardingPickerDialogTitle: "로컬 모델 선택 (.gguf 파일 또는 .gguf가 포함된 디렉터리)",
     onboardingPickerDialogMessage: "단일 .gguf 파일이거나 .gguf가 포함된 디렉터리여야 합니다",
     onboardingPickerInvalidDir: "선택한 디렉터리에 .gguf 파일이 없습니다:\n{path}",
     onboardingPickerInvalidFile: ".gguf 파일을 선택해 주세요:\n{path}",
@@ -704,8 +633,7 @@
     chatUpdatePillTitle: "클릭해서 모델 업데이트",
     chatUpdatePillUpdating: "업데이트 중…",
     chatUpdatePillTitleUpdating: "모델 업데이트 중… 펫을 닫지 마세요.",
-    chatStatusWithAdapter: "현재 {model}, {adapter} LoRA 적용 중 (페르소나: {persona})",
-    chatStatusNoAdapter: "현재 {model}, LoRA 없음 (페르소나: {persona})",
+    chatStatusNoAdapter: "현재 {model}",
     chatUpdateNoConn: "업데이트 소스에 접근할 수 없어요. 잠시 뒤 다시 물어봐 주세요",
     chatUpdateAvailable: "새 버전 {remote}가 있어요! 현재는 {local}입니다. \"업데이트\"라고 답하면 가져올게요.",
     chatUpdateUpToDate: "이미 최신이에요 ({local}), 할 게 없네요",
@@ -715,15 +643,6 @@
     chatEngineUpToDate: "추론 엔진은 이미 최신이에요 (build {local}), 할 게 없네요",
     chatEngineUpdateStart: "추론 엔진 업데이트 중 — 몇 초 재시작되니 펫을 닫지 마세요",
     chatEngineUpdateDone: "엔진이 {remote}로 업데이트되었고 새 버전으로 재시작했어요",
-    chatAdapterListEmpty: "구성된 페르소나가 없습니다.",
-    chatAdapterListIntro: "사용 가능한 페르소나:",
-    chatAdapterListItem: "• {name}",
-    chatAdapterOff: "벗었어요. 기본 모델로 돌아갑니다",
-    chatAdapterAlreadyOff: "원래 LoRA가 적용돼 있지 않았어요",
-    chatAdapterSwitched: "{name}(으)로 전환했어요",
-    chatAdapterNotFound: "\"{keyword}\"에 해당하는 페르소나를 찾을 수 없어요",
-    chatAdapterSwitching: "{name}(으)로 전환 중…",
-    chatAdapterUnloading: "현재 페르소나 해제 중…",
     chatSidecarMissingBin: "sidecar 바이너리를 찾을 수 없습니다. 패키지 빌드는 sidecar-bin/을 포함해야 하며, 개발 모드에서는 cd minicpm-sidecar && uv sync를 실행하세요.",
     chatSidecarMissingPython: "Python 인터프리터를 찾을 수 없습니다. 패키지 빌드(권장)를 설치하거나, cd minicpm-sidecar && uv sync를 실행하세요.",
     chatSidecarPyExited: "Python 프로세스가 일찍 종료되었습니다. stderr 끝부분:\n{tail}",
@@ -741,34 +660,22 @@
     chatSkillNotFoundReply: "스킬「{name}」을(를) 찾을 수 없습니다",
   };
   const KO_PATTERNS = {
-    status: /(지금|현재|어떤).{0,12}(모델|페르소나|어댑터|lora)/i,
-    list: /(보여|목록|뭐|어떤|있어).{0,12}(페르소나|어댑터|lora|스킨)/i,
-    off: /(꺼|해제|벗|제거|끄|내려).{0,8}(페르소나|어댑터|lora|스킨)/i,
+    status: /(지금|현재|어떤).{0,12}(모델)/i,
     off2: /(원본|기본|디폴트|base|순정).{0,8}(으로|로|돌아)/,
     swap: /([\w\u3131-\u318e\uac00-\ud7a3-]{1,16})\s*(으로|로)\s*(바꿔|전환|변경|입혀|적용|로드)/,
     ucheck: /(업데이트|새\s*버전).{0,8}(있|확인|체크)/,
     lup: /(엔진|llama).{0,8}(업데이트|업그레이드)|(업데이트|업그레이드).{0,8}(엔진|llama)/i,
     uapply: /^(업데이트|업그레이드|지금\s*업데이트|당겨와)\b/,
-    hints: /(adapter|lora|페르소나|스킨|모델|업데이트|업그레이드|버전|전환|로드|해제|hf|hugging|기본|디폴트|순정|네코|猫娘|model|엔진|llama)/i,
+    hints: /(adapter|모델|업데이트|업그레이드|버전|전환|로드|해제|hf|hugging|기본|디폴트|순정|model|엔진|llama)/i,
   };
   const KO_CLASSIFIER =
     "당신은 명령 분류기입니다. 사용자의 말을 아래 라벨 중 하나로 분류하고, 라벨만 출력하세요:\n" +
-    "LIST_ADAPTER / SWITCH_TO=이름 / DISABLE_ADAPTER / UPDATE_CHECK / UPDATE_APPLY / STATUS / NONE\n\n" +
-    "사용자: 어떤 페르소나가 있어 → LIST_ADAPTER\n" +
-    "사용자: lora 목록 보여줘 → LIST_ADAPTER\n" +
-    "사용자: 네코로 바꿔줘 → SWITCH_TO=네코\n" +
-    "사용자: 네코 입혀줘 → SWITCH_TO=네코\n" +
-    "사용자: neko 적용 → SWITCH_TO=neko\n" +
-    "사용자: 원본으로 돌아가 → DISABLE_ADAPTER\n" +
-    "사용자: 페르소나 벗어 → DISABLE_ADAPTER\n" +
-    "사용자: 네코 더 이상 안 쓸래 → DISABLE_ADAPTER\n" +
     "사용자: 지금 어떤 모델 써 → STATUS\n" +
     "사용자: 업데이트 확인해 → UPDATE_CHECK\n" +
     "사용자: 지금 업데이트해 → UPDATE_APPLY\n" +
     "사용자: 안녕 → NONE\n" +
     "사용자: 오늘 날씨 좋다 → NONE\n" +
     "사용자: 1+1은 뭐야 → NONE\n" +
-    "사용자: LoRA가 뭔지 설명해줘 → NONE\n" +
     "이제 다음 문장을 분류하세요:";
   const KO_NARRATION = {
     eventStopFailureWithSubject: "주인님이 AI와 {subject} 작업을 하다가 오류를 만났어요",
@@ -799,12 +706,12 @@
   };
   // ── JA strings ──
   const JA_STRINGS = {
-    menuMinicpmChat: "MiniCPM Chat",
-    onboardingWindowTitle: "MiniCPM デスクペット — 初回起動",
+    menuMinicpmChat: "Chat",
+    onboardingWindowTitle: "デスクペット — 初回起動",
     onboardingStepEnvCheck: "環境チェック",
     onboardingStepModel: "モデル準備",
     onboardingStepReady: "準備完了",
-    onboardingEnvWelcome: "MiniCPM デスクペットへようこそ",
+    onboardingEnvWelcome: "デスクペットへようこそ",
     onboardingEnvCheckDisk: "ディスク容量",
     onboardingEnvCheckChip: "チップ",
     onboardingDetecting: "確認中…",
@@ -816,7 +723,7 @@
     onboardingNext: "次へ",
     onboardingBack: "戻る",
     onboardingModelTitle: "モデル準備",
-    onboardingModelLede: "MiniCPM5 0.9B をインストール",
+    onboardingModelLede: "ローカルモデルをインストール",
     onboardingDownloadCardTitle: "オンラインダウンロード",
     onboardingDownloadCardDesc: "デフォルトは GGUF Q8_0。ネットワーク状況に応じてソースが自動選択されます。",
     onboardingDownloadProgressInit: "準備中...",
@@ -844,10 +751,10 @@
     onboardingHotkeyToggleChat: "チャット吹き出しの切替",
     onboardingHotkeyToggleThinking: "思考モードの切替",
     onboardingHotkeyEscClose: "入力にフォーカスがある時に吹き出しを閉じる",
-    onboardingMoreHint: "モデル変更、リソース確認、sidecar の再起動は右クリックメニューの Settings → MiniCPM から。",
+    onboardingMoreHint: "モデル変更、リソース確認、sidecar の再起動は右クリックメニューの Settings → Model から。",
     onboardingSkipModelHint: "モデルがまだない？大丈夫 - 後で設定のモデルタブからいつでも追加できるよ。",
     onboardingFinish: "ペットを登場させる",
-    onboardingPickerDialogTitle: "ローカルの MiniCPM モデルを選択 (.gguf ファイル、または .gguf を含むディレクトリ)",
+    onboardingPickerDialogTitle: "ローカルモデルを選択 (.gguf ファイル、または .gguf を含むディレクトリ)",
     onboardingPickerDialogMessage: "単一の .gguf ファイル、または .gguf を含むディレクトリを選んでください",
     onboardingPickerInvalidDir: "選択したディレクトリに .gguf がありません：\n{path}",
     onboardingPickerInvalidFile: ".gguf ファイルを選んでください：\n{path}",
@@ -867,8 +774,7 @@
     chatUpdatePillTitle: "クリックでモデル更新",
     chatUpdatePillUpdating: "更新中…",
     chatUpdatePillTitleUpdating: "モデルを更新中… ペットを閉じないでください。",
-    chatStatusWithAdapter: "現在は {model}、{adapter} の LoRA を装着中（人格: {persona}）",
-    chatStatusNoAdapter: "現在は {model}、LoRA なし（人格: {persona}）",
+    chatStatusNoAdapter: "現在は {model}",
     chatUpdateNoConn: "更新元に届かないみたい、しばらくしてからまた聞いて",
     chatUpdateAvailable: "新バージョン {remote} が出てるよ！ローカルは {local}。「更新」って返してくれたら取ってくる。",
     chatUpdateUpToDate: "もう最新だよ（{local}）、何もしなくて OK",
@@ -878,15 +784,6 @@
     chatEngineUpToDate: "推論エンジンはもう最新だよ（build {local}）、何もしなくて OK",
     chatEngineUpdateStart: "推論エンジンを更新中 — 数秒再起動するから、ペットを閉じないでね",
     chatEngineUpdateDone: "エンジンを {remote} に更新して、新バージョンで再起動したよ",
-    chatAdapterListEmpty: "人格の設定がまだありません。",
-    chatAdapterListIntro: "利用可能な人格：",
-    chatAdapterListItem: "• {name}",
-    chatAdapterOff: "脱がせたよ。素のモデルに戻ったよ",
-    chatAdapterAlreadyOff: "もともと LoRA は付けてなかったよ",
-    chatAdapterSwitched: "{name} に切り替えたよ",
-    chatAdapterNotFound: "「{keyword}」って人格は見つからなかったよ",
-    chatAdapterSwitching: "{name} に切替中…",
-    chatAdapterUnloading: "現在の人格を解除中…",
     chatSidecarMissingBin: "sidecar バイナリが見つかりません。パッケージビルドには sidecar-bin/ が同梱されているはずです。開発モードでは cd minicpm-sidecar && uv sync を実行してください。",
     chatSidecarMissingPython: "Python インタプリタが見つかりません。パッケージビルド（推奨）をインストールするか、cd minicpm-sidecar && uv sync を実行してください。",
     chatSidecarPyExited: "Python プロセスが早期終了しました。stderr の末尾：\n{tail}",
@@ -904,34 +801,22 @@
     chatSkillNotFoundReply: "スキル「{name}」が見つかりません",
   };
   const JA_PATTERNS = {
-    status: /(今|現在|どの).{0,12}(モデル|人格|アダプタ|lora)/i,
-    list: /(見せ|一覧|どんな|何が|ある).{0,12}(人格|アダプタ|lora|スキン)/i,
-    off: /(外|解除|脱が|無効|切|オフ).{0,8}(人格|アダプタ|lora|スキン)/i,
+    status: /(今|現在|どの).{0,12}(モデル|アダプタ)/i,
     off2: /(素|デフォルト|オリジナル|base).{0,8}(に|戻)/,
     swap: /([\w\u3040-\u30ff\u4e00-\u9fff-]{1,16})\s*(に|へ)\s*(切り替え|変更|着せ|装着|ロード|スイッチ)/,
     ucheck: /(アップデート|新\s*バージョン|新版).{0,8}(ある|確認|チェック)/,
     lup: /(エンジン|llama).{0,8}(更新|アップデート|アップグレード)|(更新|アップデート|アップグレード).{0,8}(エンジン|llama)/i,
     uapply: /^(更新|アップデート|アップグレード|今\s*アップデート)\b/,
-    hints: /(adapter|lora|人格|スキン|モデル|アップデート|アップグレード|バージョン|切り替え|装着|外|hf|hugging|デフォルト|素|オリジナル|猫娘|ねこ|model|エンジン|llama)/i,
+    hints: /(adapter|モデル|アップデート|アップグレード|バージョン|切り替え|外|hf|hugging|デフォルト|素|オリジナル|model|エンジン|llama)/i,
   };
   const JA_CLASSIFIER =
     "あなたはコマンド分類器です。ユーザーの発話を以下のラベルのいずれかに分類し、ラベルだけを出力してください：\n" +
-    "LIST_ADAPTER / SWITCH_TO=名前 / DISABLE_ADAPTER / UPDATE_CHECK / UPDATE_APPLY / STATUS / NONE\n\n" +
-    "ユーザー: どんな人格があるの → LIST_ADAPTER\n" +
-    "ユーザー: lora 一覧 → LIST_ADAPTER\n" +
-    "ユーザー: ねこに切り替えて → SWITCH_TO=ねこ\n" +
-    "ユーザー: ねこを着せて → SWITCH_TO=ねこ\n" +
-    "ユーザー: neko 装着 → SWITCH_TO=neko\n" +
-    "ユーザー: 素に戻して → DISABLE_ADAPTER\n" +
-    "ユーザー: 人格を外して → DISABLE_ADAPTER\n" +
-    "ユーザー: もうねこ使わない → DISABLE_ADAPTER\n" +
     "ユーザー: 今どのモデル使ってる → STATUS\n" +
     "ユーザー: アップデート確認 → UPDATE_CHECK\n" +
     "ユーザー: 今アップデートして → UPDATE_APPLY\n" +
     "ユーザー: こんにちは → NONE\n" +
     "ユーザー: 今日の天気いいね → NONE\n" +
     "ユーザー: 1+1 は何 → NONE\n" +
-    "ユーザー: LoRA って何か説明して → NONE\n" +
     "次の文を分類してください：";
   const JA_NARRATION = {
     eventStopFailureWithSubject: "ご主人が AI と {subject} の作業中にエラーが出たよ",

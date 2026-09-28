@@ -2557,10 +2557,19 @@ def _resolve_provider(
         if target in registry:
             log.info("provider routing: using %s (model=%s)", target, getattr(registry.get(target), '_model', '?'))
             return registry.get(target)
-        # Not found - log error and fall back to local with warning in SSE
+        # Not found - log error and fall back with warning in SSE
         names = [p.name for p in registry._providers.values()]
-        log.warning("provider '%s' not found in registry (available: %s), falling back to local", target, names)
-        # Return local so the chat still works, but the user will know via SSE
+        log.warning("provider '%s' not found in registry (available: %s), falling back", target, names)
+        # Fall through to the local/API fallback below so the chat still works
+
+    # Default path: local — but if the local llama-server isn't running
+    # (no model downloaded yet, or no llama-server binary at all), fall
+    # back to any configured API provider so the pet works out of the box
+    # in "API mode". Users should not need a local model to chat.
+    api_names = [p.name for p in registry._providers.values() if p.name != "local"]
+    if not getattr(server, "alive", False) and api_names:
+        log.info("local llama-server not running; falling back to API provider '%s'", api_names[0])
+        return registry.get(api_names[0])
 
     return _build_local_provider(server, server_state, req, lora_arr)
 
