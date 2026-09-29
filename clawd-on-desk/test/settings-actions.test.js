@@ -635,38 +635,6 @@ describe("bubble policy commands", () => {
   });
 });
 
-describe("setAutoApproveAll danger gate", () => {
-  it("refuses to enable without confirmed:true (dialog is a real boundary)", async () => {
-    const r = await commandRegistry.setAutoApproveAll({ enabled: true }, {});
-    assert.strictEqual(r.status, "error");
-    assert.match(r.message, /confirmed:true/);
-  });
-
-  it("refuses to enable when confirmed is falsy", async () => {
-    for (const bad of [false, "true", 1, null, undefined]) {
-      const r = await commandRegistry.setAutoApproveAll({ enabled: true, confirmed: bad }, {});
-      assert.strictEqual(r.status, "error", `confirmed=${JSON.stringify(bad)} must be rejected`);
-    }
-  });
-
-  it("enables only with explicit confirmed:true", async () => {
-    const r = await commandRegistry.setAutoApproveAll({ enabled: true, confirmed: true }, {});
-    assert.strictEqual(r.status, "ok");
-    assert.deepStrictEqual(r.commit, { autoApproveAllPermissions: true });
-  });
-
-  it("disables immediately with no confirmation required", async () => {
-    const r = await commandRegistry.setAutoApproveAll({ enabled: false }, {});
-    assert.strictEqual(r.status, "ok");
-    assert.deepStrictEqual(r.commit, { autoApproveAllPermissions: false });
-  });
-
-  it("rejects a non-boolean enabled", async () => {
-    const r = await commandRegistry.setAutoApproveAll({ enabled: "yes", confirmed: true }, {});
-    assert.strictEqual(r.status, "error");
-  });
-});
-
 describe("session cleanup interval validators", () => {
   const snapshot = prefs.getDefaults();
 

@@ -54,51 +54,6 @@ module.exports = function initMenu(ctx) {
     };
   }
 
-  // DANGER "auto-pilot" quick toggle. Enabling auto-approves EVERY agent
-  // permission request with no prompt, so the enable path is gated behind a
-  // native modal confirm. Disabling is immediate. After either decision we
-  // rebuild menus so the checkbox reflects the committed value (Electron has
-  // already flipped the visual optimistically on click).
-  function buildAutoApproveMenuItem() {
-    return {
-      label: t("menuAutoApproveAll"),
-      type: "checkbox",
-      checked: !!ctx.autoApproveAllPermissions,
-      click: (menuItem) => {
-        const wantOn = menuItem.checked;
-        if (!wantOn) {
-          ctx.autoApproveAllPermissions = false;
-          return;
-        }
-        // Revert the optimistic check until the user confirms.
-        menuItem.checked = false;
-        // No parent window: attaching the dialog to ctx.win (the small pet
-        // window) makes macOS render it as a sheet centered on the pet. A
-        // parentless dialog is a standalone window centered on the screen,
-        // which is what a danger confirmation should be.
-        Promise.resolve(
-          dialog.showMessageBox({
-            type: "warning",
-            buttons: [t("autoApproveAllConfirmEnable"), t("autoApproveAllConfirmCancel")],
-            defaultId: 1,
-            cancelId: 1,
-            title: t("autoApproveAllConfirmTitle"),
-            message: t("autoApproveAllConfirmTitle"),
-            detail: t("autoApproveAllConfirmDetail"),
-          })
-        ).then((res) => {
-          if (res && res.response === 0) {
-            ctx.autoApproveAllPermissions = true;
-          }
-          rebuildAllMenus();
-        }).catch((err) => {
-          console.warn("Clawd: auto-pilot confirm failed:", err && err.message);
-          rebuildAllMenus();
-        });
-      },
-    };
-  }
-
   function buildBringToPrimaryDisplayMenuItem() {
     return {
       label: t("bringPetToPrimaryDisplay"),
@@ -165,7 +120,6 @@ module.exports = function initMenu(ctx) {
         checked: ctx.hideBubbles,
         click: (menuItem) => { ctx.hideBubbles = menuItem.checked; },
       },
-      buildAutoApproveMenuItem(),
       {
         label: t("soundEffects"),
         type: "checkbox",
@@ -389,7 +343,6 @@ module.exports = function initMenu(ctx) {
         click: () => ctx.doNotDisturb ? ctx.disableDoNotDisturb() : ctx.enableDoNotDisturb(),
       },
       { type: "separator" },
-      buildAutoApproveMenuItem(),
       { type: "separator" },
       {
         label: t("menuDeskPetChat"),
@@ -467,7 +420,6 @@ module.exports = function initMenu(ctx) {
     // 持续自我存在 UI: render the styled HTML menu (custom window) and
     // keep the native popup as a fallback if the custom one fails.
     try {
-      const auto = buildAutoApproveMenuItem();
       const data = [];
       const mini = buildMiniModeMenuItem();
       data.push({ label: mini.label, icon: "🐾", disabled: mini.enabled === false, click: mini.click });
@@ -476,14 +428,6 @@ module.exports = function initMenu(ctx) {
         label: ctx.doNotDisturb ? t("wake") : t("sleep"),
         icon: "🌙",
         click: () => ctx.doNotDisturb ? ctx.disableDoNotDisturb() : ctx.enableDoNotDisturb(),
-      });
-      data.push({ type: "separator" });
-      data.push({
-        label: auto.label,
-        icon: "🛞",
-        checked: !!ctx.autoApproveAllPermissions,
-        danger: !ctx.autoApproveAllPermissions,
-        click: () => auto.click({ checked: !ctx.autoApproveAllPermissions }),
       });
       data.push({ type: "separator" });
       if (typeof ctx.openDeskPetChat === "function") {

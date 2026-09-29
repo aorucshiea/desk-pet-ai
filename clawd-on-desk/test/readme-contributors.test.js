@@ -56,7 +56,6 @@ test("README files keep remote and human-control features gated off by default",
     "Direct Send",
     "mobile PWA",
     "Hardware Buddy",
-    "auto-pilot",
   ];
 
   for (const filename of ALL_READMES) {

@@ -6,7 +6,6 @@ const MENU_AFFECTING_KEYS = new Set([
   "bubbleFollowPet",
   "hideBubbles",
   "permissionBubblesEnabled",
-  "autoApproveAllPermissions",
   "notificationBubbleAutoCloseSeconds",
   "permissionBubbleAutoCloseSeconds",
   "updateBubbleAutoCloseSeconds",

@@ -965,26 +965,19 @@ describe("prefs.migrate v7 → v8 (Telegram bare completion default)", () => {
   });
 });
 
-describe("prefs.migrate v8 → v9 (auto-approve auto-pilot)", () => {
-  it("defaults autoApproveAllPermissions to false for upgrading users", () => {
-    const upgraded = prefs.migrate({ version: 8, lang: "en" });
-    const validated = prefs.validate(upgraded);
+describe("prefs.migrate v8 → v9 (version bump survives the auto-pilot removal)", () => {
+  it("advances a v8 file to CURRENT_VERSION", () => {
+    const validated = prefs.validate(prefs.migrate({ version: 8, lang: "en" }));
     assert.strictEqual(validated.version, prefs.CURRENT_VERSION);
-    assert.strictEqual(validated.autoApproveAllPermissions, false);
   });
 
-  it("clears a planted autoApproveAllPermissions=true on upgrade (never inherit auto-approval)", () => {
-    // A v8 prefs file could not have legitimately set this key — it didn't
-    // exist yet. Migration must strip any stale/planted value so an upgrading
-    // user never silently inherits "approve everything".
+  it("strips the removed autoApproveAllPermissions key instead of inheriting it", () => {
+    // The feature is gone, but an old file may still carry the key — and a
+    // planted one must not survive either.
     const validated = prefs.validate(
       prefs.migrate({ version: 8, autoApproveAllPermissions: true })
     );
-    assert.strictEqual(validated.autoApproveAllPermissions, false);
-  });
-
-  it("fresh defaults keep auto-pilot off", () => {
-    assert.strictEqual(prefs.getDefaults().autoApproveAllPermissions, false);
+    assert.strictEqual("autoApproveAllPermissions" in validated, false);
   });
 });
 
@@ -1103,36 +1096,6 @@ describe("prefs.migrate v10 → v11 (on-demand agent integrations)", () => {
     }));
     assert.strictEqual(validated.agents["copilot-cli"].integrationInstalled, false);
     assert.strictEqual(validated.agents["copilot-cli"].enabled, false);
-  });
-});
-
-describe("prefs ephemeral fields (auto-pilot does not persist)", () => {
-  it("validate() never restores a persisted autoApproveAllPermissions=true", () => {
-    assert.strictEqual(prefs.validate({ autoApproveAllPermissions: true }).autoApproveAllPermissions, false);
-  });
-
-  it("save() strips autoApproveAllPermissions from the on-disk file", () => {
-    const p = makeTempPath();
-    prefs.save(p, { ...prefs.getDefaults(), autoApproveAllPermissions: true, lang: "zh" });
-    const onDisk = JSON.parse(fs.readFileSync(p, "utf8"));
-    assert.strictEqual("autoApproveAllPermissions" in onDisk, false, "ephemeral key must not be written");
-    assert.strictEqual(onDisk.lang, "zh", "non-ephemeral fields still persist");
-  });
-
-  it("survives a quit/relaunch as OFF even after being enabled mid-session", () => {
-    const p = makeTempPath();
-    // Session 1: user turned auto-pilot on, then the app persisted prefs.
-    prefs.save(p, { ...prefs.getDefaults(), autoApproveAllPermissions: true });
-    // Session 2: next launch reads prefs from disk.
-    const { snapshot } = prefs.load(p);
-    assert.strictEqual(snapshot.autoApproveAllPermissions, false, "auto-pilot must be off on relaunch");
-  });
-
-  it("load() ignores a hand-edited autoApproveAllPermissions:true in the file", () => {
-    const p = makeTempPath();
-    fs.writeFileSync(p, JSON.stringify({ version: prefs.CURRENT_VERSION, autoApproveAllPermissions: true }));
-    const { snapshot } = prefs.load(p);
-    assert.strictEqual(snapshot.autoApproveAllPermissions, false);
   });
 });
 

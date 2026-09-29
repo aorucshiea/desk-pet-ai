@@ -286,10 +286,6 @@ test("settings IPC delegates controller and size preview handlers", async () => 
     status: "error",
     message: "tgMigration is internal; use telegramMigration.dispatch",
   });
-  assert.deepStrictEqual(await ipcMain.invoke("settings:update", { key: "autoApproveAllPermissions", value: true }), {
-    status: "error",
-    message: "autoApproveAllPermissions is gated; use the setAutoApproveAll command",
-  });
   assert.deepStrictEqual(await ipcMain.invoke("settings:command", { action: "resizePet", payload: "P:30" }), {
     status: "ok",
   });

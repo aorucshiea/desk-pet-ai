@@ -311,12 +311,6 @@ function registerSettingsIpc(options = {}) {
     if (payload.key === "tgMigration") {
       return { status: "error", message: "tgMigration is internal; use telegramMigration.dispatch" };
     }
-    // DANGER "auto-pilot": never let a plain settings:update flip this on. It
-    // must go through the setAutoApproveAll command, which demands confirmed:true.
-    // This makes the confirmation dialog a real boundary instead of UI-only.
-    if (payload.key === "autoApproveAllPermissions") {
-      return { status: "error", message: "autoApproveAllPermissions is gated; use the setAutoApproveAll command" };
-    }
     return settingsController.applyUpdate(payload.key, payload.value);
   });
   handle("settings:begin-size-preview", () => settingsSizePreviewSession.begin());

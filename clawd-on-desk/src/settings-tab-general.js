@@ -27,7 +27,6 @@
     "hideBubbles",
     "bubbleFollowPet",
     "permissionBubblesEnabled",
-    "autoApproveAllPermissions",
     "notificationBubbleAutoCloseSeconds",
     "updateBubbleAutoCloseSeconds",
     "sessionStaleMs",
@@ -184,44 +183,6 @@
         descKey: "rowBubbleFollowDesc",
       }),
     ]));
-
-    // Permissions is its own section (not "Bubbles") because auto-pilot is a
-    // permission-handling behavior, not a bubble-display preference. Kept last
-    // so the danger toggle sits at the bottom, away from everyday settings.
-    parent.appendChild(helpers.buildSection(t("sectionPermissions"), [
-      helpers.buildSwitchRow({
-        key: "autoApproveAllPermissions",
-        labelKey: "rowAutoApproveAll",
-        descKey: "rowAutoApproveAllDesc",
-        danger: true,
-        onToggle: ({ nextRaw }) => confirmAutoApproveAll(nextRaw),
-      }),
-    ]));
-  }
-
-  // DANGER "auto-pilot": enabling auto-approves every agent permission request
-  // (Bash, file writes, rm — everything) with no prompt. Gate the ENABLE path
-  // behind a destructive confirm; disabling is always safe and immediate.
-  function confirmAutoApproveAll(nextRaw) {
-    // Route through the setAutoApproveAll command (not settings:update, which
-    // now rejects this key). Enabling carries confirmed:true only after the
-    // user accepts the danger modal, so the confirmation is a real gate.
-    if (!nextRaw) return window.settingsAPI.command("setAutoApproveAll", { enabled: false });
-    return showAutoApproveAllConfirmModal().then((actionId) => {
-      if (actionId !== "enable") return { status: "ok", noop: true };
-      return window.settingsAPI.command("setAutoApproveAll", { enabled: true, confirmed: true });
-    });
-  }
-
-  function showAutoApproveAllConfirmModal() {
-    return showSettingsConfirmModal({
-      title: t("autoApproveAllConfirmTitle"),
-      detail: t("autoApproveAllConfirmDetail"),
-      actions: [
-        { id: "enable", label: t("autoApproveAllConfirmEnable"), tone: "danger" },
-        { id: "cancel", label: t("autoApproveAllConfirmCancel"), tone: "accent", defaultFocus: true },
-      ],
-    });
   }
 
   function confirmDisableClaudeHookManagement(nextRaw) {
