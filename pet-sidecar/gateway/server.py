@@ -571,13 +571,26 @@ def build_app(
         memory_dir = Path(memory_dir_env).expanduser()
     else:
         # Dev fallback when the Electron host didn't inject the env (direct
-        # CLI run). Mirrors the per-platform app-data layout used elsewhere.
+        # CLI run). MUST match the Electron userData layout — app name is
+        # "deskpt" (clawd-on-desk/package.json), and Electron's
+        # app.getPath("userData") is %APPDATA%\<name>. A mismatch here
+        # splits the user's memories into two parallel worlds depending on
+        # whether the sidecar was launched by the shell or by Electron, so
+        # this fallback mirrors that name AND logs loudly.
+        _app_dir = "deskpt"
         if platform.system() == "Darwin":
-            memory_dir = Path.home() / "Library" / "Application Support" / "DeskPet Desk Pet" / "memories"
+            memory_dir = Path.home() / "Library" / "Application Support" / _app_dir / "memories"
         elif platform.system() == "Windows":
-            memory_dir = Path.home() / "AppData" / "Roaming" / "DeskPet Desk Pet" / "memories"
+            memory_dir = Path.home() / "AppData" / "Roaming" / _app_dir / "memories"
         else:
-            memory_dir = Path.home() / ".local" / "share" / "DeskPet Desk Pet" / "memories"
+            memory_dir = Path.home() / ".local" / "share" / _app_dir / "memories"
+        log.warning(
+            "PET_MEMORY_DIR not injected — using dev fallback %s. If this "
+            "sidecar was started by Electron, pet-chat.js failed to pass the "
+            "env and the pet would read/write a DIFFERENT memory root than "
+            "the user's real one; check the launcher.",
+            memory_dir,
+        )
     # ── Theme-scoped memory (持续自我存在) ─────────────────────────
     # One MemoryContext holds the soul-layer stores (identity / episodic
     # / mood) and switches them per animation theme. The boot theme comes
