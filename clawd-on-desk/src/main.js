@@ -2833,6 +2833,9 @@ const _menuCtx = {
   getMiniMode: () => _mini.getMiniMode(),
   getMiniTransitioning: () => _mini.getMiniTransitioning(),
   miniHandleResize: (sizeKey) => _mini.handleResize(sizeKey),
+  // The radial menu centres itself on the pet's visible body, not on the
+  // pointer — same theme-aware rect the update bubble anchors to.
+  getPetAnchorRect: () => getUpdateBubbleAnchorRect(getPetWindowBounds()),
   checkForUpdates: (...args) => checkForUpdates(...args),
   getUpdateMenuItem: () => getUpdateMenuItem(),
   openDashboard: () => showDashboard(),

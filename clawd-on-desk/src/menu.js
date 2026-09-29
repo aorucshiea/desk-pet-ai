@@ -224,12 +224,30 @@ module.exports = function initMenu(ctx) {
     return ctx.contextMenuOwner;
   }
 
+  // The ring is drawn around the PET, not around the pointer: a right-click
+  // can land on any sprite pixel or on the transparent padding around it, so
+  // the hub has to come from the pet's own visible rect (theme-aware, with the
+  // hit rect as fallback). Null means "no idea" and the caller falls back to
+  // the cursor, which is what the list menu always did.
+  function petHubPoint() {
+    try {
+      if (typeof ctx.getPetAnchorRect !== "function") return null;
+      const r = ctx.getPetAnchorRect();
+      if (r && Number.isFinite(r.x) && Number.isFinite(r.y)
+        && Number.isFinite(r.width) && Number.isFinite(r.height)) {
+        return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) };
+      }
+    } catch {}
+    return null;
+  }
+
   function popupMenuAt(menu) {
     if (ctx.menuOpen) return;
     const owner = ensureContextMenuOwner();
     if (!owner) return;
 
-    const cursor = screen.getCursorScreenPoint();
+    const hub = petHubPoint();
+    const cursor = hub || screen.getCursorScreenPoint();
     owner.setBounds({ x: cursor.x, y: cursor.y, width: 1, height: 1 });
     owner.show();
     keepOutOfTaskbar(owner);
@@ -391,7 +409,7 @@ module.exports = function initMenu(ctx) {
       });
       data.push({ type: "separator" });
       data.push({ label: t("quit"), icon: "power", danger: true, click: () => requestAppQuit() });
-      showContextMenu(data).catch(() => popupMenuAt(ctx.contextMenu));
+      showContextMenu(data, petHubPoint() || {}).catch(() => popupMenuAt(ctx.contextMenu));
       return;
     } catch {}
     popupMenuAt(ctx.contextMenu);

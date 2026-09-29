@@ -17,6 +17,10 @@ const MENU_PRELOAD = path.join(__dirname, "context-menu-preload.js");
 let menuWindow = null;
 let clickHandlers = [];
 let pendingItems = null;
+// Explicit anchor point from the caller (the pet's own centre for the radial
+// ring). Null means "no preference" — placement then follows the cursor, which
+// is what the list menu always did.
+let pendingPos = null;
 // Remote-desktop sessions (RustDesk/RDP) often refuse programmatic
 // focus — show() never acquires focus and Electron fires blur
 // immediately, which would hide the menu the instant it opens.
@@ -82,14 +86,15 @@ function ensureMenuWindow() {
 
 function placeAndShow(width, height, anchor = "corner") {
   if (!menuWindow || menuWindow.isDestroyed()) return;
-  const cursor = screen.getCursorScreenPoint();
-  const display = screen.getDisplayNearestPoint(cursor);
+  // `at` is the pet's own centre when the caller supplied one, else pointer.
+  const at = pendingPos || screen.getCursorScreenPoint();
+  const display = screen.getDisplayNearestPoint(at);
   const wa = display.workArea;
   if (anchor === "center") {
-    // Radial ring: hub on the cursor, then nudge back inside the work area so
-    // a right-click near a screen edge never pushes half the ring off-screen.
-    let x = cursor.x - width / 2;
-    let y = cursor.y - height / 2;
+    // Radial ring: hub on the pet, then nudge back inside the work area so a
+    // pet standing against a screen edge never gets half its ring cut off.
+    let x = at.x - width / 2;
+    let y = at.y - height / 2;
     x = Math.max(wa.x + 4, Math.min(x, wa.x + wa.width - width - 4));
     y = Math.max(wa.y + 4, Math.min(y, wa.y + wa.height - height - 4));
     menuWindow.setBounds({ x: Math.round(x), y: Math.round(y), width, height });
@@ -97,10 +102,10 @@ function placeAndShow(width, height, anchor = "corner") {
     menuWindow.focus();
     return;
   }
-  let x = cursor.x + 4;
-  let y = cursor.y + 4;
+  let x = at.x + 4;
+  let y = at.y + 4;
   if (x + width > wa.x + wa.width - 8) x = wa.x + wa.width - width - 8;
-  if (y + height > wa.y + wa.height - 8) y = cursor.y - height - 6; // flip above
+  if (y + height > wa.y + wa.height - 8) y = at.y - height - 6; // flip above
   if (y < wa.y + 4) y = wa.y + 4;
   if (x < wa.x + 4) x = wa.x + 4;
   menuWindow.setBounds({ x: Math.round(x), y: Math.round(y), width, height });
@@ -110,6 +115,7 @@ function placeAndShow(width, height, anchor = "corner") {
 
 function hideContextMenu() {
   pendingItems = null;
+  pendingPos = null;
   menuEverFocused = false;
   if (menuWindow && !menuWindow.isDestroyed() && menuWindow.isVisible()) menuWindow.hide();
 }
@@ -124,6 +130,9 @@ const MENU_IDLE_TIMEOUT_MS = 20000;
  */
 async function showContextMenu(items, pos = {}) {
   if (!Array.isArray(items) || !items.length) return;
+  pendingPos = Number.isFinite(pos && pos.x) && Number.isFinite(pos && pos.y)
+    ? { x: pos.x, y: pos.y }
+    : null;
   clickHandlers = items.map((it) => (it && typeof it.click === "function" ? it.click : null));
   pendingItems = items.map((it) => {
     if (!it || it.type === "separator") return { type: "separator" };
