@@ -364,10 +364,13 @@
     const nameRow = el("div", { className: "pet-model-hero-name-row" });
     nameRow.appendChild(el("span", { className: "pet-model-hero-name" },
       hasPath ? pickLabelFromPath(modelDir) : t("petModelPathUnset")));
-    // Live status beside the name — same tones as the header pill.
+    // Live status beside the name. deriveStatus tones (ready/starting/
+    // offline) map onto the hero badge's ok/warn/bad palette.
     const heroStatus = deriveStatus(snap.sidecarReady, snap.llamaReady, snap.probing);
+    const heroTone = heroStatus.tone === "ready" ? "ok"
+      : heroStatus.tone === "starting" ? "warn" : "bad";
     nameRow.appendChild(el("span", {
-      className: `pet-model-hero-status tone-${heroStatus.tone}`,
+      className: `pet-model-hero-status tone-${heroTone}`,
     }, heroStatus.label));
     heroText.appendChild(nameRow);
 

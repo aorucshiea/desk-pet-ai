@@ -321,6 +321,32 @@ def trim_to_last_n_images(messages: List[Dict[str, Any]], n: int = MAX_IMAGES) -
 # ── API call ──────────────────────────────────────────────────────────────────
 
 
+def _is_local_endpoint(base_url: str) -> bool:
+    """True when the endpoint is a local OpenAI-compatible server.
+
+    Locals (LM Studio, llama.cpp, Ollama) speak the same wire format but
+    do NOT understand the hosted endpoint's vLLM-style extras, and they
+    want the llama.cpp flavour of structured output. Override with
+    PET_HOLO_COMPAT=hcompany|llamacpp when the guess is wrong.
+    """
+    forced = (os.environ.get("PET_HOLO_COMPAT") or "").strip().lower()
+    if forced in ("llamacpp", "local"):
+        return True
+    if forced in ("hcompany", "cloud"):
+        return False
+    url = (base_url or "").lower()
+    return any(h in url for h in ("127.0.0.1", "localhost", "0.0.0.0", "::1"))
+
+
+def _holo_configured() -> bool:
+    """Ready to run a task? A local endpoint needs no API key (LM Studio,
+    llama.cpp and Ollama all ignore it); the hosted endpoint requires one."""
+    base = os.environ.get("PET_HOLO_BASE_URL", DEFAULT_BASE_URL)
+    if _is_local_endpoint(base):
+        return True
+    return bool(os.environ.get("PET_HOLO_API_KEY"))
+
+
 async def call_holo(
     http: httpx.AsyncClient,
     base_url: str,
@@ -328,17 +354,39 @@ async def call_holo(
     model: str,
     messages: List[Dict[str, Any]],
 ) -> Step:
-    """One structured-output round trip. Retries 429/5xx with backoff."""
-    payload = {
-        "model": model,
-        "messages": messages,
-        "temperature": 0.8,
-        "extra_body": {
-            "structured_outputs": {"json": Step.model_json_schema()},
-            "chat_template_kwargs": {"enable_thinking": True},
-            "reasoning_effort": "medium",
-        },
-    }
+    """One structured-output round trip. Retries 429/5xx with backoff.
+
+    Two flavours:
+      • hosted H Company endpoint — vLLM-style `extra_body` extras
+        (structured_outputs / chat_template_kwargs / reasoning_effort).
+      • local OpenAI-compatible server (LM Studio / llama.cpp / Ollama) —
+        schema goes straight onto `response_format`, which is what
+        llama.cpp actually reads; the extras are omitted so the request
+        is not rejected.
+    """
+    if _is_local_endpoint(base_url):
+        payload = {
+            "model": model,
+            "messages": messages,
+            "temperature": 0.8,
+            # llama.cpp structured output: the schema lives directly on
+            # response_format (OpenAI's nested json_schema is ignored).
+            "response_format": {
+                "type": "json_object",
+                "schema": Step.model_json_schema(),
+            },
+        }
+    else:
+        payload = {
+            "model": model,
+            "messages": messages,
+            "temperature": 0.8,
+            "extra_body": {
+                "structured_outputs": {"json": Step.model_json_schema()},
+                "chat_template_kwargs": {"enable_thinking": True},
+                "reasoning_effort": "medium",
+            },
+        }
     delay = 2.0
     last_exc: Optional[Exception] = None
     for attempt in range(6):
@@ -461,11 +509,11 @@ class HoloRunner:
             "steps": self.steps[-8:],
             "answer": self.answer,
             "error": self.error,
-            "configured": bool(os.environ.get("PET_HOLO_API_KEY")),
+            "configured": _holo_configured(),
         }
 
     def configured(self) -> bool:
-        return bool(os.environ.get("PET_HOLO_API_KEY"))
+        return _holo_configured()
 
     async def run_background(
         self,
@@ -476,7 +524,11 @@ class HoloRunner:
     ) -> Dict[str, Any]:
         """Start a background Holo task. Returns immediately with a status ack."""
         if not self.configured():
-            return {"ok": False, "error": "PET_HOLO_API_KEY not set"}
+            return {
+                "ok": False,
+                "error": ("Holo 未配置：填 H Company API Key，或在「设置 → 屏幕点击」"
+                          "把 API 地址改成本地服务（如 http://127.0.0.1:1234/v1，无需 Key）"),
+            }
         async with self._lock:
             if self._task and not self._task.done():
                 return {"ok": False, "error": "a Holo task is already running"}
