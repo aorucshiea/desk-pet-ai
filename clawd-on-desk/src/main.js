@@ -2833,16 +2833,6 @@ const _menuCtx = {
   getMiniMode: () => _mini.getMiniMode(),
   getMiniTransitioning: () => _mini.getMiniTransitioning(),
   miniHandleResize: (sizeKey) => _mini.handleResize(sizeKey),
-  // The radial menu centres itself on the pet's own body, not on the pointer
-  // (a right-click can land anywhere on the sprite, and the window carries
-  // transparent padding around it). Both candidate rects come as
-  // {left, top, right, bottom}: the visible-content anchor first, then the
-  // interactive hit rect — themes with no margin envelope return null from
-  // the first, and the hit rect is the box that actually took the click.
-  getPetAnchorRect: () => {
-    const bounds = getPetWindowBounds();
-    return getUpdateBubbleAnchorRect(bounds) || getHitRectScreen(bounds);
-  },
   checkForUpdates: (...args) => checkForUpdates(...args),
   getUpdateMenuItem: () => getUpdateMenuItem(),
   openDashboard: () => showDashboard(),

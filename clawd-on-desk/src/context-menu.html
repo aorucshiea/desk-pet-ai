@@ -1,171 +1,126 @@
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
 <meta charset="utf-8">
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; user-select: none; }
-  html, body { width: 100%; height: 100%; overflow: hidden; background: transparent; }
-  body { font-family: "Segoe UI", "Microsoft YaHei", sans-serif; }
-  #ring { display: block; width: 100%; height: 100%; }
-
-  /* Airy pie: light sectors, real gaps, a thin track ring floating just
-     outside them, and a white hub that carries the hovered label. */
-  .seg {
-    fill: #f1f2f4;
-    stroke: #ffffff;
-    stroke-width: 3;
+  html, body { background: transparent; overflow: hidden; }
+  #menu {
+    background: rgba(27, 28, 34, 0.98);
+    backdrop-filter: blur(20px) saturate(130%);
+    -webkit-backdrop-filter: blur(20px) saturate(130%);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 10px;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45), 0 1px 0 rgba(255, 255, 255, 0.04) inset;
+    padding: 4px;
+    opacity: 0;
+    transform: scale(0.98);
+    transition: opacity 90ms ease, transform 90ms ease;
+    min-width: 184px;
+    font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+  }
+  #menu.show { opacity: 1; transform: scale(1); }
+  .item {
+    display: flex; align-items: center; gap: 10px;
+    height: 28px;
+    padding: 0 9px;
+    border-radius: 6px;
+    font-size: 12.5px;
+    line-height: 1;
+    color: #c9cdd8;
     cursor: default;
-    transition: fill 90ms ease;
+    white-space: nowrap;
   }
-  .seg:hover { fill: #e0e4ea; }
-  .seg.danger:hover { fill: #fadede; }
-  .seg.disabled { fill: #f6f7f8; }
-  .seg.disabled:hover { fill: #f6f7f8; }
-  .track { fill: none; stroke: #eef0f3; stroke-width: 5; pointer-events: none; }
-
-  .glyph { color: #4a4f57; pointer-events: none; transition: color 90ms ease; }
-  .seg:hover + .glyph { color: #171a1f; }
-  .seg.danger:hover + .glyph { color: #d94848; }
-  .seg.disabled + .glyph { color: #c9ced6; }
-
-  .hub { fill: #ffffff; stroke: #e8eaee; stroke-width: 1.2; pointer-events: none; }
-  .hub-dot { fill: #cdd2db; pointer-events: none; transition: opacity 90ms ease; }
-  .hub-label {
-    font-size: 12.5px; font-weight: 500; fill: #22262d; text-anchor: middle;
-    dominant-baseline: middle; pointer-events: none; opacity: 0;
-    transition: opacity 90ms ease;
+  .item:hover:not(.disabled) { background: rgba(255, 255, 255, 0.07); color: #ffffff; }
+  .item:hover:not(.disabled) .icon { opacity: 1; }
+  .item.danger:hover:not(.disabled) { background: rgba(235, 90, 90, 0.14); color: #ff8f8f; }
+  .item.disabled { opacity: 0.35; }
+  .item .icon {
+    flex: 0 0 16px; width: 16px; height: 16px;
+    display: flex; align-items: center; justify-content: center;
+    opacity: 0.62; transition: opacity 90ms ease;
   }
-  .hub-label.danger { fill: #d94848; }
-  .hub-label.show { opacity: 1; }
-  .hub-dot.hide { opacity: 0; }
-  .check { fill: #4c86ff; pointer-events: none; }
+  .item .icon svg { width: 15px; height: 15px; display: block; }
+  .item .label { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; }
+  .item .check { color: #7aa2ff; font-size: 12px; flex: 0 0 auto; }
+  .sep { height: 1px; background: rgba(255, 255, 255, 0.06); margin: 3px 8px; }
 </style>
 </head>
 <body>
-<svg id="ring" viewBox="0 0 248 248" aria-hidden="true">
-  <circle class="track" cx="124" cy="124" r="116"></circle>
-  <g id="segs"></g>
-  <circle class="hub" cx="124" cy="124" r="45"></circle>
-  <circle id="dot" class="hub-dot" cx="124" cy="124" r="3.5"></circle>
-  <text id="label" class="hub-label" x="124" y="125"></text>
-</svg>
+<div id="menu"></div>
 <script>
   const { onItems, sendClick, sendClose, sendSize } = window.contextMenuBridge;
-  const NS = "http://www.w3.org/2000/svg";
-  const CX = 124, CY = 124, R_OUT = 106, R_IN = 45, PAD = 0.02;
-  const SIZE = 248;
+  const menu = document.getElementById("menu");
+  let count = 0;
 
-  // Monochrome line glyphs, keyed by what menu.js asks for. Each is drawn on a
-  // 24x24 grid and inherits `currentColor` from its sector, so hover and
-  // danger states recolour the glyph together with the sector fill.
-  const S = '<svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">';
-  const GLYPHS = {
-    chat: S + '<path d="M21 12a8 8 0 0 1-8 8H7l-4 3V12a8 8 0 0 1 8-8h2a8 8 0 0 1 8 8z"/></svg>',
-    settings: S + '<circle cx="12" cy="12" r="3.2"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.6 1.6 0 0 0-1-1.5 1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.6 1.6 0 0 0 1.5-1 1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3H9a1.6 1.6 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8V9a1.6 1.6 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1z"/></svg>',
-    eye: S + '<path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>',
-    monitor: S + '<rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>',
-    power: S + '<path d="M12 3v9"/><path d="M18.4 6.6a9 9 0 1 1-12.8 0"/></svg>',
+  // Monochrome line icons, keyed by what menu.js asks for. Stroke inherits the
+  // row colour so hover and danger states recolour the glyph with the label.
+  const SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">';
+  const ICONS = {
+    chat: SVG + '<path d="M21 12a8 8 0 0 1-8 8H7l-4 3V12a8 8 0 0 1 8-8h2a8 8 0 0 1 8 8z"/></svg>',
+    settings: SVG + '<circle cx="12" cy="12" r="3.2"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.6 1.6 0 0 0-1-1.5 1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.6 1.6 0 0 0 1.5-1 1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3H9a1.6 1.6 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8V9a1.6 1.6 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1z"/></svg>',
+    eye: SVG + '<path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>',
+    monitor: SVG + '<rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>',
+    power: SVG + '<path d="M12 3v9"/><path d="M18.4 6.6a9 9 0 1 1-12.8 0"/></svg>',
   };
 
-  function menuGlyph(key) {
-    // Unknown keys (and legacy emoji values) render a neutral dot rather than
-    // blanking the sector — a missing glyph should never hide an action.
-    return GLYPHS[key] || S + '<circle cx="12" cy="12" r="3.5" fill="currentColor" stroke="none"/></svg>';
-  }
-
-  const segs = document.getElementById("segs");
-  const label = document.getElementById("label");
-  const dot = document.getElementById("dot");
-
-  function polar(radius, angle) {
-    return [CX + radius * Math.cos(angle), CY + radius * Math.sin(angle)];
-  }
-
-  // Annulus sector between two angles, going clockwise from a0 to a1.
-  function sectorPath(a0, a1) {
-    const large = (a1 - a0) > Math.PI ? 1 : 0;
-    const [x1, y1] = polar(R_OUT, a0);
-    const [x2, y2] = polar(R_OUT, a1);
-    const [x3, y3] = polar(R_IN, a1);
-    const [x4, y4] = polar(R_IN, a0);
-    return `M${x1} ${y1}A${R_OUT} ${R_OUT} 0 ${large} 1 ${x2} ${y2}`
-         + `L${x3} ${y3}A${R_IN} ${R_IN} 0 ${large} 0 ${x4} ${y4}Z`;
-  }
-
-  function showLabel(text, danger) {
-    label.textContent = text;
-    label.classList.toggle("danger", !!danger);
-    label.classList.add("show");
-    dot.classList.add("hide");
-  }
-
-  function clearLabel() {
-    label.classList.remove("show");
-    dot.classList.remove("hide");
+  function iconFor(key) {
+    if (!key) return "";
+    // Unknown keys (and the legacy emoji values) still render: fall back to the
+    // raw string so a missing glyph never blanks a row.
+    return ICONS[key] || `<span>${key}</span>`;
   }
 
   function render(items) {
-    segs.textContent = "";
-    clearLabel();
-
-    // CRITICAL: the main process indexes click handlers against the FULL item
-    // list, separators included. Skipping them while numbering would shift
-    // every later index by one (clicking "Dashboard" fired "auto-approve").
-    const slots = [];
-    items.forEach((it, index) => { if (it && it.type !== "separator") slots.push({ it, index }); });
-    if (!slots.length) { sendClose(); return; }
-
-    const step = (Math.PI * 2) / slots.length;
-    slots.forEach((slot, i) => {
-      // The first sector faces 12 o'clock, so the compass points carry
-      // actions instead of gaps — that is what makes the reference pie read
-      // as deliberate rather than as a circle with lines cut in it.
-      const mid = -Math.PI / 2 + i * step;
-      const a0 = mid - step / 2 + PAD;
-      const a1 = mid + step / 2 - PAD;
-      const { it, index } = slot;
-
-      const path = document.createElementNS(NS, "path");
-      path.setAttribute("d", sectorPath(a0, a1));
-      path.setAttribute("class", "seg"
-        + (it.danger ? " danger" : "") + (it.disabled ? " disabled" : ""));
-      segs.appendChild(path);
-
-      // Icon sits on the sector's mid-radius; the glyph is a sibling of the
-      // path so the `.seg:hover + .glyph` rule can recolour it with the sector.
-      const MID_R = (R_OUT + R_IN) / 2;
-      const g = document.createElementNS(NS, "g");
-      g.setAttribute("class", "glyph" + (it.danger ? " danger" : ""));
-      // 24-unit glyph grid → 26px on screen, centred on the mid-radius point.
-      g.setAttribute("transform",
-        `translate(${CX + MID_R * Math.cos(mid)} ${CY + MID_R * Math.sin(mid)})`
-        + " scale(1.083) translate(-12 -12)");
-      g.innerHTML = menuGlyph(it.icon || it.label);
-      segs.appendChild(g);
-
-      if (it.checked) {
-        const c = document.createElementNS(NS, "circle");
-        c.setAttribute("class", "check");
-        c.setAttribute("cx", CX + (R_OUT - 12) * Math.cos(mid));
-        c.setAttribute("cy", CY + (R_OUT - 12) * Math.sin(mid));
-        c.setAttribute("r", 3);
-        segs.appendChild(c);
+    menu.innerHTML = "";
+    count = 0;
+    for (const it of items) {
+      // CRITICAL: count must advance for separators too — the main process
+      // looks up click handlers by the FULL item index. Rendering rows only
+      // shifted every index after the first separator by one (clicking
+      // "Dashboard" triggered "auto-approve", clicking anything after a
+      // separator did nothing).
+      if (it.type === "separator") {
+        const s = document.createElement("div");
+        s.className = "sep";
+        menu.appendChild(s);
+        count++;
+        continue;
       }
+      const idx = count;
+      count++;
 
-      if (it.disabled) return;
-      path.addEventListener("mouseenter", () => showLabel(it.label, it.danger));
-      path.addEventListener("mouseleave", clearLabel);
-      path.addEventListener("click", () => sendClick(index));
+      const row = document.createElement("div");
+      row.className = "item" + (it.danger ? " danger" : "") + (it.disabled ? " disabled" : "");
+      if (it.icon) {
+        const ic = document.createElement("span");
+        ic.className = "icon";
+        ic.innerHTML = iconFor(it.icon);
+        row.appendChild(ic);
+      }
+      const label = document.createElement("span");
+      label.className = "label";
+      label.textContent = it.label;
+      row.appendChild(label);
+      if (it.checked) {
+        const chk = document.createElement("span");
+        chk.className = "check";
+        chk.textContent = "✓";
+        row.appendChild(chk);
+      }
+      if (!it.disabled) {
+        row.addEventListener("click", () => { sendClick(idx); });
+      }
+      menu.appendChild(row);
+    }
+    // Fade in — without this the menu renders at opacity:0 (invisible
+    // window over the desktop = "right-click does nothing").
+    requestAnimationFrame(() => {
+      sendSize(menu.offsetWidth, menu.offsetHeight);
+      menu.classList.add("show");
     });
-
-    requestAnimationFrame(() => sendSize(SIZE, SIZE, "center"));
   }
 
-  // The square window has transparent corners; a click there means "nowhere"
-  // and must dismiss the ring instead of swallowing the click.
-  document.addEventListener("mousedown", (e) => {
-    if (e.target.id === "ring" || e.target.tagName === "svg") sendClose();
-  });
   window.addEventListener("keydown", (e) => { if (e.key === "Escape") sendClose(); });
   window.addEventListener("blur", () => sendClose());
   onItems((items) => { render(items); });
