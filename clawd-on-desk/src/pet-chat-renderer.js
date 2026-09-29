@@ -486,7 +486,7 @@ async function _fetchScreenContext() {
   // screen directly — skip the OCR pre-injection and let the MODEL call
   // capture_screen itself ("看看我的屏幕" = look, not OCR). OCR stays the
   // fallback for text-only models.
-  let providerPrefs = { defaultProvider: "local", autoRoute: false, modelProviders: [] };
+  let providerPrefs = { defaultProvider: "local", modelProviders: [] };
   try {
     if (window.pet && typeof window.pet.getProviderPrefs === "function") {
       providerPrefs = (await window.pet.getProviderPrefs()) || providerPrefs;
@@ -1342,7 +1342,6 @@ const SKILLS_CONTEXT_TTL = 60000; // refresh every 60s
 
 // Phase 2: session-level provider overrides (reset on page refresh)
 let _sessionProvider = null;
-let _sessionAutoRoute = null;
 
 // Fetch the long-term memory block (MEMORY.md + USER.md) fresh on every call.
 // Memory is write-on-invalidate (see sidecar memory/store.py), so the snapshot
@@ -1613,27 +1612,14 @@ async function submit(text) {
   const modelMatch = text.trim().match(/^\/model\s+(\S+)/i);
   if (modelMatch) {
     const provider = modelMatch[1].toLowerCase();
-    if (provider === "auto") {
-      _sessionAutoRoute = true;
-      _sessionProvider = null;
-    } else {
-      _sessionProvider = provider;
-      _sessionAutoRoute = false;
-    }
-    history.push({ role: "user", content: text });
-    history.push({ role: "assistant", content: `Switched to ${provider} model.` });
-    await showCommandReply({ ok: true, text: provider === "auto" ? "Auto-routing enabled" : `Switched to ${provider}`, resetHistory: true });
-    return;
-  }
-
-  // Phase 2: /auto-route on|off
-  const autoMatch = text.trim().match(/^\/auto-route\s+(on|off)/i);
-  if (autoMatch) {
-    const on = autoMatch[1].toLowerCase() === "on";
-    _sessionAutoRoute = on;
-    history.push({ role: "user", content: text });
-    history.push({ role: "assistant", content: `Auto-route ${on ? "enabled" : "disabled"}.` });
-    await showCommandReply({ ok: true, text: `Auto-route ${on ? "enabled" : "disabled"}`, resetHistory: true });
+      if (provider === "auto") {
+        _sessionProvider = null; // auto falls back to the default chain
+      } else {
+        _sessionProvider = provider;
+      }
+      history.push({ role: "user", content: text });
+      history.push({ role: "assistant", content: `Switched to ${provider} model.` });
+      await showCommandReply({ ok: true, text: `Switched to ${provider} model.`, resetHistory: true });
     return;
   }
 
@@ -1759,22 +1745,18 @@ async function submit(text) {
   // further down would sit in the temporal dead zone and throw a
   // ReferenceError whenever a screen observation was pending, crashing
   // every "look at my screen" request.
-  let providerPrefs = { defaultProvider: "local", autoRoute: false, modelProviders: [] };
+  let providerPrefs = { defaultProvider: "local", modelProviders: [] };
   try {
     if (window.pet && typeof window.pet.getProviderPrefs === "function") {
       providerPrefs = (await window.pet.getProviderPrefs()) || providerPrefs;
     }
   } catch {}
-  // Session overrides take priority (set by /model, /auto-route commands)
+  // Session overrides take priority (set by /model commands)
   if (_sessionProvider !== null) providerPrefs.defaultProvider = _sessionProvider;
-  if (_sessionAutoRoute !== null) providerPrefs.autoRoute = _sessionAutoRoute;
   if (providerPrefs.defaultProvider && providerPrefs.defaultProvider !== "local") {
     body.model_provider = providerPrefs.defaultProvider;
     const provCfg = (providerPrefs.modelProviders || []).find(function(p) { return p.provider === providerPrefs.defaultProvider; });
     if (provCfg && provCfg.contextWindow) body.context_window = Number(provCfg.contextWindow);
-  }
-  if (providerPrefs.autoRoute) {
-    body.auto_route = true;
   }
 
   // Inject pending screen observation context (set by submitProactive).

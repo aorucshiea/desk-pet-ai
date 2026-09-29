@@ -355,7 +355,6 @@ const SCHEMA = {
       nudgeInterval: 604800000,  // 7 days in ms
       // Phase 2: model providers (MCP servers stored separately in ~/.pet/mcp.json)
       defaultProvider: "local",
-      autoRoute: false,
       modelProviders: [],
     }),
     normalize: normalizeSkills,
@@ -843,7 +842,6 @@ function normalizeSkills(value) {
       autoReview: false,
       nudgeInterval: 604800000,
       defaultProvider: "local",
-      autoRoute: false,
       modelProviders: [],
     };
   }
@@ -863,7 +861,6 @@ function normalizeSkills(value) {
     // Phase 2: any OpenAI-compatible provider (not restricted to openai/anthropic)
     defaultProvider:
       typeof value.defaultProvider === "string" ? value.defaultProvider : "local",
-    autoRoute: typeof value.autoRoute === "boolean" ? value.autoRoute : false,
     modelProviders: Array.isArray(value.modelProviders)
       ? value.modelProviders.filter((p) => typeof p === "object" && p && typeof p.provider === "string")
       : [],

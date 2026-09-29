@@ -176,11 +176,7 @@ class ChatRequest(BaseModel):
     # Model provider routing (Phase 2)
     model_provider: Optional[str] = Field(
         default=None,
-        description="'local' | 'openai' | 'anthropic' | 'auto' | None (=local fallback)",
-    )
-    auto_route: bool = Field(
-        default=False,
-        description="When true, use a smart model to auto-route to the best provider",
+        description="'local' | 'openai' | 'anthropic' | None (=local fallback)",
     )
     tools_enabled: bool = Field(
         default=True,
@@ -2707,22 +2703,13 @@ def _resolve_provider(
     log,
     lora_arr: Optional[list[dict]] = None,
 ) -> BaseProvider:
-    """Pick the provider for this request based on model_provider / auto_route.
+    """Pick the provider for this request based on model_provider.
 
     Falls back to local only if explicitly requested or no API provider configured.
     Logs a clear message about which provider is being used.
     """
     from .providers.local import LocalProvider
     target = str(req.model_provider or "").strip().lower() if req.model_provider else ""
-
-    if req.auto_route or target == "auto":
-        # Auto-route: prefer any non-local provider, then fall back
-        names = [p.name for p in registry._providers.values() if p.name != "local"]
-        if names:
-            log.info("auto-route: selected %s (available: %s)", names[0], names)
-            return registry.get(names[0])
-        log.info("auto-route: no API providers, using local")
-        return _build_local_provider(server, server_state, req, lora_arr)
 
     if target and target != "local":
         if target in registry:

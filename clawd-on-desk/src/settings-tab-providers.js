@@ -9,7 +9,7 @@
 // OpenAI-compatible form — never as a permanently expanded raw form.
 //
 // Data model (unchanged): snapshot.skills.defaultProvider ("local" or a
-// provider id), snapshot.skills.autoRoute, snapshot.skills.modelProviders
+// provider id), snapshot.skills.modelProviders
 // ([{ provider, apiKey, baseUrl, model, thinking, reasoningEffort,
 // contextWindow }]). saveProviders() persists to prefs, mirrors
 // providers.json and restarts the sidecar.
@@ -164,11 +164,6 @@
     row.appendChild(text);
 
     const ctl = el("div", { className: "row-control" });
-    const arText = el("div", { className: "row-text", style: { textAlign: "right" } });
-    arText.appendChild(el("span", { className: "row-label" }, t("provAutoRoute")));
-    arText.appendChild(el("span", { className: "row-desc" }, t("provAutoRouteDesc")));
-    ctl.appendChild(arText);
-    ctl.appendChild(switchEl(!!skills.autoRoute, (next) => { void saveField("autoRoute", next); }));
     row.appendChild(ctl);
     parent.appendChild(row);
   }

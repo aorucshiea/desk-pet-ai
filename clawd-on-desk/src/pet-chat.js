@@ -2746,7 +2746,6 @@ module.exports = function initDeskPetChat(ctx) {
       const skills = (snapshot && snapshot.skills) || {};
       return {
         defaultProvider: skills.defaultProvider || "local",
-        autoRoute: skills.autoRoute || false,
         modelProviders: Array.isArray(skills.modelProviders) ? skills.modelProviders : [],
         screenObserveConsent: snapshot.screenObserveConsent || "deny",
         screenclick_ocrMode: snapshot.screenclick_ocrMode || "local",

@@ -511,7 +511,6 @@ const updateRegistry = {
     if ("defaultProvider" in value && (typeof value.defaultProvider !== "string")) {
       errors.push("skills.defaultProvider must be a string");
     }
-    if ("autoRoute" in value && typeof value.autoRoute !== "boolean") errors.push("skills.autoRoute must be boolean");
     if ("modelProviders" in value && (!Array.isArray(value.modelProviders) || !value.modelProviders.every(
       (p) => typeof p === "object" && p && typeof p.provider === "string",
     ))) {
