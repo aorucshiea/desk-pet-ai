@@ -26,7 +26,22 @@
 
   // Read the current theme's attention state bindings and extract
   // emotion → file mappings
-  function getEmotionMap() {
+  // Read the active theme's attention bindings from the MAIN process
+  // (themeLoader knows the real theme + user overrides). The old sync-only
+  // version read core.state.theme, which is never hydrated on this page —
+  // that is exactly why it always claimed "no emotion mapping configured"
+  // even for built-in themes like cybercat that ship with 5 of them.
+  async function getEmotionMap() {
+    try {
+      const api = window.settingsAPI;
+      if (api && typeof api.getThemeEmotionMap === "function") {
+        const ret = await api.getThemeEmotionMap();
+        if (ret && ret.status === "ok" && Array.isArray(ret.map) && ret.map.length) {
+          return ret.map;
+        }
+      }
+    } catch {}
+    // Fallback: whatever the renderer happens to have cached.
     try {
       const theme = core.state.theme;
       if (!theme || !theme.states || !theme.states.attention) return [];
@@ -79,8 +94,8 @@
     return e;
   }
 
-  function renderContent(parent) {
-    const emotMap = getEmotionMap();
+  async function renderContent(parent) {
+    const emotMap = await getEmotionMap();
     if (emotMap.length === 0) {
       parent.appendChild(_el("p", { style: { color: "var(--text-secondary)", fontSize: "13px", fontStyle: "italic", padding: "16px 0" } },
         "当前主题没有配置情绪动画映射。在主题的 theme.json 中，给 states.attention 数组添加 { \"file\": \"动画.gif\", \"emotion\": \"happy\" } 格式的条目即可。"));
@@ -151,7 +166,7 @@
     mounted = true;
     parent.innerHTML = "";
     renderHeader(parent);
-    renderContent(parent);
+    void renderContent(parent);
   }
 
   function init(coreArg) {
