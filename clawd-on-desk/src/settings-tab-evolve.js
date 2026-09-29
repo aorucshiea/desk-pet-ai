@@ -112,15 +112,6 @@
       main.appendChild(el("div", { className: "evl-hero-offline" }, t("evolveOfflineHint")));
     }
     hero.appendChild(main);
-
-    const actions = el("div", { className: "evl-hero-actions" });
-    const rescan = el("button", {
-      className: "soft-btn",
-      disabled: ok ? undefined : "disabled",
-      onclick: () => rescanPlugins(rescan),
-    }, t("evolveRescan"));
-    actions.appendChild(rescan);
-    hero.appendChild(actions);
     parent.appendChild(hero);
   }
 
@@ -138,23 +129,29 @@
       const nameRow = el("div", { className: "evl-row-name" });
       nameRow.appendChild(el("span", { className: "evl-row-title" }, p.name || "?"));
       if (isKernelCore(p.name)) nameRow.appendChild(el("span", { className: "evl-tag" }, t("evolveTagKernel")));
-      nameRow.appendChild(badge(p.suspended ? t("evolveBadgeSuspended") : t("evolveBadgeRunning"), p.suspended ? "warn" : "ok"));
+      // muted = switched off via unload; the kernel remembers the intent
+      // and keeps the row visible so the UI can offer re-enable.
+      nameRow.appendChild(p.muted
+        ? badge(t("evolveBadgeMuted"), "bad")
+        : badge(p.suspended ? t("evolveBadgeSuspended") : t("evolveBadgeRunning"), p.suspended ? "warn" : "ok"));
       info.appendChild(nameRow);
 
-      const chips = el("div", { className: "evl-row-chips" });
-      const tools = (p.tools || []).length;
-      if (tools) chips.appendChild(chip(`${t("evolveChipTools")} ${tools}`));
-      for (const s of p.provides || []) chips.appendChild(chip(`→ ${s}`));
-      for (const s of p.inject || []) chips.appendChild(chip(`← ${s}`));
-      if (p.effects) chips.appendChild(chip(`${t("evolveChipEffects")} ${p.effects}`));
-      if (chips.childNodes.length) info.appendChild(chips);
+      if (!p.muted) {
+        const chips = el("div", { className: "evl-row-chips" });
+        const tools = (p.tools || []).length;
+        if (tools) chips.appendChild(chip(`${t("evolveChipTools")} ${tools}`));
+        for (const s of p.provides || []) chips.appendChild(chip(`→ ${s}`));
+        for (const s of p.inject || []) chips.appendChild(chip(`← ${s}`));
+        if (p.effects) chips.appendChild(chip(`${t("evolveChipEffects")} ${p.effects}`));
+        if (chips.childNodes.length) info.appendChild(chips);
+      }
       row.appendChild(info);
 
       if (!isKernelCore(p.name)) {
         const btn = el("button", {
           className: "soft-btn evl-row-action",
-          onclick: () => unloadPlugin(p.name, btn),
-        }, t("evolveUnload"));
+          onclick: () => (p.muted ? enablePlugin(p.name, btn) : unloadPlugin(p.name, btn)),
+        }, p.muted ? t("evolveEnable") : t("evolveUnload"));
         row.appendChild(btn);
       }
       card.appendChild(row);
@@ -355,15 +352,15 @@
     if (panel) await refresh(panel, { force: true });
   }
 
-  async function rescanPlugins(btn) {
+  async function enablePlugin(name, btn) {
     if (!window.settingsAPI || typeof window.settingsAPI.pluginsLoad !== "function") return;
-    if (btn) btn.disabled = "disabled";
+    btn.disabled = "disabled";
     try {
-      const r = await window.settingsAPI.pluginsLoad("");
-      if (r && r.status === "ok") toast(t("evolveRescanDone"));
-      else toast(t("evolveRescanFail"), true);
+      const r = await window.settingsAPI.pluginsLoad(name);
+      if (r && r.status === "ok") toast(`${t("evolveEnabled")}${name}`);
+      else toast(`${t("evolveEnableFail")}${name}`, true);
     } catch {
-      toast(t("evolveRescanFail"), true);
+      toast(t("evolveEnableFail"), true);
     }
     const panel = document.getElementById("evolve-content");
     if (panel) await refresh(panel, { force: true });

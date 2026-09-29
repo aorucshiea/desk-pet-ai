@@ -40,9 +40,12 @@ describe("settings-tab-evolve: plugin kernel page", () => {
       "renderEffects\\(parent, state\\)",
     ].join("[\\s\\S]*?");
     assert.match(code, new RegExp(order));
-    // Unload + rescan actions exist and refresh afterwards.
+    // Unload (mute) and re-enable actions exist and refresh afterwards;
+    // the empty-name rescan is gone — the kernel's load endpoint requires
+    // a name, and the 5s watcher already covers directory rescans.
     assert.match(code, /pluginsUnload\(/);
-    assert.match(code, /pluginsLoad\(""\)/, "rescan sends an empty name to force a full sync");
+    assert.match(code, /p\.muted \? enablePlugin\(p\.name, btn\) : unloadPlugin\(p\.name, btn\)/);
+    assert.match(code, /pluginsLoad\(name\)/);
     assert.match(code, /refresh\(panel, \{ force: true \}\)/);
   });
 
