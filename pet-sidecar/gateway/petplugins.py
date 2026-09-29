@@ -403,6 +403,11 @@ class PluginManager:
         # ctx, but the settings UI still wants to show what the organ used
         # to do while it is switched off.
         self._muted_tools: dict[str, list[str]] = {}
+        # Same idea for what it published / how many effects it owned, so a
+        # muted row renders the full chip set (the Evolve page shows
+        # ↑service and effects chips for muted rows too).
+        self._muted_provides: dict[str, list[str]] = {}
+        self._muted_effects: dict[str, int] = {}
         # Declared config schema per plugin (module-level `config` dict),
         # so the settings UI can render editors without importing the file.
         self._schemas: dict[str, dict[str, Any]] = {}
@@ -521,9 +526,12 @@ class PluginManager:
     def _unload(self, name: str) -> None:
         ctx = self._contexts.pop(name, None)
         if ctx is not None:
-            # Freeze the ability list BEFORE dispose() wipes the context, so
-            # the UI can still show what this organ used to do.
+            # Freeze everything the settings UI renders BEFORE dispose()
+            # wipes the context: ability chips, provided services, effect
+            # count. A switched-off organ still shows what it used to be.
             self._muted_tools[name] = list(ctx._tools.keys())
+            self._muted_provides[name] = list(ctx.provides)
+            self._muted_effects[name] = len(self.effects.of(name))
             published = self._provided.pop(name, ())
             ctx.dispose()
             log.info("plugin unloaded: %s", name)
@@ -969,11 +977,11 @@ def apply(ctx):
                 rows.append({
                     "name": name,
                     "tools": list(self._muted_tools.get(name, [])),
-                    "provides": [],
+                    "provides": list(self._muted_provides.get(name, [])),
                     "inject": list(self._injects.get(name, ())),
                     "suspended": False,
                     "muted": True,
-                    "effects": 0,
+                    "effects": self._muted_effects.get(name, 0),
                 })
             return sorted(rows, key=lambda r: r["name"])
 
