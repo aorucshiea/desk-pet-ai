@@ -236,3 +236,94 @@ def apply(ctx):
     ctx.provide("impulse", {"compute_gap": compute_gap})
     ctx.log("speech impulse armed (base=%ss)" % cfg.get("base_gap_seconds"))
 '''
+
+# ── 记忆装载 / 自我连续 / 共振 / 体感：请求路径上的四个同步器官 ──────────
+# 它们不是主动循环，而是"每次说话前被问一句"的助手。迁移方式是暴露成
+# 内核服务（ctx.provide），server.py 调用点走 _organ(name, 内置模块)——
+# 停用器官 = 降级回内置实现，聊天不崩，但它从 Evolve 页消失、不再可改。
+
+ORGAN_SOURCES["organ_loader.py"] = '''"""organ_loader — 记忆装载器官。
+
+每一次说话之前，它决定"这次该想起什么"：把最近的、核心的、和当前
+话题相关的事件装配成一段记忆上下文，注入给模型。原本硬编码在
+server.py 的请求路径上（build_memory_context），现在是可插拔器官。
+
+停用它：server.py 会降级回内置 gateway/memory/loader.py（聊天照常），
+但它不再出现在 Evolve 页，也不能被改写。
+
+inject 了 events —— 事件库没就绪时本器官停靠等待，而不是报错。
+"""
+
+inject = ["events"]
+
+
+def apply(ctx):
+    from gateway.memory import loader as _loader
+
+    # 暴露给聊天流；provide 的副作用是可回滚的（卸载即消失）
+    ctx.provide("loader", _loader)
+    ctx.log("memory loader organ online")
+'''
+
+ORGAN_SOURCES["organ_continuity.py"] = '''"""organ_continuity — 自我连续器官（持续自我存在）。
+
+它是"同一个我"的那根线：把上一次的自我注释（renote）带进这一轮，
+让桌宠不是每轮都从零开始，而是接着上一次的自己继续。
+
+纯函数式助手（读一个当前注释），无依赖 —— 所以不 inject，永不停靠。
+停用它 = 降级回 gateway/memory/continuity.py。
+"""
+
+inject = []
+
+
+def apply(ctx):
+    from gateway.memory import continuity as _continuity
+
+    ctx.provide("continuity", _continuity)
+    ctx.log("continuity organ online")
+'''
+
+ORGAN_SOURCES["organ_resonance.py"] = '''"""organ_resonance — 嵌入共振器官。
+
+想起旧事不是随机的，是共振：当前这句话和过去某个事件的语义越近，
+那段记忆就越容易被点亮。本器官负责 find_resonance（找共振）和
+build_resonance_block（把共振结果写成注入块），并在记忆被改动时
+mark_stale（标记缓存失效）。
+
+它被三处调用（说话前、思考时、记忆更新后），所以迁移用的是
+"服务 + 降级"而不是搬代码：停用它 → 降级回内置 resonance.py。
+"""
+
+inject = ["events"]
+
+
+def apply(ctx):
+    from gateway.memory import resonance as _resonance
+
+    ctx.provide("resonance", _resonance)
+    ctx.log("resonance organ online")
+'''
+
+ORGAN_SOURCES["organ_somatic.py"] = '''"""organ_somatic — 身体感受器官（体感）。
+
+桌宠的"身体"感：用户怎么对待它（拖拽、连点、长时间不理）会累积成
+感觉，下一轮对话时以"身体感受"注入——它让被拖来拖去这件事真的留下
+痕迹，而不只是一个动画。
+
+⚠️ SensationBuffer 实例**留在 server.py**（模块级），因为它是有状态的：
+重载器官不该清空已经积累的感受。本器官只提供 record /
+build_somatic_block / EVENT_WEIGHT 这几项能力。
+
+inject 了 events：感觉最终要记成事件。
+"""
+
+inject = ["events"]
+
+
+def apply(ctx):
+    from gateway.memory import somatic as _somatic
+
+    ctx.provide("somatic", _somatic)
+    ctx.log("somatic organ online")
+'''
