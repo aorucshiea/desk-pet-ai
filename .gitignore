@@ -74,3 +74,8 @@ deskpt-tauri/src-tauri/gen/
 
 # LFS pointer stub without a real object (weights fetch from HF at build time)
 adapters/**/*.safetensors
+
+# Throwaway memory roots used to isolate PET_MEMORY_DIR while running tests.
+# They hold seeded organ copies + mood/curator state; never source, and they
+# got committed once already.
+.tmp-verify/
