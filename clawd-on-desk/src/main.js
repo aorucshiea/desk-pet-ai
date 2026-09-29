@@ -2841,15 +2841,7 @@ const _menuCtx = {
   // the first, and the hit rect is the box that actually took the click.
   getPetAnchorRect: () => {
     const bounds = getPetWindowBounds();
-    const anchor = getUpdateBubbleAnchorRect(bounds);
-    const hit = anchor || getHitRectScreen(bounds);
-    try {
-      // One line per ring open: the only way to tell a null rect apart from a
-      // wrong one without asking the user for another restart.
-      const line = `${new Date().toISOString()} ring-anchor bounds=${JSON.stringify(bounds)} anchor=${JSON.stringify(anchor)} resolved=${JSON.stringify(hit)}\n`;
-      fs.appendFileSync(path.join(app.getPath("userData"), "clawd-main.log"), line);
-    } catch {}
-    return hit;
+    return getUpdateBubbleAnchorRect(bounds) || getHitRectScreen(bounds);
   },
   checkForUpdates: (...args) => checkForUpdates(...args),
   getUpdateMenuItem: () => getUpdateMenuItem(),

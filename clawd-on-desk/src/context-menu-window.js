@@ -170,12 +170,18 @@ async function showContextMenu(items, pos = {}) {
       if (err) reject(err);
       else resolve();
     };
-    const onSize = (_e, { width, height } = {}) => {
+    // NOTE: a second "ctx-menu:size" listener already lives in
+    // ensureMenuWindow(). Both fire on the same event and the last
+    // placement wins, so this one has to carry the anchor too — reading
+    // only width/height here used to override the ring's centred placement
+    // with the corner default (hub ended up +half-a-window off the pet).
+    const onSize = (_e, { width, height, anchor } = {}) => {
       if (sizeArrived) return;
       sizeArrived = true;
       placeAndShow(
         Math.max(200, Math.min(400, Math.round(width || MENU_WIDTH))),
         Math.max(40, Math.round(height || 80)),
+        anchor === "center" ? "center" : "corner",
       );
       finish();
     };
