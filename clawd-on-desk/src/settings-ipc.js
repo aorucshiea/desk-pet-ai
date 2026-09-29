@@ -46,6 +46,18 @@ function sidecarJson(method, pathname, timeoutMs = 3000, body = null) {
         res.setEncoding("utf8");
         res.on("data", (c) => { buf += c; });
         res.on("end", () => {
+          // A 500 with a JSON body used to count as "ok" — the sidecar
+          // would report success for a failed engine stop, the UI
+          // refreshed, and the user saw a button that did nothing.
+          if (res.statusCode >= 400) {
+            let why = "";
+            try {
+              const j = JSON.parse(buf);
+              why = j && (j.error || j.detail || j.message) ? ` — ${j.error || j.detail || j.message}` : "";
+            } catch {}
+            resolve({ ok: false, error: `HTTP ${res.statusCode}${why}` });
+            return;
+          }
           try { resolve({ ok: true, json: JSON.parse(buf) }); }
           catch { resolve({ ok: true, json: null }); }
         });

@@ -687,7 +687,18 @@
           stopBtn.classList.add("is-busy");
           try {
             const r = await window.petSettings.engineStop();
-            if (!r || r.status !== "ok") notifyError((r && r.message) || t("petEngineStopFailed"));
+            if (!r || r.status !== "ok") {
+              notifyError((r && r.message) || t("petEngineStopFailed"));
+            } else {
+              // Ask again — the sidecar's auto-manager may bring it
+              // straight back (a local model is selected and something
+              // wants inference). Silence here reads as "the button
+              // does nothing", so say what actually happened.
+              try {
+                const p = await window.petSettings.getEngineParams();
+                if (p && p.running) notifyError(t("petEngineStopRestarted"));
+              } catch {}
+            }
           } catch (e) {
             notifyError(t("petEngineStopFailed") + ((e && e.message) || e || ""));
           }
