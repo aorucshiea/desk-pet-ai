@@ -38,22 +38,6 @@ module.exports = function initMenu(ctx) {
     return true;
   }
 
-  function buildMiniModeMenuItem() {
-    const miniSupported = isMiniSupported();
-    const inMiniMode = ctx.getMiniMode();
-    const miniDisabled = typeof ctx.getDisableMiniMode === "function" && ctx.getDisableMiniMode();
-    return {
-      label: inMiniMode ? t("exitMiniMode") : t("miniMode"),
-      enabled: !ctx.getMiniTransitioning()
-        && (inMiniMode || (!miniDisabled && miniSupported && !(ctx.doNotDisturb && !inMiniMode))),
-      click: () => {
-        if (inMiniMode) return ctx.exitMiniMode();
-        if (miniDisabled) return undefined;
-        return ctx.enterMiniViaMenu();
-      },
-    };
-  }
-
   function buildBringToPrimaryDisplayMenuItem() {
     return {
       label: t("bringPetToPrimaryDisplay"),
@@ -105,11 +89,6 @@ module.exports = function initMenu(ctx) {
   function buildTrayMenu() {
     if (!ctx.tray) return;
     const items = [
-      {
-        label: ctx.doNotDisturb ? t("wake") : t("sleep"),
-        click: () => ctx.doNotDisturb ? ctx.disableDoNotDisturb() : ctx.enableDoNotDisturb(),
-      },
-      buildMiniModeMenuItem(),
       { type: "separator" },
       // Quick-toggle noise controls. Other settings (language, theme, bubble
       // follow, start-with-Claude, updates, etc.) were moved out of the tray
@@ -175,21 +154,8 @@ module.exports = function initMenu(ctx) {
         label: t("settings"),
         click: () => ctx.openSettingsWindow(),
       },
-      {
-        label: t("openDashboard"),
-        click: () => {
-          if (typeof ctx.openDashboard === "function") ctx.openDashboard();
-        },
-      },
       buildBringToPrimaryDisplayMenuItem(),
     );
-    // #329: surface the update item in the tray menu. The label switches
-    // to "Update available · vX" / "Update Ready" when applicable. Click
-    // routes to checkForUpdates / quitAndInstall via getUpdateMenuItem.
-    if (typeof ctx.getUpdateMenuItem === "function") {
-      const updateItem = ctx.getUpdateMenuItem();
-      if (updateItem) items.push({ type: "separator" }, updateItem);
-    }
     items.push(
       { type: "separator" },
       {
@@ -335,25 +301,9 @@ module.exports = function initMenu(ctx) {
   function buildContextMenu() {
     const template = [
       {
-        ...buildMiniModeMenuItem(),
-      },
-      { type: "separator" },
-      {
-        label: ctx.doNotDisturb ? t("wake") : t("sleep"),
-        click: () => ctx.doNotDisturb ? ctx.disableDoNotDisturb() : ctx.enableDoNotDisturb(),
-      },
-      { type: "separator" },
-      { type: "separator" },
-      {
         label: t("menuDeskPetChat"),
         click: () => {
           if (typeof ctx.openDeskPetChat === "function") ctx.openDeskPetChat();
-        },
-      },
-      {
-        label: t("openDashboard"),
-        click: () => {
-          if (typeof ctx.openDashboard === "function") ctx.openDashboard();
         },
       },
     ];
@@ -397,11 +347,6 @@ module.exports = function initMenu(ctx) {
         click: () => ctx.openSettingsWindow(),
       },
     );
-    // #329: surface the update item in the right-click context menu too.
-    if (typeof ctx.getUpdateMenuItem === "function") {
-      const updateItem = ctx.getUpdateMenuItem();
-      if (updateItem) template.push({ type: "separator" }, updateItem);
-    }
     template.push(
       { type: "separator" },
       {
@@ -421,20 +366,8 @@ module.exports = function initMenu(ctx) {
     // keep the native popup as a fallback if the custom one fails.
     try {
       const data = [];
-      const mini = buildMiniModeMenuItem();
-      data.push({ label: mini.label, icon: "🐾", disabled: mini.enabled === false, click: mini.click });
-      data.push({ type: "separator" });
-      data.push({
-        label: ctx.doNotDisturb ? t("wake") : t("sleep"),
-        icon: "🌙",
-        click: () => ctx.doNotDisturb ? ctx.disableDoNotDisturb() : ctx.enableDoNotDisturb(),
-      });
-      data.push({ type: "separator" });
       if (typeof ctx.openDeskPetChat === "function") {
-        data.push({ label: t("menuDeskPetChat"), icon: "💬", click: () => ctx.openDeskPetChat() });
-      }
-      if (typeof ctx.openDashboard === "function") {
-        data.push({ label: t("openDashboard"), icon: "📊", click: () => ctx.openDashboard() });
+        data.push({ label: t("menuDeskPetChat"), icon: "chat", click: () => ctx.openDeskPetChat() });
       }
       const displays = screen.getAllDisplays();
       if (displays.length > 1 && !ctx.getMiniMode()) {
@@ -443,26 +376,21 @@ module.exports = function initMenu(ctx) {
         for (const entry of entries) {
           data.push({
             label: entry.label,
-            icon: "📺",
+            icon: "monitor",
             disabled: entry.enabled === false,
             click: entry.click,
           });
         }
       }
       data.push({ type: "separator" });
-      data.push({ label: t("settings"), icon: "⚙️", click: () => ctx.openSettingsWindow() });
-      if (typeof ctx.getUpdateMenuItem === "function") {
-        const upd = ctx.getUpdateMenuItem();
-        if (upd) data.push({ label: upd.label, icon: "⬆️", disabled: upd.enabled === false, click: upd.click });
-      }
-      data.push({ type: "separator" });
+      data.push({ label: t("settings"), icon: "settings", click: () => ctx.openSettingsWindow() });
       data.push({
         label: ctx.petHidden ? t("showPet") : t("hidePet"),
-        icon: "👁️",
+        icon: "eye",
         click: () => ctx.togglePetVisibility(),
       });
       data.push({ type: "separator" });
-      data.push({ label: t("quit"), icon: "⏻", danger: true, click: () => requestAppQuit() });
+      data.push({ label: t("quit"), icon: "power", danger: true, click: () => requestAppQuit() });
       showContextMenu(data).catch(() => popupMenuAt(ctx.contextMenu));
       return;
     } catch {}
