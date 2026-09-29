@@ -179,6 +179,8 @@ contextBridge.exposeInMainWorld("petSettings", {
   pluginsState: () => ipcRenderer.invoke("settings:plugins-state"),
   pluginsUnload: (name) => ipcRenderer.invoke("settings:plugins-unload", { name }),
   pluginsLoad: (name) => ipcRenderer.invoke("settings:plugins-load", { name }),
+  pluginsConfig: () => ipcRenderer.invoke("settings:plugins-config"),
+  pluginsSetConfig: (name, values) => ipcRenderer.invoke("settings:plugins-set-config", { name, values }),
   getModelDir: () => ipcRenderer.invoke("pet-settings:get-model-dir"),
   pickModelDir: () => ipcRenderer.invoke("pet-settings:pick-model-dir"),
   listLocalModels: () => ipcRenderer.invoke("pet-settings:list-local-models"),

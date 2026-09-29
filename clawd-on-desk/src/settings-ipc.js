@@ -900,6 +900,24 @@ function registerSettingsIpc(options = {}) {
     return { status: "ok", ...(r.json || {}) };
   });
 
+  handle("settings:plugins-config", async () => {
+    const r = await sidecarJson("GET", "/api/plugins/config", 4000);
+    if (!r.ok) return { status: "error", message: r.error || "sidecar unreachable" };
+    return { status: "ok", ...(r.json || {}) };
+  });
+
+  handle("settings:plugins-set-config", async (_event, { name, values } = {}) => {
+    if (typeof name !== "string" || !name) {
+      return { status: "error", message: "plugins:set-config requires a plugin name" };
+    }
+    if (!values || typeof values !== "object" || Array.isArray(values)) {
+      return { status: "error", message: "plugins:set-config requires a values object" };
+    }
+    const r = await sidecarJson("POST", "/api/plugins/config", 15000, { name, values });
+    if (!r.ok) return { status: "error", message: r.error || "sidecar unreachable" };
+    return { status: "ok", ...(r.json || {}) };
+  });
+
   handle("settings:sync-screen-consent", async (_event, value) => {
     // Push the "always allow screen" setting to the live sidecar (its
     // consent_state is process memory; the persisted pref is the truth).

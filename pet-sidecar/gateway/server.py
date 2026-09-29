@@ -3178,7 +3178,11 @@ async def _stream_chat_provider(
         # decides instead, from mood + how long it has been talking into
         # the void + how much the mind has been stirring. The model's own
         # explicit silence ([NEXT_CHAT:0]) never reaches this branch.
-        _impulse_gap = _impulse_module.compute_gap(
+        # 说话冲动现在是可插拔器官：organ_impulse 通过内核提供 "impulse"
+        # 服务（它的 config 暴露了基准/上下限/心情系数/退避倍率，模型和
+        # 用户都能调）。器官被停用时自动降级回内置实现，聊天不会崩。
+        _impulse_svc = _pet_plugins.get_service("impulse") or _impulse_module
+        _impulse_gap = _impulse_svc.compute_gap(
             emotion_index=mood_store.emotion_index if mood_store is not None else 0.0,
             proactive_streak=_proactive_streak,
             recall_count=get_session_recall_count(),
