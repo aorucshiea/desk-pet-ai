@@ -47,8 +47,6 @@ from .memory.tool import (
     memory_tool_handler,
     set_memory_store,
 )
-from .memory import decay as _decay_module
-from .memory import dream as _dream_module
 from .memory import impulse as _impulse_module
 from .memory import loader as _loader_module
 from .memory import continuity as _continuity_module
@@ -67,10 +65,27 @@ from .holo_agent import HoloRunner, probe as holo_probe
 from .memory_context import MemoryContext, theme_slug
 from .memory.mood import build_mood_assessment_prompt, EMOTION_TO_MOOD
 
-# Timestamp of the most recent conversation — the decay loop freezes when
+# Timestamp of the most recent conversation — the decay organ freezes when
 # the user hasn't talked to the pet for FREEZE_HOURS (memory only fades
 # while the pet is awake). Updated at the start of each /api/chat stream.
-_last_conversation_at = None
+# Shared as a cell (not a bare global) because it is also a KERNEL SERVICE:
+# the organ_decay / organ_dream plugins inject "conversation_state" and read
+# this dict, so the chat path and the organs see the same truth.
+_conversation_state = {"last_conversation_at": None}
+
+# Thread-safe submit of coroutines onto the main asyncio loop. Plugins load
+# (and hot-reload) from the watcher thread, and the provider clients are
+# loop-bound — so organ plugins that need async submit through this service
+# instead of spawning their own loop.
+_main_loop_holder: dict = {}
+
+
+def _schedule_on_main_loop(coro):
+    loop = _main_loop_holder.get("loop")
+    if loop is None or loop.is_closed():
+        coro.close()
+        return None
+    return loop.call_soon_threadsafe(loop.create_task, coro)
 
 # Death-note hook (死亡遗嘱): set by build_app so the module-level chat
 # stream can persist memories even when the client dies mid-stream —
@@ -564,11 +579,19 @@ def build_app(
     # injecting plugins get a coeffect notification: a plugin injected on
     # "mood" parks at boot and activates the instant mood lands.
     _pet_plugins = _petplugins_module.PluginManager({})
+    try:
+        _main_loop_holder["loop"] = asyncio.get_running_loop()
+    except RuntimeError:
+        pass  # not inside a running loop (unit tests) — schedule stays inert
     for _svc_name, _svc_obj in (
         ("mood", mood_store),
         ("events", event_store),
         ("memory", memory_store),
         ("memory_dir", memory_dir),
+        ("memory_ctx", mem_ctx),
+        ("llama_server", server),
+        ("schedule", _schedule_on_main_loop),
+        ("conversation_state", _conversation_state),
     ):
         _pet_plugins.register_service(_svc_name, _svc_obj, owner="kernel")
     # gateway service = the container itself (plugins can introspect peers)
@@ -707,95 +730,6 @@ def build_app(
         import asyncio as _aio
         _aio.get_event_loop().create_task(_curator_startup_check())
 
-        # LingLing: background weight decay. Runs every 10 minutes.
-        # Events with pause_decay=True are skipped (actively being
-        # thought about). Consolidated events decay slower. Freezes when
-        # there has been no conversation for FREEZE_HOURS (v3: memory
-        # only fades while the pet is awake — user doesn't talk for a
-        # day or two, memories hold still).
-        async def _decay_loop():
-            while True:
-                try:
-                    await asyncio.sleep(_decay_module.DECAY_INTERVAL_SECONDS)
-                    _decay_module.run_decay(event_store, _last_conversation_at)
-                except asyncio.CancelledError:
-                    break
-                except Exception as exc:
-                    log.warning("decay loop error: %s", exc)
-        _decay_task = _aio.get_event_loop().create_task(_decay_loop())
-
-        # ── LingLing: dream cycle (梦境固化, autonomous subsystem) ──────
-        # When the pet has been idle long enough, the gateway itself runs
-        # a consolidation pass: faint fragments are gathered, whatever
-        # provider is available merges them into distilled memories, and
-        # the night is recorded as a dream event. Memory maintenance as a
-        # structured subconscious organ — not a chore the model must
-        # remember to do.
-        async def _maybe_run_dream() -> str:
-            state = _dream_module.load_state(mem_ctx.theme_dir(mem_ctx.current_theme))
-            due, reason = _dream_module.should_dream(
-                event_store, _last_conversation_at, state=state)
-            if not due:
-                return ""
-
-            # Provider pick: prefer a cloud provider (cheap, better at
-            # instruction-following); fall back to the local model if it's
-            # the only one and it's alive.
-            provider = None
-            for name, p in provider_registry._providers.items():
-                if name != "local":
-                    provider = p
-                    break
-            if provider is None and getattr(server, "alive", False):
-                provider = provider_registry.get_or("local")
-            if provider is None:
-                log.info("dream deferred: no provider available")
-                return ""
-
-            candidates = _dream_module.collect_candidates(event_store)
-            if len(candidates) < _dream_module.MIN_CANDIDATES:
-                return ""
-            mood_ctx = mood_store.format_for_system_prompt() if mood_store else ""
-            system, user = _dream_module.build_dream_prompt(candidates, mood_ctx)
-
-            reply_chunks: list[str] = []
-            async for ev in provider.chat(
-                [{"role": "user", "content": user}],
-                system=system,
-                max_tokens=1024,
-                temperature=0.4,
-                top_p=0.95,
-            ):
-                if ev.get("type") == "delta":
-                    reply_chunks.append(ev.get("content", ""))
-                elif ev.get("type") == "error":
-                    raise RuntimeError(ev.get("message", "provider error"))
-            reply = "".join(reply_chunks)
-
-            data = parse_event_block(reply) or {}
-            outcome = _dream_module.apply_dream(event_store, data)
-            _resonance_module.mark_stale()
-            _dream_module.save_state(mem_ctx.theme_dir(mem_ctx.current_theme), {
-                **state,
-                "last_dream_at": datetime.now(timezone.utc).isoformat(),
-                "dream_count": int(state.get("dream_count", 0)) + 1,
-                "last_outcome": outcome,
-            })
-            return outcome.get("summary", "")
-
-        async def _dream_loop():
-            while True:
-                try:
-                    await asyncio.sleep(_dream_module.CHECK_INTERVAL_SECONDS)
-                    summary = await _maybe_run_dream()
-                    if summary:
-                        log.info("dream cycle complete: %s", summary)
-                except asyncio.CancelledError:
-                    break
-                except Exception as exc:
-                    log.warning("dream loop error: %s", exc)
-        _dream_task = _aio.get_event_loop().create_task(_dream_loop())
-
         # ── B-15: self-check heartbeat (自主稳态——检测"我病了"并记下来) │
         # Passive survival exists (web-panel lifeboat, provider fallback,
         # OmniParser restart cap). What's missing is ACTIVE self-awareness:
@@ -869,8 +803,10 @@ def build_app(
             yield
         finally:
             bridge.post("sleeping")
-            _decay_task.cancel()
-            _dream_task.cancel()
+            # Organs are plugins now — unwind the container instead of
+            # cancelling individual tasks (their disposers stop threads
+            # and cancel scheduled tasks in reverse order).
+            _pet_plugins.shutdown()
             _health_task.cancel()
             # Tear down MCP subprocesses gracefully *before* everything else.
             # The mcp SDK's transport context managers back onto anyio
@@ -948,6 +884,9 @@ def build_app(
     provider_registry = ProviderRegistry()
     # Local provider is always available
     provider_registry.register(LocalProvider(server, enable_thinking=False))
+    # The dream organ (and anything else) can now activate — this was the
+    # last service it was parked on.
+    _pet_plugins.register_service("providers", provider_registry, owner="kernel")
 
     # Load API providers from ~/.pet/providers.json
     _providers_path = Path.home() / ".pet" / "providers.json"
@@ -1649,8 +1588,10 @@ def build_app(
         response_text = str(payload.get("response_text") or "")
         result = _apply_extraction(response_text)
 
-        # End-of-conversation housekeeping: consolidate mentioned events
-        _decay_module.on_conversation_end(event_store)
+        # End-of-conversation housekeeping: consolidate mentioned events.
+        # The decay organ listens on the kernel bus (was a direct module
+        # call; now any plugin can react to conversation_end).
+        _pet_plugins.emit("conversation_end")
 
         return {
             "ok": True,
@@ -2802,8 +2743,8 @@ async def _stream_chat_provider(
     yield _sse({"event": "start"})
 
     # LingLing v3: a conversation is happening — un-freeze memory decay.
-    global _last_conversation_at, _proactive_streak
-    _last_conversation_at = datetime.now(timezone.utc)
+    global _proactive_streak
+    _conversation_state["last_conversation_at"] = datetime.now(timezone.utc)
 
     messages = [{"role": m.role, "content": m.content} for m in req.messages]
 

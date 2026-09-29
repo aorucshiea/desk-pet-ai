@@ -381,10 +381,11 @@ class PluginManager:
     # a class-level default keeps v1 construction sites unchanged).
     _config_overrides: dict[str, dict[str, Any]] = {}
 
-    def __init__(self, services: dict[str, Any] | None = None) -> None:
+    def __init__(self, services: dict[str, Any] | None = None, seed_organs: bool = True) -> None:
         # NOTE: kept as a plain dict for v1 compatibility. Mutate it through
         # register_service/unregister_service so coeffect resolution sees it.
         self.services: dict[str, Any] = services or {}
+        self._seed_organs = seed_organs  # False: hermetic (unit tests)
         self.bus: dict[str, list[Callable]] = {}
         self.effects = EffectRegistry()
         self._contexts: dict[str, PluginContext] = {}
@@ -630,6 +631,10 @@ class PluginManager:
             pdir.mkdir(parents=True, exist_ok=True)
             if created and not any(pdir.iterdir()):
                 self._seed_example(pdir)
+            # Built-in organs reach EXISTING installs too: write each file
+            # only when absent, so model/user edits are never overwritten.
+            if self._seed_organs:
+                self.seed_core_plugins(pdir)
             seen = set()
             for f in sorted(pdir.glob("*.py")):
                 if f.name.startswith("_"):
@@ -666,6 +671,41 @@ class PluginManager:
             "failed": failed,
             "skipped": skipped,
         }
+
+    def seed_core_plugins(self, pdir: Path) -> None:
+        """Ship the built-in organ plugins (idempotent per file).
+
+        The self_note example only lands on a fresh install; the organs
+        must also reach EXISTING installs — and must never clobber a
+        model/user edit — so each file is written only when absent.
+        """
+        try:
+            from .organ_plugins import ORGAN_SOURCES
+        except Exception:
+            log.exception("organ plugin sources unavailable; skipping seed")
+            return
+        pdir.mkdir(parents=True, exist_ok=True)
+        for fname, source in ORGAN_SOURCES.items():
+            target = pdir / fname
+            if target.exists():
+                continue
+            try:
+                target.write_text(source, encoding="utf-8")
+                log.info("seeded core organ: %s", fname)
+            except Exception:
+                log.exception("failed to seed organ plugin %s", fname)
+
+    def shutdown(self) -> None:
+        """Unwind the whole container (cordis reversibility on app exit):
+        stop the watcher, then dispose every non-protected context."""
+        self.stop_watching()
+        with self._lock:
+            names = [n for n in list(self._contexts) if n not in self._protected]
+        for name in names:
+            try:
+                self._unload(name)
+            except Exception:
+                log.exception("plugin shutdown failed: %s", name)
 
     def _seed_example(self, pdir: Path) -> None:
         """First boot: write a small self-referential example so the model

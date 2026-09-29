@@ -18,7 +18,9 @@ from gateway.petplugins import PluginManager
 @pytest.fixture()
 def pm(tmp_path):
     services = {"memory_dir": tmp_path, "events": object(), "mood": object()}
-    return PluginManager(services)
+    # seed_organs=False: these tests pin exact kernel semantics (loaded /
+    # skipped lists); the built-in organs get their own coverage below.
+    return PluginManager(services, seed_organs=False)
 
 
 def _write(pdir, name, code):
@@ -157,3 +159,67 @@ def test_protected_core_context_survives_sync(pm, tmp_path):
     pm.protect("plugin_forge")
     pm.sync()  # scans; no file named plugin_forge.py exists
     assert "pet_forge_plugin" in pm.all_tools()
+
+
+# ── Built-in organ plugins (P2: organs as seeds, not hardcoded loops) ──
+
+def test_core_organs_seed_and_activate(tmp_path):
+    """organ_decay loads once its two services exist; organ_dream parks on
+    the rest of its dependencies (providers/schedule/... not registered)."""
+    from gateway.petplugins import EFFECT_LISTENER, PluginManager
+
+    services = {
+        "memory_dir": tmp_path,
+        "events": object(),
+        "conversation_state": {"last_conversation_at": None},
+    }
+    pm = PluginManager(services)  # seed_organs defaults to True
+    result = pm.sync()
+    assert "organ_decay" in result["loaded"]
+    assert "organ_dream" in result["skipped"]
+    assert "organ_decay" in [c["name"] for c in pm.describe()]
+    # the decay organ registered its conversation_end listener
+    assert pm.effects_report()["by_kind"][EFFECT_LISTENER] >= 1
+    pm.shutdown()
+    assert "organ_decay" not in pm.describe()
+
+
+def test_core_organs_seed_is_idempotent(tmp_path):
+    """Re-seeding never clobbers a model/user edit of an organ file."""
+    PluginManager({"memory_dir": tmp_path}).sync()
+    pdir = PluginManager.plugin_dir(tmp_path)
+    organ = pdir / "organ_decay.py"
+    organ.write_text("inject = []\ndef apply(ctx):\n    pass\n", encoding="utf-8")
+    PluginManager({"memory_dir": tmp_path}).sync()
+    assert organ.read_text(encoding="utf-8") == "inject = []\ndef apply(ctx):\n    pass\n"
+
+
+def test_organ_decay_thread_ticks_and_listens(tmp_path, monkeypatch):
+    """The decay organ's thread runs run_decay on its config interval and
+    its conversation_end listener drives on_conversation_end."""
+    import time as _time
+
+    import gateway.memory.decay as decay_mod
+    from gateway.petplugins import PluginManager
+
+    calls, end_calls = [], []
+    monkeypatch.setattr(decay_mod, "run_decay", lambda *a: calls.append(a))
+    monkeypatch.setattr(decay_mod, "on_conversation_end", lambda *a: end_calls.append(a))
+
+    state = {"last_conversation_at": "now"}
+    pm = PluginManager({
+        "memory_dir": tmp_path,
+        "events": object(),
+        "conversation_state": state,
+    })
+    pm.set_config_overrides({"organ_decay": {"interval_seconds": 1}})
+    assert "organ_decay" in pm.sync()["loaded"]
+    _time.sleep(1.4)
+    assert calls, "run_decay should have ticked at least once"
+    assert calls[0][1] == "now"  # the conversation_state cell is shared
+    pm.emit("conversation_end")
+    assert end_calls, "listener should fire on conversation_end"
+    pm.shutdown()
+    ticks_after = len(calls)
+    _time.sleep(1.2)
+    assert len(calls) == ticks_after, "disposer must stop the decay thread"
