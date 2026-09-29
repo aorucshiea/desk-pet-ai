@@ -69,6 +69,12 @@ def _organ_service(name: str, fallback):
     except Exception:
         _svc = None
     return _svc or fallback
+
+
+def _kernel():
+    """Module-level access to the plugin container (None before boot)."""
+    return _plugin_container_ref.get("mgr")
+
 from .memory.recall import (
     RECALL_TOOL_SCHEMA,
     recall_tool_handler,
@@ -2740,7 +2746,8 @@ async def _gather_tools(mcp_manager: MCPManager, req: ChatRequest) -> Optional[l
     except Exception as exc:
         get_logger().debug("gather_tools error: %s", exc)
     try:
-        for name, tool in _pet_plugins.all_tools().items():
+        _mgr = _kernel()
+        for name, tool in (_mgr.all_tools() if _mgr else {}).items():
             tool_defs.append(ToolDef(
                 server_name="pet",
                 name=name,
@@ -2867,7 +2874,8 @@ async def _stream_chat_provider(
             "这些标签会被身体执行，不会显示给用户。"
         ]
         if req.tools_enabled:
-            plugins_desc = _pet_plugins.describe()
+            _mgr = _kernel()
+            plugins_desc = _mgr.describe() if _mgr else []
             body_lines.append(
                 "你的能力是插件化的（万物皆插件）：工具 pet_list_plugins 查看"
                 "当前器官，pet_forge_plugin 可以给自己铸造新插件（Python，定义"
@@ -3064,9 +3072,10 @@ async def _stream_chat_provider(
 
             log.info("MCP tool call: %s/%s args=%s", sn, tn, args)
 
-            if sn == "pet" or tn in _pet_plugins.all_tools():
+            _mgr = _kernel()
+            if _mgr is not None and (sn == "pet" or tn in _mgr.all_tools()):
                 # plugin tool (自进化器官) — executed by the container
-                result_text = await _pet_plugins.call_tool(tn, args)
+                result_text = await _mgr.call_tool(tn, args)
                 summary = result_text or f"[Tool {tn} completed]"
             else:
                 result = await mcp_manager.call_tool(sn, tn, args)
@@ -3202,7 +3211,7 @@ async def _stream_chat_provider(
         # 说话冲动现在是可插拔器官：organ_impulse 通过内核提供 "impulse"
         # 服务（它的 config 暴露了基准/上下限/心情系数/退避倍率，模型和
         # 用户都能调）。器官被停用时自动降级回内置实现，聊天不会崩。
-        _impulse_svc = _pet_plugins.get_service("impulse") or _impulse_module
+        _impulse_svc = _organ_service("impulse", _impulse_module)
         _impulse_gap = _impulse_svc.compute_gap(
             emotion_index=mood_store.emotion_index if mood_store is not None else 0.0,
             proactive_streak=_proactive_streak,
