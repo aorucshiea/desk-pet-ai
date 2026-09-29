@@ -8,7 +8,9 @@ const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("contextMenuBridge", {
   onItems: (cb) => ipcRenderer.on("ctx-menu:items", (_e, items) => cb(items)),
-  sendSize: (w, h) => ipcRenderer.send("ctx-menu:size", { width: w, height: h }),
+  // anchor: "corner" (default, list menus) puts the top-left at the cursor;
+  // "center" (the radial ring) puts the ring's hub on the cursor.
+  sendSize: (w, h, anchor) => ipcRenderer.send("ctx-menu:size", { width: w, height: h, anchor }),
   sendClick: (idx) => ipcRenderer.send("ctx-menu:click", { index: idx }),
   sendClose: () => ipcRenderer.send("ctx-menu:close"),
 });

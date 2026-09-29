@@ -63,11 +63,11 @@ function ensureMenuWindow() {
     console.error("[context-menu] load failed:", code, desc);
   });
 
-  ipcMain.on("ctx-menu:size", (_e, { width, height } = {}) => {
+  ipcMain.on("ctx-menu:size", (_e, { width, height, anchor } = {}) => {
     if (!menuWindow || menuWindow.isDestroyed() || !pendingItems) return;
     const w = Math.max(200, Math.min(400, Math.round(width || MENU_WIDTH)));
     const h = Math.max(40, Math.round(height || 80));
-    placeAndShow(w, h);
+    placeAndShow(w, h, anchor === "center" ? "center" : "corner");
   });
   ipcMain.on("ctx-menu:click", (_e, { index } = {}) => {
     const handler = clickHandlers[Number(index)];
@@ -80,11 +80,23 @@ function ensureMenuWindow() {
   return menuWindow;
 }
 
-function placeAndShow(width, height) {
+function placeAndShow(width, height, anchor = "corner") {
   if (!menuWindow || menuWindow.isDestroyed()) return;
   const cursor = screen.getCursorScreenPoint();
   const display = screen.getDisplayNearestPoint(cursor);
   const wa = display.workArea;
+  if (anchor === "center") {
+    // Radial ring: hub on the cursor, then nudge back inside the work area so
+    // a right-click near a screen edge never pushes half the ring off-screen.
+    let x = cursor.x - width / 2;
+    let y = cursor.y - height / 2;
+    x = Math.max(wa.x + 4, Math.min(x, wa.x + wa.width - width - 4));
+    y = Math.max(wa.y + 4, Math.min(y, wa.y + wa.height - height - 4));
+    menuWindow.setBounds({ x: Math.round(x), y: Math.round(y), width, height });
+    menuWindow.show();
+    menuWindow.focus();
+    return;
+  }
   let x = cursor.x + 4;
   let y = cursor.y + 4;
   if (x + width > wa.x + wa.width - 8) x = wa.x + wa.width - width - 8;
