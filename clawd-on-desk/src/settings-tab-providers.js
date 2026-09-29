@@ -147,25 +147,30 @@
     parent.appendChild(wrap);
   }
 
-  // ── Slim state row: what is in use + smart routing ─────────────────────
+  // ── What is in use right now — the first thing a user must see ──
+  // Two settings pages both touch "the model" (this one picks WHO serves
+  // it, the Models page picks WHICH local file), so this card says plainly
+  // which one is live and where the other half is configured. That is the
+  // whole point of the card: no more "which page do I click?"
   function renderStateRow(parent, skills, providers) {
     const defaultProvider = skills.defaultProvider || "local";
-    const active = defaultProvider === "local"
-      ? null
-      : providers.find((p) => p && p.provider === defaultProvider);
-    const activeName = active
-      ? (active.model ? `${displayName(active)} · ${active.model}` : displayName(active))
-      : t("provLocalName");
+    const isLocal = defaultProvider === "local";
+    const active = isLocal ? null : providers.find((p) => p && p.provider === defaultProvider);
+    const name = active ? displayName(active) : t("provLocalName");
+    const model = active && active.model ? active.model : "";
 
-    const row = el("div", { className: "section-rows prov-state-row" });
-    const text = el("div", { className: "row-text" });
-    text.appendChild(el("span", { className: "row-label" }, t("provActiveLabel")));
-    text.appendChild(el("span", { className: "row-desc" }, activeName));
-    row.appendChild(text);
+    const card = el("div", { className: "section-rows prov-active-card" });
+    const line1 = el("div", { className: "prov-active-row" });
+    line1.appendChild(el("span", { className: "prov-active-label" }, t("provNowUsing")));
+    line1.appendChild(el("span", { className: "prov-active-name" }, name));
+    if (model) line1.appendChild(el("span", { className: "prov-active-model" }, model));
+    line1.appendChild(el("span", { className: "prov-active-tag" }, t("provInUse")));
+    card.appendChild(line1);
 
-    const ctl = el("div", { className: "row-control" });
-    row.appendChild(ctl);
-    parent.appendChild(row);
+    card.appendChild(el("div", { className: "prov-active-kind" },
+      isLocal ? t("provKindLocal") : t("provKindRemote")));
+    card.appendChild(el("div", { className: "prov-active-explain" }, t("provActiveExplain")));
+    parent.appendChild(card);
   }
 
   // ── Left pane: grouped source list ─────────────────────────────────────
