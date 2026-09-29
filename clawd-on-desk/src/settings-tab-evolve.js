@@ -64,7 +64,17 @@
 
   function fetchState() {
     if (window.settingsAPI && typeof window.settingsAPI.pluginsState === "function") {
-      return window.settingsAPI.pluginsState();
+      return window.settingsAPI.pluginsState().then(async (state) => {
+        // Config editing arrived with the sidecar's config endpoints; until
+        // then this degrades silently and the page just shows no editors.
+        if (state && state.status === "ok" && typeof window.settingsAPI.pluginsConfig === "function") {
+          try {
+            const cfg = await window.settingsAPI.pluginsConfig();
+            if (cfg && cfg.status === "ok") state.configData = cfg;
+          } catch {}
+        }
+        return state;
+      });
     }
     return Promise.resolve({ status: "error", message: "unavailable" });
   }
@@ -192,6 +202,88 @@
     custom: "evolveKindCustom",
   };
 
+  // ── Config editing (schema declared by the plugin itself) ───────────
+  function configInput(entry, value) {
+    const type = (entry && entry.type) || "str";
+    const choices = entry && entry.choices;
+    if (Array.isArray(choices) && choices.length) {
+      const sel = el("select", { className: "evl-config-input" });
+      for (const c of choices) sel.appendChild(el("option", { value: String(c) }, String(c)));
+      sel.value = String(value);
+      return sel;
+    }
+    if (type === "bool") {
+      const cb = el("input", { type: "checkbox", className: "evl-config-check" });
+      cb.checked = !!value;
+      return cb;
+    }
+    const numeric = type === "int" || type === "float";
+    const input = el("input", {
+      className: "evl-config-input",
+      type: numeric ? "number" : "text",
+      step: type === "int" ? "1" : "any",
+    });
+    input.value = value === undefined || value === null ? "" : String(value);
+    return input;
+  }
+
+  function collectValues(inputs) {
+    const out = {};
+    for (const [key, input] of Object.entries(inputs)) {
+      if (input.type === "checkbox") out[key] = input.checked;
+      else if (input.type === "number") out[key] = input.value === "" ? null : Number(input.value);
+      else out[key] = input.value;
+    }
+    return out;
+  }
+
+  async function saveConfig(name, inputs, btn) {
+    if (!window.settingsAPI || typeof window.settingsAPI.pluginsSetConfig !== "function") return;
+    btn.disabled = "disabled";
+    try {
+      const r = await window.settingsAPI.pluginsSetConfig(name, collectValues(inputs));
+      if (r && r.status === "ok") toast(t("evolveConfigSaved"));
+      else toast(t("evolveConfigFail"), true);
+    } catch {
+      toast(t("evolveConfigFail"), true);
+    }
+    const panel = document.getElementById("evolve-content");
+    if (panel) await refresh(panel, { force: true });
+  }
+
+  function renderConfig(parent, state) {
+    const plugins = state.configData && state.configData.plugins;
+    if (!plugins || typeof plugins !== "object") return; // endpoints not live yet
+    const names = Object.keys(plugins)
+      .filter((n) => plugins[n] && plugins[n].schema && Object.keys(plugins[n].schema).length)
+      .sort();
+    if (!names.length) return;
+    const card = sectionCard(t("evolveConfigTitle"), names.length);
+    for (const name of names) {
+      const schema = plugins[name].schema || {};
+      const values = plugins[name].values || {};
+      const block = el("div", { className: "evl-config-block" });
+      block.appendChild(el("div", { className: "evl-config-name evl-mono" }, name));
+      const inputs = {};
+      for (const [key, entry] of Object.entries(schema)) {
+        const row = el("div", { className: "evl-config-row" });
+        const label = el("label", { className: "evl-config-label" }, key);
+        if (entry && entry.description) label.title = String(entry.description);
+        row.appendChild(label);
+        inputs[key] = configInput(entry, values[key]);
+        row.appendChild(inputs[key]);
+        block.appendChild(row);
+      }
+      const save = el("button", {
+        className: "soft-btn evl-config-save",
+        onclick: () => void saveConfig(name, inputs, save),
+      }, t("evolveConfigSave"));
+      block.appendChild(save);
+      card.appendChild(block);
+    }
+    parent.appendChild(card);
+  }
+
   function renderEffects(parent, state) {
     const report = state.effects || {};
     const list = report.effects || [];
@@ -229,6 +321,7 @@
       renderPending(parent, state);
       renderServices(parent, state);
       renderEffects(parent, state);
+      renderConfig(parent, state);
     }
     renderExplainer(parent);
   }
@@ -237,6 +330,13 @@
     const state = await fetchState();
     const json = JSON.stringify(state && state.status === "ok" ? state : { offline: true });
     if (!force && json === lastStateJson) return;
+    // The 5s poll must never wipe an in-progress config edit: if the user's
+    // focus is inside the panel, skip this tick (actions force their own).
+    if (!force) {
+      const active = document.activeElement;
+      if (active && parent.contains(active)
+        && ["INPUT", "SELECT", "TEXTAREA", "BUTTON"].includes(active.tagName)) return;
+    }
     lastStateJson = json;
     renderContent(parent, state && state.status === "ok" ? state : null);
   }

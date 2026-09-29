@@ -4651,3 +4651,47 @@ html, body {
   color: var(--text-secondary);
   margin-top: 6px;
 }
+
+/* Config editing blocks (plugin-declared schema) */
+.evl-config-block {
+  padding: 10px;
+  border: 1px solid var(--row-border);
+  border-radius: 8px;
+  margin-bottom: 10px;
+}
+.evl-config-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 8px;
+}
+.evl-config-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 0;
+}
+.evl-config-label {
+  flex: 0 0 auto;
+  min-width: 160px;
+  max-width: 46%;
+  font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.evl-config-input {
+  flex: 1 1 auto;
+  max-width: 240px;
+  padding: 4px 8px;
+  font-size: 12px;
+  color: var(--text-primary);
+  background: var(--bg-elevated, var(--panel-bg));
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color-scheme: light dark;
+}
+.evl-config-check { flex: 0 0 auto; }
+.evl-config-save { margin-top: 8px; }

@@ -96,4 +96,22 @@ describe("settings-tab-evolve: plugin kernel page", () => {
     assert.match(preload, /pluginsUnload: \(name\) => ipcRenderer\.invoke\("settings:plugins-unload", \{ name \}\)/);
     assert.match(preload, /pluginsLoad: \(name\) => ipcRenderer\.invoke\("settings:plugins-load", \{ name \}\)/);
   });
+
+  test("config editing consumes the plugins/config contract and degrades silently", () => {
+    const tabCode = fs.readFileSync(EVOLVE_SRC, "utf8");
+    const ipc = fs.readFileSync(IPC_SRC, "utf8");
+    const preload = fs.readFileSync(PRELOAD_SRC, "utf8");
+    // Contract shape from the kernel session: GET → {plugins: {name: {schema, values}}},
+    // POST → {name, values}; editors render only when the endpoint answers.
+    assert.match(ipc, /handle\("settings:plugins-config"/);
+    assert.match(ipc, /sidecarJson\("GET", "\/api\/plugins\/config", 4000\)/);
+    assert.match(ipc, /sidecarJson\("POST", "\/api\/plugins\/config", 15000, \{ name, values \}\)/);
+    assert.match(preload, /pluginsConfig: \(\) => ipcRenderer\.invoke\("settings:plugins-config"\)/);
+    assert.match(preload, /pluginsSetConfig: \(name, values\) => ipcRenderer\.invoke\("settings:plugins-set-config", \{ name, values \}\)/);
+    assert.match(tabCode, /renderConfig\(parent, state\)/);
+    assert.match(tabCode, /state\.configData && state\.configData\.plugins/);
+    assert.match(tabCode, /configInput\(entry, values\[key\]\)/);
+    // The 5s poll must not wipe in-progress edits: focus guard before rebuild.
+    assert.match(tabCode, /\["INPUT", "SELECT", "TEXTAREA", "BUTTON"\]\.includes\(active\.tagName\)/);
+  });
 });
