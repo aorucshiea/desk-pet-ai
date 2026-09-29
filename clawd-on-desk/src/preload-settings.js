@@ -183,6 +183,7 @@ contextBridge.exposeInMainWorld("petSettings", {
   addModelFolder: () => ipcRenderer.invoke("pet-settings:add-model-folder"),
   addModelFile: () => ipcRenderer.invoke("pet-settings:add-model-file"),
   setEngineParams: (params) => ipcRenderer.invoke("pet-settings:set-engine-params", { params }),
+  getEnginePrefs: () => ipcRenderer.invoke("pet-settings:get-engine-prefs"),
   removeModelFolder: (folder) => ipcRenderer.invoke("pet-settings:remove-model-folder", { folder }),
   resetModelDir: () => ipcRenderer.invoke("pet-settings:reset-model-dir"),
   rerunOnboarding: () => ipcRenderer.invoke("pet-settings:rerun-onboarding"),

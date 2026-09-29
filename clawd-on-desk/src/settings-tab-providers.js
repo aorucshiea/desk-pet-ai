@@ -238,6 +238,51 @@
       style: { marginTop: "12px", padding: "12px", border: "1px solid var(--border)", borderRadius: "6px", background: "var(--bg)", color: "var(--text-primary)" },
     });
     form.appendChild(el("h4", { style: { margin: "0 0 8px 0", fontSize: "13px", fontWeight: "600" } }, "Add Provider"));
+    // One-click presets for local OpenAI-compatible servers. These are the
+    // recommended way to run local models: LM Studio / Ollama already
+    // handle engine binaries, CUDA builds and per-model tuning, so the pet
+    // just talks to them over HTTP. The placeholder apiKey is required by
+    // the provider schema but both servers ignore it.
+    const presetRow = el("div", { style: { display: "flex", gap: "8px", marginBottom: "10px", flexWrap: "wrap" } });
+    const mkPreset = (label, cfg, hint) => {
+      const b = el("button", {
+        title: hint,
+        style: { padding: "6px 12px", fontSize: "12px", border: "1px solid var(--border)", borderRadius: "4px", cursor: "pointer", background: "var(--bg)", color: "var(--text-primary)" },
+        onclick: async () => {
+          const next = providers.filter((x) => x.provider !== cfg.provider);
+          next.push(cfg);
+          await saveProviders(next);
+          renderAll();
+        },
+      }, label);
+      return b;
+    };
+    presetRow.appendChild(mkPreset("+ LM Studio (local)", {
+      provider: "lmstudio",
+      apiKey: "lm-studio",          // LM Studio ignores the key
+      baseUrl: "http://127.0.0.1:1234/v1",
+      model: "local-model",         // LM Studio serves whatever is loaded
+      thinking: false,
+      reasoningEffort: null,
+      contextWindow: null,
+    }, "Connect to a model loaded in LM Studio (127.0.0.1:1234)"));
+    presetRow.appendChild(mkPreset("+ Ollama (local)", {
+      provider: "ollama",
+      apiKey: "ollama",             // Ollama ignores the key locally
+      baseUrl: "http://127.0.0.1:11434/v1",
+      model: "llama3.2",            // change to a model you actually pulled
+      thinking: false,
+      reasoningEffort: null,
+      contextWindow: null,
+    }, "Connect to Ollama (127.0.0.1:11434) — remember to pull the model first"));
+    // Restart hint once a local server provider has been added.
+    if (providers.some((x) => x && (x.provider === "lmstudio" || x.provider === "ollama"))) {
+      presetRow.appendChild(el("span", { style: { fontSize: "11px", color: "var(--text-secondary)", alignSelf: "center" } },
+        "Local server connected — restart the sidecar to route chats through it."));
+    }
+    form.appendChild(el("div", { style: { fontSize: "11px", color: "var(--text-secondary)", marginBottom: "8px" } },
+      "Recommended for local models: let LM Studio / Ollama run the engine, the pet just uses its API."));
+    form.appendChild(presetRow);
     const fields = [
       { key: "provider", label: "ID", placeholder: "e.g. deepseek", hint: "short identifier" },
       { key: "apiKey", label: "Key", placeholder: "sk-...", hint: "API key" },

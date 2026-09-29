@@ -14,6 +14,7 @@ import json
 import os
 import platform
 import re
+import shlex
 import shutil
 import time
 from contextlib import asynccontextmanager
@@ -467,6 +468,16 @@ def build_app(
         n_cpu_moe=_env_int("PET_N_CPU_MOE"),
         batch_size=_env_int("PET_BATCH_SIZE"),
         ubatch_size=_env_int("PET_UBATCH_SIZE"),
+        parallel=_env_int("PET_PARALLEL"),
+        ctx_checkpoints=_env_int("PET_CTX_CHECKPOINTS"),
+        kv_offload=_env_bool("PET_KV_OFFLOAD"),
+        kv_unified=_env_bool("PET_KV_UNIFIED"),
+        spec_type=(os.environ.get("PET_SPEC_TYPE") or "").strip() or None,
+        spec_draft_n_max=_env_int("PET_SPEC_DRAFT_N_MAX"),
+        verbosity=_env_int("PET_VERBOSITY"),
+        # Free-form pass-through: PET_EXTRA_ARGS="--main-gpu 0 --tensor-split 1,0"
+        # (space separated; quoted segments survive).
+        extra_args=shlex.split(os.environ.get("PET_EXTRA_ARGS") or ""),
     )
 
     # In-memory adapter state. Single source of truth for what the

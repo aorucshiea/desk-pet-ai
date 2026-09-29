@@ -80,6 +80,12 @@
     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="100%" height="100%">' +
     '<path d="M9 6l6 6-6 6"/>' +
     '</svg>';
+  const SVG_CHIP =
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" width="100%" height="100%">' +
+    '<rect x="6" y="6" width="12" height="12" rx="2"/>' +
+    '<rect x="10" y="10" width="4" height="4" rx="1"/>' +
+    '<path d="M9 2.5V6M15 2.5V6M9 18v3.5M15 18v3.5M2.5 9H6M2.5 15H6M18 9h3.5M18 15h3.5"/>' +
+    '</svg>';
 
   function cleanupTimers() {
     if (healthTimer) {
@@ -221,46 +227,6 @@
     return row;
   }
 
-  // ── Path helpers ───────────────────────────────────────────────────────
-  //
-  // Path-aware middle truncation: always keeps the filename + its parent
-  // directory, then greedily extends the tail and starts the head with the
-  // leading components until we run out of room. Character-level fallback
-  // for inputs that don't look like a path. Tooltip restores the full
-  // string so we never hide information, only collapse it.
-  function truncatePath(p, maxLen = PATH_TRUNCATE_MAX) {
-    if (!p) return "";
-    if (p.length <= maxLen) return p;
-    const usesBackslash = p.includes("\\") && !p.includes("/");
-    const sep = usesBackslash ? "\\" : "/";
-    const parts = p.split(sep);
-    if (parts.length < 3) {
-      const headLen = Math.ceil((maxLen - 1) / 2);
-      const tailLen = Math.floor((maxLen - 1) / 2);
-      return p.slice(0, headLen) + "…" + p.slice(-tailLen);
-    }
-    const fileName = parts[parts.length - 1];
-    const tailPieces = [fileName];
-    let tailLen = fileName.length;
-    let i = parts.length - 2;
-    while (i >= 0 && tailLen + parts[i].length + 1 < maxLen - 6) {
-      tailPieces.unshift(parts[i]);
-      tailLen += parts[i].length + 1;
-      i--;
-    }
-    const headPieces = [];
-    let headLen = 0;
-    for (let j = 0; j <= i; j++) {
-      const piece = parts[j];
-      const pieceTotal = piece.length + (j === 0 ? 0 : 1);
-      if (headLen + pieceTotal + tailLen + 3 > maxLen) break;
-      headPieces.push(piece);
-      headLen += pieceTotal;
-    }
-    if (headPieces.length === 0) headPieces.push(parts[0] || "");
-    return headPieces.join(sep) + sep + "…" + sep + tailPieces.join(sep);
-  }
-
   // ── Section header (matches the small-caps title used elsewhere) ──────
   function sectionTitle(text) {
     return el("h2", { className: "section-title pet-section-title" }, text);
@@ -356,13 +322,28 @@
     return (bytes / 1048576).toFixed(0) + " MB";
   }
 
+  // ── Path helpers ───────────────────────────────────────────────────────
+  //
+  // The hero card shows the full path with CSS ellipsis and a restoring
+  // tooltip (title attribute) — no character-level truncation needed, the
+  // browser lays it out and the tooltip never hides information.
+  function pickLabelFromPath(p) {
+    if (!p) return t("petModelPathUnset");
+    const m = String(p).match(/([^\\/]+?)(?:\.gguf)?$/i);
+    return m ? m[1] : String(p);
+  }
+
+  function metaChip(label) {
+    return el("span", { className: "pet-chip" }, label);
+  }
+
   // ── Model section ─────────────────────────────────────────────────────
   //
-  // One picker row tells the whole story: label + size + ✓ for the loaded
-  // model in the dropdown, the full path as the row description (truncated
-  // with a restoring tooltip), and Load / Browse actions. The scanned-
-  // folders manager collapses behind a disclosure — it is setup-time UI,
-  // not something to stare at on every visit.
+  // A hero card answers "which brain is my pet running" at a glance: big
+  // model name + live status dot, the full path, meta chips (size /
+  // backend) and the actions right underneath. Switching lives in its own
+  // card that only appears when there is something to switch to; the
+  // scanned-folders manager stays collapsed behind a disclosure.
   function renderModelSection(box, ctx) {
     box.innerHTML = "";
     const snap = ctx.healthSnapshot || {};
@@ -370,56 +351,68 @@
     const hasPath = !!modelDir;
 
     box.appendChild(sectionTitle(t("petSectionModel")));
-    const section = helpers.buildSection("", []);
-    const rows = section.querySelector(".section-rows");
 
-    // ── Row 1: current model ──────────────────────────────────────────
-    const pickerRow = el("div", { className: "row pet-model-picker-row" });
-    const pickerText = el("div", { className: "row-text" });
-    pickerText.appendChild(el("span", { className: "row-label" }, t("petRowCurrentModel")));
-    const pathDesc = el("span", {
-      className: "row-desc pet-path-value" + (hasPath ? "" : " is-unset"),
-    }, hasPath ? truncatePath(modelDir, PATH_TRUNCATE_MAX) : t("petModelPathUnset"));
-    if (hasPath) pathDesc.setAttribute("title", modelDir);
-    pickerText.appendChild(pathDesc);
-    pickerRow.appendChild(pickerText);
+    // ── Hero card: the current model ──────────────────────────────────
+    const hero = el("div", { className: "section-rows pet-model-hero" });
 
-    const pickerCtl = el("div", { className: "row-control pet-model-picker-control" });
-    const picker = el("select", {
-      className: "setting-select pet-model-picker",
-      style: { minWidth: "0", fontSize: "13px" },
+    const heroMain = el("div", { className: "pet-model-hero-main" });
+    const iconBox = el("span", { className: "pet-model-hero-icon", "aria-hidden": "true" });
+    iconBox.innerHTML = SVG_CHIP;
+    heroMain.appendChild(iconBox);
+
+    const heroText = el("div", { className: "pet-model-hero-text" });
+    const nameRow = el("div", { className: "pet-model-hero-name-row" });
+    nameRow.appendChild(el("span", { className: "pet-model-hero-name" },
+      hasPath ? pickLabelFromPath(modelDir) : t("petModelPathUnset")));
+    // Live status beside the name — same tones as the header pill.
+    const heroStatus = deriveStatus(snap.sidecarReady, snap.llamaReady, snap.probing);
+    nameRow.appendChild(el("span", {
+      className: `pet-model-hero-status tone-${heroStatus.tone}`,
+    }, heroStatus.label));
+    heroText.appendChild(nameRow);
+
+    heroText.appendChild(el("div", {
+      className: "pet-model-hero-path" + (hasPath ? "" : " is-unset"),
+      title: hasPath ? modelDir : "",
+    }, hasPath ? modelDir : t("petModelPathUnset")));
+    heroMain.appendChild(heroText);
+    hero.appendChild(heroMain);
+
+    // Meta chips (size / backend) — filled asynchronously; both reads are
+    // cheap and cached by their IPC handlers. The isConnected guard keeps
+    // a late response from touching a health-tick-replaced card.
+    const chips = el("div", { className: "pet-model-hero-chips" });
+    hero.appendChild(chips);
+    if (hasPath && typeof window.petSettings.listLocalModels === "function") {
+      window.petSettings.listLocalModels().then((ret) => {
+        const cur = ((ret && ret.models) || []).find((m) => m && m.current);
+        const size = formatSize(cur && cur.sizeBytes);
+        if (size && chips.isConnected) chips.appendChild(metaChip(size));
+      }).catch(() => {});
+    }
+    if (typeof window.petSettings.listDevices === "function") {
+      window.petSettings.listDevices().then((devices) => {
+        const cur = (devices && devices.current) || "";
+        if (cur && chips.isConnected) chips.appendChild(metaChip(deviceLabel(cur)));
+      }).catch(() => {});
+    }
+
+    // Actions row.
+    const heroActions = el("div", { className: "pet-model-hero-actions" });
+    const openBtn = softBtn(modelPathOpenLabel(), async () => {
+      const ret = await window.petSettings.openModelDir();
+      if (ret && !ret.ok) notifyError(ret.error || t("petOpenModelDirFailed"));
     });
-    picker.appendChild(el("option", { value: "" }, "—"));
-    pickerCtl.appendChild(picker);
-
-    const loadBtn = softBtn(t("petModelLoadButton"), async () => {
-      const target = picker.value;
-      if (!target) return;
-      if (!window.petSettings || typeof window.petSettings.useModelDir !== "function") return;
-      loadBtn.disabled = true;
-      const origLabel = loadBtn.textContent;
-      loadBtn.textContent = t("petPickModelBusy");
-      try {
-        const ret = await window.petSettings.useModelDir(target);
-        if (ret && !ret.ok && ret.error) notifyError(t("petReloadError") + ret.error);
-        if (ret && ret.ok && ret.reloadError) notifyError(t("petReloadError") + ret.reloadError);
-      } finally {
-        loadBtn.disabled = false;
-        loadBtn.textContent = origLabel;
-        void ctx.refreshAll();
-      }
-    }, { accent: true });
-    loadBtn.disabled = true;
-    pickerCtl.appendChild(loadBtn);
+    openBtn.disabled = !hasPath;
+    heroActions.appendChild(openBtn);
 
     // Browse: the IPC handler registers the picked file's folder in the
     // scan list AND hot-loads that .gguf (mmproj-* sibling auto-detected).
-    // Primary action while nothing is loaded yet; secondary afterwards —
-    // the dropdown covers the "switch to a known model" case.
+    // Primary action while nothing is loaded; the switcher covers the
+    // "switch to a known model" case.
     const browseLabel = t("petChangeModel");
     const browseBtn = softBtn(browseLabel, async () => {
       if (browseBtn.disabled) return;
-      loadBtn.disabled = true;
       browseBtn.disabled = true;
       browseBtn.classList.add("is-busy");
       browseBtn.textContent = t("petChangeModelBusy");
@@ -441,51 +434,52 @@
       browseBtn.classList.remove("is-busy");
       browseBtn.textContent = browseLabel;
       browseBtn.disabled = false;
-      loadBtn.disabled = !picker.value || picker.value === (picker.dataset.current || "");
     }, { accent: !hasPath });
-    pickerCtl.appendChild(browseBtn);
-    pickerRow.appendChild(pickerCtl);
-    rows.appendChild(pickerRow);
+    heroActions.appendChild(browseBtn);
+    hero.appendChild(heroActions);
 
-    // Populate the dropdown asynchronously. Done at render time so it picks
-    // up new gguf files dropped into the models folder while the settings
-    // window is open.
-    if (typeof window.petSettings.listLocalModels === "function") {
-      window.petSettings.listLocalModels().then((ret) => {
-        const models = (ret && ret.models) || [];
-        const currentPath = ((models.find((m) => m && m.current) || {}).path) || "";
-        picker.innerHTML = "";
-        if (models.length === 0) {
-          picker.appendChild(el("option", { value: "" }, t("petModelPathUnset")));
-          // Nothing to switch to — surface the folder manager so the user
-          // can point the scan at a directory (or a single file).
-          foldersExpanded = true;
-          applyFoldersExpanded();
-          return;
-        }
-        for (const m of models) {
-          if (!m || !m.path) continue;
-          const sizeLabel = formatSize(m.sizeBytes);
-          const flag = m.current ? " ✓" : "";
-          const opt = el("option", { value: m.path, title: m.path },
-            `${m.label}${sizeLabel ? "  ·  " + sizeLabel : ""}${flag}`);
-          picker.appendChild(opt);
-        }
-        picker.dataset.current = currentPath || "";
-        // Selecting a DIFFERENT entry enables the Load button.
-        picker.addEventListener("change", () => {
-          loadBtn.disabled = !picker.value || picker.value === currentPath;
-        });
-        // Pre-select the currently loaded model (its ✓ flag makes the
-        // row double as the status display) — with nothing to switch to,
-        // the button stays disabled.
-        picker.value = currentPath || "";
-        loadBtn.disabled = !picker.value || picker.value === currentPath;
-      }).catch(() => {
-        picker.innerHTML = "";
-        picker.appendChild(el("option", { value: "" }, t("petNoAdditionalModels")));
-      });
-    }
+    box.appendChild(hero);
+
+    // ── Switcher card ────────────────────────────────────────────────
+    // Built here but NOT appended: the async model list decides whether it
+    // earns a place (≥ 2 models). Appending lazily avoids the flash of an
+    // empty picker card on every health-tick rebuild.
+    const switchSection = helpers.buildSection("", []);
+    const switchRows = switchSection.querySelector(".section-rows");
+    const switchRowEl = el("div", { className: "row pet-model-switch-row" });
+    const switchText = el("div", { className: "row-text" });
+    switchText.appendChild(el("span", { className: "row-label" }, t("petRowSwitchModel")));
+    switchRowEl.appendChild(switchText);
+
+    const switchCtl = el("div", { className: "row-control pet-model-picker-control" });
+    const picker = el("select", {
+      className: "setting-select pet-model-picker",
+      style: { minWidth: "0", fontSize: "13px" },
+    });
+    picker.appendChild(el("option", { value: "" }, "—"));
+    switchCtl.appendChild(picker);
+
+    const loadBtn = softBtn(t("petModelLoadButton"), async () => {
+      const target = picker.value;
+      if (!target) return;
+      if (!window.petSettings || typeof window.petSettings.useModelDir !== "function") return;
+      loadBtn.disabled = true;
+      const origLabel = loadBtn.textContent;
+      loadBtn.textContent = t("petPickModelBusy");
+      try {
+        const ret = await window.petSettings.useModelDir(target);
+        if (ret && !ret.ok && ret.error) notifyError(t("petReloadError") + ret.error);
+        if (ret && ret.ok && ret.reloadError) notifyError(t("petReloadError") + ret.reloadError);
+      } finally {
+        loadBtn.disabled = false;
+        loadBtn.textContent = origLabel;
+        void ctx.refreshAll();
+      }
+    }, { accent: true });
+    loadBtn.disabled = true;
+    switchCtl.appendChild(loadBtn);
+    switchRowEl.appendChild(switchCtl);
+    switchRows.appendChild(switchRowEl);
 
     // ── Row 2: scanned folders (collapsed disclosure) ─────────────────
     const trigger = el("button", {
@@ -587,7 +581,6 @@
       foldersSection.style.display = foldersExpanded ? "" : "none";
     }
 
-    box.appendChild(section);
     box.appendChild(trigger);
     box.appendChild(foldersSection);
     applyFoldersExpanded();
@@ -595,6 +588,45 @@
       foldersExpanded = !foldersExpanded;
       applyFoldersExpanded();
     });
+
+    // Populate the switcher asynchronously. Done at render time so it picks
+    // up new gguf files dropped into the models folder while the settings
+    // window is open. With fewer than two models there is nothing to
+    // switch to — the card never appears (and an empty list surfaces the
+    // folder manager instead).
+    if (typeof window.petSettings.listLocalModels === "function") {
+      window.petSettings.listLocalModels().then((ret) => {
+        const models = (ret && ret.models) || [];
+        if (models.length < 2) {
+          if (models.length === 0) {
+            foldersExpanded = true;
+            applyFoldersExpanded();
+          }
+          return;
+        }
+        const currentPath = ((models.find((m) => m && m.current) || {}).path) || "";
+        picker.innerHTML = "";
+        for (const m of models) {
+          if (!m || !m.path) continue;
+          const sizeLabel = formatSize(m.sizeBytes);
+          const flag = m.current ? " ✓" : "";
+          const opt = el("option", { value: m.path, title: m.path },
+            `${m.label}${sizeLabel ? "  ·  " + sizeLabel : ""}${flag}`);
+          picker.appendChild(opt);
+        }
+        picker.dataset.current = currentPath || "";
+        // Selecting a DIFFERENT entry enables the Load button.
+        picker.addEventListener("change", () => {
+          loadBtn.disabled = !picker.value || picker.value === currentPath;
+        });
+        // Pre-select the currently loaded model (its ✓ flag doubles as the
+        // status display) — with nothing to switch to, the button stays
+        // disabled.
+        picker.value = currentPath || "";
+        loadBtn.disabled = !picker.value || picker.value === currentPath;
+        box.insertBefore(switchSection, trigger);
+      }).catch(() => {});
+    }
   }
 
   // ── Engine (llama.cpp binary) section ─────────────────────────────────
@@ -608,9 +640,58 @@
     // Must clear before painting — refreshAll + the health tick both call
     // this, and without the reset each pass appended a duplicate section.
     box.innerHTML = "";
+
+    // ── Gate: the built-in engine is OFF by default ────────────────────
+    // Local models are expected to run behind LM Studio / Ollama (the
+    // OpenAI-compatible endpoint configured in Settings → Providers).
+    // Clicking 启用 expands the full engine UI and persists the choice;
+    // 停用 collapses it again. Rationale: maintaining a private llama.cpp
+    // install (CUDA builds, MoE tuning, per-model flags) duplicates what
+    // those apps already do well.
+    let engineEnabled = false;
+    try {
+      const prefs = await window.petSettings.getEnginePrefs();
+      engineEnabled = !!(prefs && prefs.params && prefs.params.engine_enabled);
+    } catch {}
+    if (!engineEnabled) {
+      box.appendChild(sectionTitle(t("petSectionEngine")));
+      const gateCard = helpers.buildSection("", []);
+      const gateRows = gateCard.querySelector(".section-rows");
+      const gateRow = el("div", { className: "row" });
+      const gateText = el("div", { className: "row-text" });
+      gateText.appendChild(el("span", { className: "row-label" }, t("petEngineGateTitle")));
+      gateText.appendChild(el("span", { className: "row-desc" }, t("petEngineGateDesc")));
+      gateRow.appendChild(gateText);
+      const gateBtn = softBtn(t("petEngineGateEnable"), async () => {
+        gateBtn.disabled = true;
+        gateBtn.classList.add("is-busy");
+        try {
+          await window.petSettings.setEngineParams({ engine_enabled: true });
+        } catch {}
+        void ctx.refreshAll();
+      });
+      gateRow.appendChild(el("div", { className: "row-control" }, gateBtn));
+      gateRows.appendChild(gateRow);
+      box.appendChild(gateCard);
+      return;
+    }
+
     box.appendChild(sectionTitle(t("petSectionEngine")));
     const engSection = helpers.buildSection("", []);
     const engRows = engSection.querySelector(".section-rows");
+
+    // Shut the gate again → collapses back to the single 启用 row.
+    engRows.appendChild(switchRow(
+      t("petEngineGateTitle"),
+      t("petEngineGateOnDesc"),
+      true,
+      async (next) => {
+        if (next) return { ok: true };
+        await window.petSettings.setEngineParams({ engine_enabled: false });
+        void ctx.refreshAll();
+        return { ok: true };
+      },
+    ));
 
     // ── Row 1: runtime switch ───────────────────────────────────────────
     // Start uses the currently configured model (errors loudly when none
@@ -1064,6 +1145,54 @@
     mkFlashRow();
     mkNumberRow("petEngineBatchSize", "batch_size", curParams.batch_size);
     mkNumberRow("petEngineUbatchSize", "ubatch_size", curParams.ubatch_size);
+    mkNumberRow("petEngineThreads", "threads", curParams.threads);
+    mkNumberRow("petEngineParallel", "parallel", curParams.parallel);
+    mkNumberRow("petEngineCtxCheckpoints", "ctx_checkpoints", curParams.ctx_checkpoints);
+    const mkBoolRow = (labelKey, key, curVal) => {
+      const row = el("div", { className: "row" });
+      const text = el("div", { className: "row-text" });
+      text.appendChild(el("span", { className: "row-label" }, t(labelKey)));
+      row.appendChild(text);
+      const sel = el("select", { className: "pet-engine-adv-input" });
+      for (const o of [
+        { v: "", label: t("petEngineCacheDefault") },
+        { v: "1", label: "on" },
+        { v: "0", label: "off" },
+      ]) {
+        const opt = el("option", { value: o.v }, o.label);
+        if (String(curVal === true ? "1" : curVal === false ? "0" : "") === o.v) opt.selected = true;
+        sel.appendChild(opt);
+      }
+      inputs[key] = sel;
+      row.appendChild(el("div", { className: "row-control" }, sel));
+      advBody.appendChild(row);
+    };
+    mkBoolRow("petEngineKvOffload", "kv_offload", curParams.kv_offload);
+    mkBoolRow("petEngineKvUnified", "kv_unified", curParams.kv_unified);
+    mkSelectRow("petEngineSpecType", "spec_type", [
+      { v: "", label: t("petEngineCacheDefault") },
+      { v: "draft-mtp", label: "draft-mtp" },
+      { v: "none", label: "none" },
+    ], curParams.spec_type || "");
+    mkNumberRow("petEngineSpecDraftNMax", "spec_draft_n_max", curParams.spec_draft_n_max);
+    mkNumberRow("petEngineVerbosity", "verbosity", curParams.verbosity);
+
+    // Free-form extra args — the escape hatch for knobs we do not model
+    // (--main-gpu, --tensor-split, --split-mode, --chat-template-file, …).
+    const extraRow = el("div", { className: "row" });
+    const extraText = el("div", { className: "row-text" });
+    extraText.appendChild(el("span", { className: "row-label" }, t("petEngineExtraArgs")));
+    extraText.appendChild(el("span", { className: "row-desc" }, t("petEngineExtraArgsDesc")));
+    extraRow.appendChild(extraText);
+    const extraInput = el("input", {
+      type: "text",
+      className: "pet-engine-adv-input",
+      placeholder: "--main-gpu 0 --tensor-split 1,0",
+    });
+    if (Array.isArray(curParams.extra_args)) extraInput.value = curParams.extra_args.join(" ");
+    inputs.extra_args = extraInput;
+    extraRow.appendChild(el("div", { className: "row-control" }, extraInput));
+    advBody.appendChild(extraRow);
 
     // Buttons: apply (persist + restart) and speed test.
     const advBtnRow = el("div", { className: "row" });
@@ -1076,12 +1205,17 @@
       applyBtn.classList.add("is-busy");
       try {
         const payload = {};
+        const NUM_KEYS = [
+          "n_cpu_moe", "batch_size", "ubatch_size", "n_gpu_layers", "ctx_size",
+          "threads", "parallel", "ctx_checkpoints", "spec_draft_n_max", "verbosity",
+        ];
+        const BOOL_KEYS = ["flash_attn", "kv_offload", "kv_unified"];
         for (const [key, node] of Object.entries(inputs)) {
           const v = (node.value || "").trim();
           if (v === "") continue;
-          if (key === "flash_attn") payload[key] = v === "1";
-          else if (["n_cpu_moe", "batch_size", "ubatch_size", "n_gpu_layers", "ctx_size"].includes(key)) payload[key] = Number(v);
-          else payload[key] = v;
+          if (BOOL_KEYS.includes(key)) payload[key] = v === "1";
+          else if (NUM_KEYS.includes(key)) payload[key] = Number(v);
+          else payload[key] = v; // load_mode / cache_type_k/v / spec_type / extra_args
         }
         // load_mode always sent so the default (mmap) is explicit.
         payload.load_mode = (inputs.load_mode && inputs.load_mode.value) || "mmap";

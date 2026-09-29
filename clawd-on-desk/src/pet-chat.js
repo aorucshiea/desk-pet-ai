@@ -534,6 +534,22 @@ class Sidecar {
     if (bs) out.PET_BATCH_SIZE = bs;
     const ubs = num(p.ubatch_size);
     if (ubs) out.PET_UBATCH_SIZE = ubs;
+    const th = num(p.threads);
+    if (th) out.PET_THREADS = th;
+    const par = num(p.parallel);
+    if (par) out.PET_PARALLEL = par;
+    const ckpt = num(p.ctx_checkpoints);
+    if (ckpt) out.PET_CTX_CHECKPOINTS = ckpt;
+    if (typeof p.kv_offload === "boolean") out.PET_KV_OFFLOAD = p.kv_offload ? "1" : "0";
+    if (typeof p.kv_unified === "boolean") out.PET_KV_UNIFIED = p.kv_unified ? "1" : "0";
+    if (p.spec_type) out.PET_SPEC_TYPE = String(p.spec_type);
+    const sdm = num(p.spec_draft_n_max);
+    if (sdm) out.PET_SPEC_DRAFT_N_MAX = sdm;
+    const vb = num(p.verbosity);
+    if (vb) out.PET_VERBOSITY = vb;
+    if (Array.isArray(p.extra_args) && p.extra_args.length) {
+      out.PET_EXTRA_ARGS = p.extra_args.join(" ");
+    }
     return out;
   }
 
@@ -3296,12 +3312,35 @@ module.exports = function initDeskPetChat(ctx) {
       pick("cache_type_k", ["f16", "q8_0", "q4_0", "bf16"]);
       pick("cache_type_v", ["f16", "q8_0", "q4_0", "bf16"]);
       if (typeof params.flash_attn === "boolean") clean.flash_attn = params.flash_attn;
-      for (const key of ["n_cpu_moe", "batch_size", "ubatch_size", "n_gpu_layers", "ctx_size"]) {
+      if (typeof params.engine_enabled === "boolean") clean.engine_enabled = params.engine_enabled;
+      for (const key of ["n_cpu_moe", "batch_size", "ubatch_size", "n_gpu_layers", "ctx_size", "threads", "parallel", "ctx_checkpoints", "spec_draft_n_max", "verbosity"]) {
         const n = Number(params[key]);
         if (Number.isFinite(n) && n > 0) clean[key] = Math.trunc(n);
       }
+      if (typeof params.kv_offload === "boolean") clean.kv_offload = params.kv_offload;
+      if (typeof params.kv_unified === "boolean") clean.kv_unified = params.kv_unified;
+      if (typeof params.spec_type === "string" && ["draft-mtp", "none"].includes(params.spec_type)) {
+        clean.spec_type = params.spec_type;
+      }
+      // Free-form extra args (main-gpu / tensor-split / chat-template-file …).
+      // Split on whitespace; quoted segments are kept intact.
+      if (typeof params.extra_args === "string") {
+        const parts = params.extra_args.match(/(?:[^\s"]+|"[^"]*")+/g) || [];
+        clean.extra_args = parts.map((s) => s.replace(/^"|"$/g, "").trim()).filter(Boolean);
+      }
       const ok = mergeDeskPetPrefs({ engine_params: clean });
       return { ok, params: clean };
+    },
+
+    // Read back what is persisted (used to decide whether the built-in
+    // engine UI should show at all).
+    "pet-settings:get-engine-prefs": async () => {
+      let p = {};
+      try {
+        const raw = readDeskPetPrefsRaw();
+        p = (raw && raw.engine_params) || {};
+      } catch { p = {}; }
+      return { ok: true, params: p };
     },
 
     "pet-settings:use-model-dir": async (_e, { path: modelPath, mmproj: mmprojPath } = {}) => {

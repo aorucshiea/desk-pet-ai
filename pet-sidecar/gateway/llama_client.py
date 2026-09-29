@@ -324,6 +324,13 @@ class LlamaServer:
         n_cpu_moe: Optional[int] = None,
         batch_size: Optional[int] = None,
         ubatch_size: Optional[int] = None,
+        parallel: Optional[int] = None,
+        ctx_checkpoints: Optional[int] = None,
+        kv_offload: Optional[bool] = None,
+        kv_unified: Optional[bool] = None,
+        spec_type: Optional[str] = None,
+        spec_draft_n_max: Optional[int] = None,
+        verbosity: Optional[int] = None,
     ) -> None:
         self.model_path: Optional[Path] = Path(model_path).expanduser().resolve() if model_path else None
         # Optional CLIP-style vision projector. When the active model is a
@@ -351,6 +358,15 @@ class LlamaServer:
         self.n_cpu_moe = n_cpu_moe
         self.batch_size = batch_size
         self.ubatch_size = ubatch_size
+        self.parallel = parallel
+        self.ctx_checkpoints = ctx_checkpoints
+        self.kv_offload = kv_offload
+        self.kv_unified = kv_unified
+        # Speculative decoding (MTP draft model built into some GGUFs).
+        # LM Studio defaults to draft-mtp with n_max=3 on such checkpoints.
+        self.spec_type = (spec_type or "").strip() or None
+        self.spec_draft_n_max = spec_draft_n_max
+        self.verbosity = verbosity
         self.extra_args: list[str] = list(extra_args or [])
         # Ordered list of GGUF LoRA paths pre-loaded into llama-server via
         # `--lora`. Index in this list matches the integer `id` llama-server
@@ -430,6 +446,21 @@ class LlamaServer:
             argv += ["--batch-size", str(self.batch_size)]
         if self.ubatch_size:
             argv += ["--ubatch-size", str(self.ubatch_size)]
+        if self.parallel:
+            argv += ["--parallel", str(self.parallel)]
+        if self.ctx_checkpoints:
+            # Keeps reusable prompt checkpoints so long chats skip re-prefill.
+            argv += ["--ctx-checkpoints", str(self.ctx_checkpoints)]
+        if self.kv_offload:
+            argv += ["--kv-offload"]
+        if self.kv_unified:
+            argv += ["--kv-unified"]
+        if self.spec_type:
+            argv += ["--spec-type", self.spec_type]
+            if self.spec_draft_n_max:
+                argv += ["--spec-draft-n-max", str(self.spec_draft_n_max)]
+        if self.verbosity:
+            argv += ["--verbosity", str(self.verbosity)]
         # Multimodal: if a CLIP/mmproj projector was paired with the model,
         # pass it through. llama-server only loads it when --mmproj is set
         # alongside --model, so the two flags must land in the same argv.
