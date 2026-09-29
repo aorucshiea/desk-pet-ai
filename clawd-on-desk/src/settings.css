@@ -630,10 +630,22 @@ html, body {
   overflow: auto;
 }
 .pet-engine-bench-result {
-  margin-left: 10px;
+  margin: 4px 0 6px;
   font-size: 12px;
   color: var(--text-secondary);
-  white-space: nowrap;
+}
+/* Collapsible advanced-parameters header (▸ collapsed / ▾ open). */
+.pet-engine-adv-toggle {
+  cursor: pointer;
+  user-select: none;
+}
+.pet-engine-adv-toggle:hover .row-label {
+  color: var(--accent, #4a9eff);
+}
+.pet-engine-adv-arrow {
+  font-size: 12px;
+  color: var(--text-secondary);
+  transition: transform 0.15s ease;
 }.row-label {
   font-size: 13px;
   font-weight: 500;

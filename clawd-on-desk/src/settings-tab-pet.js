@@ -970,20 +970,31 @@
       }
     }
 
-    // ── Advanced parameters (LM-Studio-style knobs) ────────────────────
+    // ── Advanced parameters (collapsible, LM-Studio-style knobs) ───────
     // Each row maps 1:1 to a llama-server CLI flag. Values persist to
     // prefs and reach the engine as PET_* env vars on the next spawn —
-    // which is why Apply restarts the sidecar.
+    // which is why Apply restarts the sidecar. Collapsed by default: nine
+    // rows used to push the rest of the engine section off-screen.
     let paramsInfo = null;
     try { paramsInfo = await window.petSettings.engineParams(); } catch {}
     const curParams = (paramsInfo && paramsInfo.params) || {};
 
-    const advTitle = el("div", { className: "row" });
-    advTitle.appendChild(el("div", { className: "row-text" },
+    const advToggle = el("div", { className: "row pet-engine-adv-toggle" });
+    advToggle.appendChild(el("div", { className: "row-text" },
       el("span", { className: "row-label" }, t("petEngineAdvanced"))));
-    engRows.appendChild(advTitle);
-    engRows.appendChild(el("div", { className: "row-desc", style: { margin: "0 0 6px" } },
+    const advArrow = el("span", { className: "pet-engine-adv-arrow" }, "\u25B8");
+    advToggle.appendChild(el("div", { className: "row-control" }, advArrow));
+    engRows.appendChild(advToggle);
+
+    const advBody = el("div", { className: "pet-engine-adv-body", style: { display: "none" } });
+    advBody.appendChild(el("div", { className: "row-desc", style: { margin: "0 0 6px" } },
       t("petEngineAdvancedDesc")));
+    advToggle.addEventListener("click", () => {
+      const open = advBody.style.display !== "none";
+      advBody.style.display = open ? "none" : "block";
+      advArrow.textContent = open ? "\u25B8" : "\u25BE";
+    });
+    engRows.appendChild(advBody);
 
     const inputs = {};
     const mkSelectRow = (labelKey, key, options, curVal) => {
@@ -999,7 +1010,7 @@
       }
       inputs[key] = sel;
       row.appendChild(el("div", { className: "row-control" }, sel));
-      engRows.appendChild(row);
+      advBody.appendChild(row);
     };
     const mkNumberRow = (labelKey, key, curVal) => {
       const row = el("div", { className: "row" });
@@ -1010,7 +1021,7 @@
       if (curVal != null) inp.value = String(curVal);
       inputs[key] = inp;
       row.appendChild(el("div", { className: "row-control" }, inp));
-      engRows.appendChild(row);
+      advBody.appendChild(row);
     };
 
     mkSelectRow("petEngineLoadMode", "load_mode", [
@@ -1048,7 +1059,7 @@
       }
       inputs.flash_attn = sel;
       row.appendChild(el("div", { className: "row-control" }, sel));
-      engRows.appendChild(row);
+      advBody.appendChild(row);
     };
     mkFlashRow();
     mkNumberRow("petEngineBatchSize", "batch_size", curParams.batch_size);
@@ -1059,6 +1070,7 @@
     advBtnRow.appendChild(el("div", { className: "row-text" },
       el("span", { className: "row-label" }, t("petEngineApply"))));
     const advCtl = el("div", { className: "row-control pet-path-actions" });
+    const benchResult = el("div", { className: "pet-engine-bench-result" }, "");
     const applyBtn = softBtn(t("petEngineApplyBtn"), async () => {
       applyBtn.disabled = true;
       applyBtn.classList.add("is-busy");
@@ -1068,7 +1080,7 @@
           const v = (node.value || "").trim();
           if (v === "") continue;
           if (key === "flash_attn") payload[key] = v === "1";
-          else if (["n_cpu_moe", "batch_size", "ubatch_size"].includes(key)) payload[key] = Number(v);
+          else if (["n_cpu_moe", "batch_size", "ubatch_size", "n_gpu_layers", "ctx_size"].includes(key)) payload[key] = Number(v);
           else payload[key] = v;
         }
         // load_mode always sent so the default (mmap) is explicit.
@@ -1101,8 +1113,8 @@
           benchResult.textContent = t("petEngineBenchFail") + ((ret && (ret.message || ret.error)) || "");
         } else if (ret.tps) {
           benchResult.textContent = `${ret.tps} tok/s`
-            + (ret.prompt_tps ? `  ·  prompt ${ret.prompt_tps} tok/s` : "")
-            + (ret.ms ? `  ·  ${(ret.ms / 1000).toFixed(1)}s / ${ret.n_predict || 0} tokens` : "");
+            + (ret.prompt_tps ? `  \u00B7  prompt ${ret.prompt_tps} tok/s` : "")
+            + (ret.ms ? `  \u00B7  ${(ret.ms / 1000).toFixed(1)}s / ${ret.n_predict || 0} tokens` : "");
         } else {
           benchResult.textContent = t("petEngineBenchFail");
         }
@@ -1115,18 +1127,16 @@
     });
     advCtl.appendChild(benchBtn);
     advBtnRow.appendChild(advCtl);
-    engRows.appendChild(advBtnRow);
-
-    const benchResult = el("div", { className: "row-desc", style: { margin: "0 0 6px" } }, "");
-    engRows.appendChild(benchResult);
+    advBody.appendChild(advBtnRow);
+    advBody.appendChild(benchResult);
 
     // Live view of the exact command line these knobs produce.
     const argv = (paramsInfo && Array.isArray(paramsInfo.argv) && paramsInfo.argv.length)
       ? paramsInfo.argv.join(" ")
       : "";
     if (argv) {
-      engRows.appendChild(el("div", { className: "row-desc" }, t("petEngineArgvLabel")));
-      engRows.appendChild(el("pre", { className: "pet-engine-argv" }, argv));
+      advBody.appendChild(el("div", { className: "row-desc" }, t("petEngineArgvLabel")));
+      advBody.appendChild(el("pre", { className: "pet-engine-argv" }, argv));
     }
 
     box.appendChild(engSection);
