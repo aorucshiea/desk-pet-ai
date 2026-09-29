@@ -115,6 +115,130 @@
     parent.appendChild(hero);
   }
 
+  // ── Plugin space map: kernel at the center, organs on a ring, and ──
+  // ── inject-dependency arrows pointing at the service provider.    ──
+  // The graph is plain SVG (no deps). Hovering a node shows its full
+  // capability list (tools / provides / inject) via a native <title>.
+  const SVG_NS = "http://www.w3.org/2000/svg";
+
+  function svgEl(tag, attrs) {
+    const e = document.createElementNS(SVG_NS, tag);
+    if (attrs) for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+    return e;
+  }
+
+  function organTone(p) {
+    if (p.muted) return "muted";
+    if (p.suspended) return "suspended";
+    return "running";
+  }
+
+  function renderMap(parent, state) {
+    const card = sectionCard(t("evolveMapTitle"));
+    card.appendChild(el("div", { className: "evl-map-hint" }, t("evolveMapHint")));
+
+    const W = 860, H = 470, CX = W / 2, CY = H / 2 + 10, R = 170;
+    const svg = svgEl("svg", { viewBox: `0 0 ${W} ${H}`, className: "evl-map-svg", role: "img" });
+
+    const plugins = (state.plugins || []);
+    const core = plugins.find((p) => isKernelCore(p.name));
+    const ring = plugins.filter((p) => !isKernelCore(p.name))
+      .sort((a, b) => a.name.localeCompare(b.name));
+
+    // dependency edges: A injects a service that B provides  ->  A -> B
+    const providesOwner = {};
+    for (const p of plugins) for (const s of p.provides || []) providesOwner[s] = p.name;
+    const edges = [];
+    for (const p of plugins) {
+      for (const need of p.inject || []) {
+        const owner = providesOwner[need];
+        if (owner && owner !== p.name) edges.push({ from: p.name, to: owner, service: need });
+      }
+    }
+
+    const posOf = {};
+    if (core) posOf[core.name] = { x: CX, y: CY };
+    ring.forEach((p, i) => {
+      const ang = (Math.PI * 2 * i) / Math.max(ring.length, 1) - Math.PI / 2;
+      posOf[p.name] = { x: CX + R * Math.cos(ang), y: CY + R * Math.sin(ang) };
+    });
+
+    // kernel spokes (under the nodes)
+    for (const name of Object.keys(posOf)) {
+      if (core && name === core.name) continue;
+      const a = posOf[name];
+      const b = core ? posOf[core.name] : { x: CX, y: CY };
+      svg.appendChild(svgEl("line", { x1: a.x, y1: a.y, x2: b.x, y2: b.y, class: "evl-map-spoke" }));
+    }
+    // dependency arrows + service label at the midpoint
+    for (const e of edges) {
+      const a = posOf[e.from], b = posOf[e.to];
+      if (!a || !b) continue;
+      svg.appendChild(svgEl("path", { d: `M ${a.x} ${a.y} L ${b.x} ${b.y}`, class: "evl-map-dep" }));
+      const lbl = svgEl("text", {
+        x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 - 4,
+        "text-anchor": "middle", class: "evl-map-dep-label",
+      });
+      lbl.textContent = e.service;
+      svg.appendChild(lbl);
+    }
+
+    const mkTip = (p) => {
+      const tip = svgEl("title", {});
+      tip.textContent = [
+        p.name,
+        `${t("evolveMapTools")}: ${(p.tools || []).join(", ") || "—"}`,
+        `${t("evolveMapProvides")}: ${(p.provides || []).join(", ") || "—"}`,
+        `${t("evolveMapInject")}: ${(p.inject || []).join(", ") || "—"}`,
+        t(`evolveBadge${p.muted ? "Muted" : p.suspended ? "Suspended" : "Running"}`),
+      ].join("\n");
+      return tip;
+    };
+
+    // core node (plugin_forge — the self-evolution tool itself)
+    if (core) {
+      const g = svgEl("g", { class: "evl-map-node core" });
+      g.appendChild(svgEl("rect", { x: CX - 64, y: CY - 25, width: 128, height: 50, rx: 12 }));
+      const t1 = svgEl("text", { x: CX, y: CY - 4, "text-anchor": "middle", class: "evl-map-node-name" });
+      t1.textContent = core.name;
+      const t2 = svgEl("text", { x: CX, y: CY + 13, "text-anchor": "middle", class: "evl-map-node-sub" });
+      t2.textContent = `⚙${(core.tools || []).length} ↑${(core.provides || []).length} ✦${core.effects || 0}`;
+      g.appendChild(t1); g.appendChild(t2); g.appendChild(mkTip(core));
+      svg.appendChild(g);
+    }
+    // ring nodes
+    for (const p of ring) {
+      const pos = posOf[p.name];
+      const tools = p.tools || [];
+      const g = svgEl("g", { class: `evl-map-node ${organTone(p)}` });
+      g.appendChild(mkTip(p));
+      g.appendChild(svgEl("rect", { x: pos.x - 60, y: pos.y - 21, width: 120, height: 42, rx: 10 }));
+      const t1 = svgEl("text", { x: pos.x, y: pos.y - 2, "text-anchor": "middle", class: "evl-map-node-name" });
+      t1.textContent = p.name.length > 15 ? p.name.slice(0, 14) + "…" : p.name;
+      const t2 = svgEl("text", { x: pos.x, y: pos.y + 13, "text-anchor": "middle", class: "evl-map-node-sub" });
+      t2.textContent = `⚙${tools.length} ↑${(p.provides || []).length}${p.muted ? " · ⏻" : p.suspended ? " · ⏸" : ""}`;
+      g.appendChild(t1); g.appendChild(t2);
+      svg.appendChild(g);
+    }
+    // parked organs: dashed boxes along the bottom (coeffect waiting room)
+    let px = 22;
+    for (const p of state.pending || []) {
+      const g = svgEl("g", { class: "evl-map-node parked" });
+      g.appendChild(svgEl("rect", { x: px, y: H - 36, width: 176, height: 28, rx: 8 }));
+      const t1 = svgEl("text", { x: px + 9, y: H - 17, class: "evl-map-node-sub" });
+      t1.textContent = `⏸ ${p.name} ← ${(p.missing || []).join(", ")}`;
+      g.appendChild(t1);
+      const tip = svgEl("title", {});
+      tip.textContent = `${p.name}: waiting for ${(p.missing || []).join(", ")} — activates automatically`;
+      g.appendChild(tip);
+      svg.appendChild(g);
+      px += 188;
+    }
+
+    card.appendChild(svg);
+    parent.appendChild(card);
+  }
+
   function renderPlugins(parent, state) {
     const card = sectionCard(t("evolvePluginsTitle"), (state.plugins || []).length);
     const plugins = state.plugins || [];
@@ -314,6 +438,7 @@
     renderHeader(parent);
     renderKernelHero(parent, state);
     if (state) {
+      renderMap(parent, state);
       renderPlugins(parent, state);
       renderPending(parent, state);
       renderServices(parent, state);

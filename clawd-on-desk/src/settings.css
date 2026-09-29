@@ -4695,3 +4695,19 @@ html, body {
 }
 .evl-config-check { flex: 0 0 auto; }
 .evl-config-save { margin-top: 8px; }
+
+/* ── Evolve plugin space map ── */
+.evl-map-hint { font-size: 12px; color: var(--text-secondary); margin: 0 0 8px 0; }
+.evl-map-svg { width: 100%; height: auto; display: block; }
+.evl-map-spoke { stroke: var(--border); stroke-width: 1; opacity: 0.6; }
+.evl-map-dep { stroke: var(--accent, #4a9eff); stroke-width: 1.4; fill: none; opacity: 0.75; }
+.evl-map-dep-label { font-size: 10px; fill: var(--accent, #4a9eff); }
+.evl-map-node rect { fill: var(--panel-bg, #fff); stroke: var(--border); stroke-width: 1.2; }
+.evl-map-node.core rect { fill: color-mix(in srgb, var(--accent, #4a9eff) 12%, var(--panel-bg, #fff)); stroke: var(--accent, #4a9eff); stroke-width: 1.6; }
+.evl-map-node.running rect { stroke: #34c759; }
+.evl-map-node.suspended rect { stroke: #ff9f0a; }
+.evl-map-node.muted rect { opacity: 0.5; }
+.evl-map-node.parked rect { stroke: #ff9f0a; stroke-dasharray: 4 3; fill: transparent; }
+.evl-map-node:hover rect { filter: brightness(1.12); }
+.evl-map-node-name { font-size: 12px; font-weight: 600; fill: var(--text-primary); }
+.evl-map-node-sub { font-size: 10px; fill: var(--text-secondary); }
