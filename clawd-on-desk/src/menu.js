@@ -230,14 +230,21 @@ module.exports = function initMenu(ctx) {
   // hit rect as fallback). Null means "no idea" and the caller falls back to
   // the cursor, which is what the list menu always did.
   function petHubPoint() {
-    try {
-      if (typeof ctx.getPetAnchorRect !== "function") return null;
-      const r = ctx.getPetAnchorRect();
-      if (r && Number.isFinite(r.x) && Number.isFinite(r.y)
-        && Number.isFinite(r.width) && Number.isFinite(r.height)) {
-        return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) };
-      }
-    } catch {}
+    // Prefer the sprite rect; fall back to the window rect (still the pet, just
+    // with its transparent padding counted) before giving up on the pointer.
+    const sources = [];
+    if (typeof ctx.getPetAnchorRect === "function") sources.push(() => ctx.getPetAnchorRect());
+    if (typeof ctx.getPetWindowBounds === "function") sources.push(() => ctx.getPetWindowBounds());
+    for (const read of sources) {
+      try {
+        const r = read();
+        if (r && Number.isFinite(r.x) && Number.isFinite(r.y)
+          && Number.isFinite(r.width) && Number.isFinite(r.height)
+          && r.width > 0 && r.height > 0) {
+          return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) };
+        }
+      } catch {}
+    }
     return null;
   }
 

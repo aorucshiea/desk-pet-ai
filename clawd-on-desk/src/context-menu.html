@@ -8,28 +8,30 @@
   body { font-family: "Segoe UI", "Microsoft YaHei", sans-serif; }
   #ring { display: block; width: 100%; height: 100%; }
 
+  /* Airy pie: light sectors, real gaps, a thin track ring floating just
+     outside them, and a white hub that carries the hovered label. */
   .seg {
-    fill: #f4f5f7;
-    stroke: rgba(255, 255, 255, 0.85);
-    stroke-width: 1.5;
+    fill: #f1f2f4;
+    stroke: #ffffff;
+    stroke-width: 3;
     cursor: default;
     transition: fill 90ms ease;
   }
-  .seg:hover { fill: #e6e9ee; }
-  .seg.danger:hover { fill: #fceaea; }
+  .seg:hover { fill: #e0e4ea; }
+  .seg.danger:hover { fill: #fadede; }
   .seg.disabled { fill: #f6f7f8; }
   .seg.disabled:hover { fill: #f6f7f8; }
+  .track { fill: none; stroke: #eef0f3; stroke-width: 5; pointer-events: none; }
 
-  .glyph { color: #5b6270; pointer-events: none; transition: color 90ms ease; }
-  .glyph.danger { color: #9aa1ad; }
-  .seg:hover + .glyph { color: #1f232b; }
+  .glyph { color: #4a4f57; pointer-events: none; transition: color 90ms ease; }
+  .seg:hover + .glyph { color: #171a1f; }
   .seg.danger:hover + .glyph { color: #d94848; }
-  .seg.disabled + .glyph { color: #c6cbd4; }
+  .seg.disabled + .glyph { color: #c9ced6; }
 
-  .hub { fill: #ffffff; stroke: #e6e8ec; stroke-width: 1; pointer-events: none; }
+  .hub { fill: #ffffff; stroke: #e8eaee; stroke-width: 1.2; pointer-events: none; }
   .hub-dot { fill: #cdd2db; pointer-events: none; transition: opacity 90ms ease; }
   .hub-label {
-    font-size: 12px; font-weight: 500; fill: #262b33; text-anchor: middle;
+    font-size: 12.5px; font-weight: 500; fill: #22262d; text-anchor: middle;
     dominant-baseline: middle; pointer-events: none; opacity: 0;
     transition: opacity 90ms ease;
   }
@@ -41,15 +43,16 @@
 </head>
 <body>
 <svg id="ring" viewBox="0 0 248 248" aria-hidden="true">
+  <circle class="track" cx="124" cy="124" r="116"></circle>
   <g id="segs"></g>
-  <circle class="hub" cx="124" cy="124" r="42"></circle>
+  <circle class="hub" cx="124" cy="124" r="45"></circle>
   <circle id="dot" class="hub-dot" cx="124" cy="124" r="3.5"></circle>
   <text id="label" class="hub-label" x="124" y="125"></text>
 </svg>
 <script>
   const { onItems, sendClick, sendClose, sendSize } = window.contextMenuBridge;
   const NS = "http://www.w3.org/2000/svg";
-  const CX = 124, CY = 124, R_OUT = 112, R_IN = 42, PAD = 0.035;
+  const CX = 124, CY = 124, R_OUT = 106, R_IN = 45, PAD = 0.02;
   const SIZE = 248;
 
   // Monochrome line glyphs, keyed by what menu.js asks for. Each is drawn on a
@@ -114,8 +117,12 @@
 
     const step = (Math.PI * 2) / slots.length;
     slots.forEach((slot, i) => {
-      const a0 = -Math.PI / 2 + i * step + PAD;
-      const a1 = -Math.PI / 2 + (i + 1) * step - PAD;
+      // The first sector faces 12 o'clock, so the compass points carry
+      // actions instead of gaps — that is what makes the reference pie read
+      // as deliberate rather than as a circle with lines cut in it.
+      const mid = -Math.PI / 2 + i * step;
+      const a0 = mid - step / 2 + PAD;
+      const a1 = mid + step / 2 - PAD;
       const { it, index } = slot;
 
       const path = document.createElementNS(NS, "path");
@@ -126,14 +133,13 @@
 
       // Icon sits on the sector's mid-radius; the glyph is a sibling of the
       // path so the `.seg:hover + .glyph` rule can recolour it with the sector.
-      const mid = (a0 + a1) / 2;
       const MID_R = (R_OUT + R_IN) / 2;
       const g = document.createElementNS(NS, "g");
       g.setAttribute("class", "glyph" + (it.danger ? " danger" : ""));
-      // 24-unit glyph grid → 22px on screen, centred on the mid-radius point.
+      // 24-unit glyph grid → 26px on screen, centred on the mid-radius point.
       g.setAttribute("transform",
         `translate(${CX + MID_R * Math.cos(mid)} ${CY + MID_R * Math.sin(mid)})`
-        + " scale(0.9167) translate(-12 -12)");
+        + " scale(1.083) translate(-12 -12)");
       g.innerHTML = menuGlyph(it.icon || it.label);
       segs.appendChild(g);
 
