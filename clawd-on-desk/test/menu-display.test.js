@@ -355,7 +355,7 @@ describe("menu taskbar recovery", () => {
 });
 
 describe("menu dashboard action", () => {
-  it("labels the Desk Pet chat menu item with the product name", () => {
+  it("labels the chat menu item with a translated string, not the raw key", () => {
     const fakeElectron = {
       app: { quit: () => {}, setActivationPolicy: () => {}, dock: { show: () => {}, hide: () => {} } },
       BrowserWindow: function BrowserWindow() {},
@@ -390,8 +390,11 @@ describe("menu dashboard action", () => {
     menu.buildContextMenu();
     menu.createTray();
 
-    assert.ok(ctx.contextMenu.template.some((item) => item.label === "Desk Pet Chat"));
-    assert.ok(ctx.tray.contextMenu.template.some((item) => item.label === "Desk Pet Chat"));
+    // Every language ships the chat entry as "Chat" since the rebrand, so the
+    // old "with the product name" expectation was stale. What still matters is
+    // that the menu shows a translated label rather than the raw i18n key.
+    assert.ok(ctx.contextMenu.template.some((item) => item.label === "Chat"));
+    assert.ok(ctx.tray.contextMenu.template.some((item) => item.label === "Chat"));
     assert.strictEqual(ctx.contextMenu.template.some((item) => item.label === "menuDeskPetChat"), false);
     assert.strictEqual(ctx.tray.contextMenu.template.some((item) => item.label === "menuDeskPetChat"), false);
   });

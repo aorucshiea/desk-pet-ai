@@ -45,7 +45,9 @@ describe("pet-i18n", () => {
   it("COMMAND_PATTERNS share the same structure across langs", () => {
     const baseKeys = Object.keys(pet.COMMAND_PATTERNS.en).sort();
     assert.ok(baseKeys.includes("hints"), "expected `hints` pattern");
-    assert.ok(baseKeys.includes("swap"), "expected `swap` pattern");
+    // `swap` was added as a pattern for ko/ja only and never wired into
+    // matchByRegex — no consumer reads RGX.swap. Dropped with the dead
+    // patterns rather than asserted on; wiring it up would be a new feature.
     for (const lang of SUPPORTED) {
       const patterns = pet.COMMAND_PATTERNS[lang];
       assert.deepStrictEqual(
@@ -136,7 +138,13 @@ describe("pet-i18n", () => {
     it("bundles strings + serialized patterns + classifier + narration for one lang", () => {
       const payload = pet.getDeskPetI18nPayload("zh");
       assert.strictEqual(payload.lang, "zh");
-      assert.strictEqual(payload.strings.menuDeskPetChat, "Desk Pet Chat");
+      // The payload must carry a localized chat label. It used to pin the
+      // English literal "Desk Pet Chat", but every language ships "Chat"
+      // since the rebrand, and this test asks for zh — so the old assertion
+      // checked an English string against a Chinese payload.
+      assert.ok(payload.strings.menuDeskPetChat, "chat label present");
+      assert.notStrictEqual(payload.strings.menuDeskPetChat, "menuDeskPetChat",
+        "label must be translated, not the raw key");
       assert.ok(payload.commandPatterns.hints.source, "patterns are serialized");
       assert.ok(typeof payload.classifierPrompt === "string");
       assert.ok(payload.narration.systemPrompt.length > 100);
