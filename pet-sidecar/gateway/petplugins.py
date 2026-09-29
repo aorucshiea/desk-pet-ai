@@ -655,9 +655,16 @@ class PluginManager:
         pdir = self.plugin_dir(memory_dir)
         loaded, unloaded, failed, skipped = [], [], [], []
         with self._lock:
-            created = not pdir.exists()
             pdir.mkdir(parents=True, exist_ok=True)
-            if created and not any(pdir.iterdir()):
+            # Built-in examples use the same contract as seed_core_plugins:
+            # an EXISTING install must still receive a plugin it never got,
+            # and a file that is already there is never clobbered (checked
+            # per file inside _seed_example). A virgin-dir guard here would
+            # make that delivery unreachable — which is how mood_watch
+            # silently never shipped. seed_organs=False stays hermetic:
+            # unit tests that pin exact loaded/skipped lists get no seeds
+            # of any kind.
+            if self._seed_organs:
                 self._seed_example(pdir)
             # Built-in organs reach EXISTING installs too: write each file
             # only when absent, so model/user edits are never overwritten.

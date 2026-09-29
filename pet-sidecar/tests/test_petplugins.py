@@ -137,8 +137,11 @@ def apply(ctx):
     assert asyncio.run(pm.call_tool("pet_seen", {})) == "[42]"
 
 
-def test_seed_example_plugin_loads(pm, tmp_path):
-    # sync creates the dir + seeds self_note.py; it must load cleanly
+def test_seed_example_plugin_loads(tmp_path):
+    # sync creates the dir + seeds self_note.py; it must load cleanly.
+    # Needs seeding ON — the hermetic pm fixture (seed_organs=False) gets
+    # no seeds of any kind, examples included.
+    pm = PluginManager({"memory_dir": tmp_path, "events": object(), "mood": object()})
     result = pm.sync()
     assert (tmp_path / "plugins" / "self_note.py").exists()
     assert "self_note" in result["loaded"]
@@ -192,6 +195,29 @@ def test_core_organs_seed_is_idempotent(tmp_path):
     organ.write_text("inject = []\ndef apply(ctx):\n    pass\n", encoding="utf-8")
     PluginManager({"memory_dir": tmp_path}).sync()
     assert organ.read_text(encoding="utf-8") == "inject = []\ndef apply(ctx):\n    pass\n"
+
+
+def test_examples_reach_existing_install(tmp_path):
+    """An install whose plugins dir predates a plugin must still receive it.
+
+    mood_watch shipped after self_note, but _seed_example used to sit behind
+    a "virgin directory only" guard in sync(), so every real install kept
+    missing it. Pins the delivery path itself, not just the seed body.
+    """
+    pdir = PluginManager.plugin_dir(tmp_path)
+    pdir.mkdir(parents=True)
+    (pdir / "a_pre_existing_plugin.py").write_text(
+        "inject = []\ndef apply(ctx):\n    pass\n", encoding="utf-8")
+
+    PluginManager({"memory_dir": tmp_path}).sync()
+    assert (pdir / "self_note.py").exists(), "example never delivered to an existing install"
+    assert (pdir / "mood_watch.py").exists(), "example never delivered to an existing install"
+    assert (pdir / "a_pre_existing_plugin.py").exists()
+
+    # and an edited example is still never clobbered
+    (pdir / "self_note.py").write_text("# user edit\n", encoding="utf-8")
+    PluginManager({"memory_dir": tmp_path}).sync()
+    assert (pdir / "self_note.py").read_text(encoding="utf-8") == "# user edit\n"
 
 
 def test_organ_decay_thread_ticks_and_listens(tmp_path, monkeypatch):
