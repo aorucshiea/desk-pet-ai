@@ -199,6 +199,10 @@ contextBridge.exposeInMainWorld("petSettings", {
   engineStop: () => ipcRenderer.invoke("settings:engine-stop"),
   engineParams: () => ipcRenderer.invoke("settings:engine-params"),
   engineBenchmark: (nPredict) => ipcRenderer.invoke("settings:engine-benchmark", { nPredict }),
+  // Holo GUI agent (H Company) — screenshot-driven desktop control.
+  holoStatus: () => ipcRenderer.invoke("settings:holo-status"),
+  holoRun: (task) => ipcRenderer.invoke("settings:holo-run", { task }),
+  holoCancel: () => ipcRenderer.invoke("settings:holo-cancel"),
   engineUpdateApply: () => ipcRenderer.invoke("settings:engine-update-apply"),
   engineUpdateApplyDir: () => ipcRenderer.invoke("settings:engine-update-apply-dir"),
   onEngineUpdateProgress: (cb) => {

@@ -182,7 +182,74 @@
       parent.appendChild(makeTextInput("screenclick_ocrApiUrl", t("screenclickOcrApiUrl"), t("screenclickOcrApiUrlDesc"), "http://127.0.0.1:8000/ocr"));
       parent.appendChild(makeTextInput("screenclick_ocrApiKey", t("screenclickOcrApiKey"), t("screenclickOcrApiKeyDesc"), ""));
       parent.appendChild(makeTextInput("screenclick_ocrApiModel", t("screenclickOcrApiModel"), t("screenclickOcrApiModelDesc"), "gpt-4o-mini"));
+
+      // ── Holo GUI agent (H Company) ───────────────────────────────────
+      // The pet can DRIVE the desktop: it looks at the screen, asks the
+      // Holo vision model what to do next, and executes real clicks /
+      // typing / scrolling. Backend (holo_agent.py) is complete; this
+      // panel is its only control surface.
+      parent.appendChild(el("h3", { style: { margin: "20px 0 4px 0", fontSize: "15px", fontWeight: "600" } }, t("holoSectionTitle")));
+      parent.appendChild(el("p", { style: { margin: "0 0 4px 0", fontSize: "12px", color: "var(--text-secondary)" } }, t("holoSectionDesc")));
+      parent.appendChild(makeToggle("holo_enabled", t("holoEnabled"), t("holoEnabledDesc")));
+      parent.appendChild(makeTextInput("holo_api_key", t("holoApiKey"), t("holoApiKeyDesc"), "hk-..."));
+      parent.appendChild(makeTextInput("holo_base_url", t("holoBaseUrl"), t("holoBaseUrlDesc"), "https://api.hcompany.ai/v1/"));
+      parent.appendChild(makeTextInput("holo_model", t("holoModel"), t("holoModelDesc"), "holo3-1-35b-a3b"));
+      parent.appendChild(makeHoloRunner());
+      parent.appendChild(el("p", { style: { margin: "8px 0 0 0", fontSize: "11px", color: "var(--text-secondary)" } }, t("holoRestartHint")));
     } catch(e) { console.warn("screenclick: render error", e); }
+  }
+
+  // Task runner card: type a goal in natural language, the agent works it
+  // out step by step on your real desktop. Status + cancel included.
+  function makeHoloRunner() {
+    var card = el("div", { style: { background: "var(--panel-bg)", borderRadius: "8px", padding: "16px", marginTop: "12px", border: "1px solid var(--border)" } });
+    var status = el("div", { style: { fontSize: "12px", color: "var(--text-secondary)", marginBottom: "8px" } }, t("holoStatusIdle"));
+    var input = el("input", {
+      type: "text",
+      className: "setting-input",
+      placeholder: t("holoTaskPlaceholder"),
+      style: { padding: "6px 10px", fontSize: "13px", border: "1px solid var(--border)", borderRadius: "4px", background: "var(--bg)", color: "var(--text-primary)", width: "100%", boxSizing: "border-box" },
+    });
+    var runBtn = el("button", {
+      className: "btn-primary",
+      style: { marginTop: "8px", marginRight: "8px", padding: "6px 16px", fontSize: "13px", borderRadius: "4px", cursor: "pointer" },
+      onclick: async function() {
+        var task = (input.value || "").trim();
+        if (!task) return;
+        if (!window.settingsAPI || typeof window.settingsAPI.holoRun !== "function") {
+          status.textContent = t("holoUnavailable");
+          return;
+        }
+        runBtn.disabled = true;
+        cancelBtn.disabled = false;
+        status.textContent = t("holoRunning");
+        try {
+          var ret = await window.settingsAPI.holoRun(task);
+          status.textContent = (ret && (ret.status === "ok" ? (ret.summary || ret.message || t("holoDone")) : (ret.message || t("holoFailed"))));
+        } catch (err) {
+          status.textContent = t("holoFailed") + (err && err.message || err);
+        } finally {
+          runBtn.disabled = false;
+          cancelBtn.disabled = true;
+        }
+      },
+    }, t("holoRun"));
+    var cancelBtn = el("button", {
+      className: "btn-secondary",
+      disabled: "disabled",
+      style: { marginTop: "8px", padding: "6px 16px", fontSize: "13px", borderRadius: "4px", cursor: "pointer" },
+      onclick: async function() {
+        try { if (window.settingsAPI && window.settingsAPI.holoCancel) await window.settingsAPI.holoCancel(); } catch (e) {}
+        status.textContent = t("holoCancelled");
+      },
+    }, t("holoCancel"));
+
+    card.appendChild(el("div", { style: { fontSize: "14px", fontWeight: "500", marginBottom: "4px" } }, t("holoRunnerTitle")));
+    card.appendChild(el("div", { style: { fontSize: "12px", color: "var(--text-secondary)", marginBottom: "10px" } }, t("holoRunnerDesc")));
+    card.appendChild(input);
+    card.appendChild(el("div", null, runBtn, cancelBtn));
+    card.appendChild(el("div", { style: { marginTop: "10px" } }, status));
+    return card;
   }
 
   function init(coreArg) {

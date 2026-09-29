@@ -373,6 +373,14 @@ const SCHEMA = {
   screenclick_ocrApiUrl: { type: "string", default: "" },
   screenclick_ocrApiKey: { type: "string", default: "" },
   screenclick_ocrApiModel: { type: "string", default: "" },
+  // ── Holo GUI agent (H Company) ──────────────────────────────────────
+  // Drives real mouse/keyboard actions from screenshots via the Holo
+  // vision model. Key + endpoint are injected as PET_HOLO_* env vars on
+  // the next sidecar spawn; holo_agent.py reads them per request.
+  holo_enabled: { type: "boolean", default: false },
+  holo_api_key: { type: "string", default: "" },
+  holo_base_url: { type: "string", default: "https://api.hcompany.ai/v1/" },
+  holo_model: { type: "string", default: "holo3-1-35b-a3b" },
 };
 
 const SCHEMA_KEYS = Object.freeze(Object.keys(SCHEMA));

@@ -824,6 +824,30 @@ function registerSettingsIpc(options = {}) {
     return { status: "ok", ...r.json };
   });
 
+  // ── Holo GUI agent (H Company) ──────────────────────────────────────
+  // The agent runs inside the sidecar (holo_agent.py): it screenshots the
+  // desktop, asks the Holo vision model for the next step and executes it.
+  handle("settings:holo-status", async () => {
+    const r = await sidecarJson("GET", "/api/holo/status", 5000);
+    if (!r.ok) return { status: "error", message: r.error || "sidecar unreachable" };
+    return { status: "ok", ...r.json };
+  });
+
+  handle("settings:holo-run", async (_e, { task } = {}) => {
+    const t = String(task || "").trim();
+    if (!t) return { status: "error", message: "empty task" };
+    // A desktop task can take minutes (multi-step clicking).
+    const r = await sidecarJson("POST", "/api/holo/run", 600000, { task: t });
+    if (!r.ok) return { status: "error", message: r.error || "sidecar unreachable" };
+    return { status: "ok", ...r.json };
+  });
+
+  handle("settings:holo-cancel", async () => {
+    const r = await sidecarJson("POST", "/api/holo/cancel", 10000);
+    if (!r.ok) return { status: "error", message: r.error || "sidecar unreachable" };
+    return { status: "ok", ...r.json };
+  });
+
   handle("settings:get-memory-view", async () => {
     // Settings → Memory viewer: identity notes + episodic events +
     // mood for the CURRENT theme (换身体 = 换灵魂).

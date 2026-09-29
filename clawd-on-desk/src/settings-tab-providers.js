@@ -1,19 +1,28 @@
 "use strict";
 
 // ── Model Providers settings tab ──
-// Generic: supports any OpenAI-compatible provider.
+// Where do model responses come from? A two-pane page in the ZCode /
+// CherryStudio style: a grouped source list on the left (built-in engine,
+// local servers, custom APIs) with the active source marked, and a detail
+// pane on the right for the selected source. Adding a provider happens in
+// the right pane too — preset cards for local servers, or a manual
+// OpenAI-compatible form — never as a permanently expanded raw form.
+//
+// Data model (unchanged): snapshot.skills.defaultProvider ("local" or a
+// provider id), snapshot.skills.autoRoute, snapshot.skills.modelProviders
+// ([{ provider, apiKey, baseUrl, model, thinking, reasoningEffort,
+// contextWindow }]). saveProviders() persists to prefs, mirrors
+// providers.json and restarts the sidecar.
 
 (function initSettingsTabProviders(root) {
   let core = null;
   let helpers = null;
   let ops = null;
-  let mounted = false;
-  let _section = null;
-  let _parent = null;
-  let _editingProvider = null;
+  // Which source the right pane shows. Session-only; falls back to the
+  // active provider on every mount so the page opens on "where am I".
+  let selectedSource = null;
 
   function t(key) { return helpers.t(key); }
-  function cleanupTimers() { mounted = false; }
 
   function el(tag, attrs, ...children) {
     const e = document.createElement(tag);
@@ -36,6 +45,44 @@
     return e;
   }
 
+  function softBtn(label, onClick, opts = {}) {
+    const b = el("button", {
+      type: "button",
+      className: "soft-btn" + (opts.accent ? " accent" : ""),
+      onClick,
+    });
+    b.textContent = label;
+    if (opts.disabled) b.disabled = true;
+    return b;
+  }
+
+  // The design-system switch (same markup the pet tab's switchRow uses).
+  function switchEl(checked, onChange) {
+    const sw = el("div", {
+      className: "switch" + (checked ? " on" : ""),
+      role: "switch",
+      tabindex: "0",
+      "aria-checked": checked ? "true" : "false",
+    });
+    const run = () => {
+      const next = !sw.classList.contains("on");
+      sw.classList.toggle("on", next);
+      sw.setAttribute("aria-checked", next ? "true" : "false");
+      try { onChange(next); } catch {}
+    };
+    sw.addEventListener("click", run);
+    sw.addEventListener("keydown", (ev) => {
+      if (ev.key === " " || ev.key === "Enter") { ev.preventDefault(); run(); }
+    });
+    return sw;
+  }
+
+  function toast(message, error) {
+    if (ops && typeof ops.showToast === "function") {
+      ops.showToast(message, { error: !!error });
+    }
+  }
+
   async function saveField(field, value) {
     try {
       if (window.settingsAPI && typeof window.settingsAPI.update === "function") {
@@ -51,7 +98,8 @@
         const live = (core.state.snapshot && core.state.snapshot.skills) || {};
         await window.settingsAPI.update("skills", { ...live, modelProviders: providers });
       }
-      // Sync to providers.json and reload gateway
+      // Sync to providers.json and reload the gateway so the new routing
+      // takes effect without a manual restart.
       if (window.petSettings && typeof window.petSettings.saveProvidersConfig === "function") {
         await window.petSettings.saveProvidersConfig(providers);
       }
@@ -61,203 +109,319 @@
     } catch {}
   }
 
-  function renderHeader(parent) {
-    // Intentionally a no-op: this section is merged into the "Models" page
-    // (settings-renderer.js wraps the pet tab's render), which already
-    // provides the page title. The API card below carries its own heading.
-    void parent;
+  // ── Source list tiles ──────────────────────────────────────────────────
+  // Rounded monogram tiles stand in for provider logos (ZCode-style list
+  // without shipping brand assets).
+  function tile(label) {
+    return el("span", { className: "prov-tile", "aria-hidden": "true" }, label);
   }
 
-  function renderContent(parent) {
-    const section = el("div", {});
-    const skills = (core.state.snapshot && core.state.snapshot.skills) || {};
+  function tileFor(id) {
+    if (id === "local") return "❖";
+    if (id === "lmstudio") return "LM";
+    if (id === "ollama") return "O";
+    return (id || "?").slice(0, 2).toUpperCase();
+  }
+
+  function displayName(p) {
+    if (!p) return t("provLocalName");
+    if (p.provider === "lmstudio") return "LM Studio";
+    if (p.provider === "ollama") return "Ollama";
+    return p.provider;
+  }
+
+  function subLabel(p) {
+    if (p && p.baseUrl) return p.baseUrl.replace(/^https?:\/\//, "");
+    if (p && p.provider === "lmstudio") return "127.0.0.1:1234";
+    if (p && p.provider === "ollama") return "127.0.0.1:11434";
+    return "";
+  }
+
+  // ── Page header ────────────────────────────────────────────────────────
+  function renderHeader(parent) {
+    const wrap = el("div", { className: "pet-page-header" });
+    const textCol = el("div", { className: "pet-page-header-text" });
+    textCol.appendChild(el("h1", {}, t("provTitle")));
+    textCol.appendChild(el("p", { className: "subtitle" }, t("provSubtitle")));
+    wrap.appendChild(textCol);
+    parent.appendChild(wrap);
+  }
+
+  // ── Slim state row: what is in use + smart routing ─────────────────────
+  function renderStateRow(parent, skills, providers) {
     const defaultProvider = skills.defaultProvider || "local";
-    const autoRoute = !!skills.autoRoute;
-    const providers = Array.isArray(skills.modelProviders) ? [...skills.modelProviders] : [];
+    const active = defaultProvider === "local"
+      ? null
+      : providers.find((p) => p && p.provider === defaultProvider);
+    const activeName = active
+      ? (active.model ? `${displayName(active)} · ${active.model}` : displayName(active))
+      : t("provLocalName");
 
-    // ── Active provider card ──
-    const activeCard = el("div", {
-      style: { background: "var(--panel-bg)", borderRadius: "8px", padding: "16px", marginTop: "16px", border: "1px solid var(--border)" },
+    const row = el("div", { className: "section-rows prov-state-row" });
+    const text = el("div", { className: "row-text" });
+    text.appendChild(el("span", { className: "row-label" }, t("provActiveLabel")));
+    text.appendChild(el("span", { className: "row-desc" }, activeName));
+    row.appendChild(text);
+
+    const ctl = el("div", { className: "row-control" });
+    const arText = el("div", { className: "row-text", style: { textAlign: "right" } });
+    arText.appendChild(el("span", { className: "row-label" }, t("provAutoRoute")));
+    arText.appendChild(el("span", { className: "row-desc" }, t("provAutoRouteDesc")));
+    ctl.appendChild(arText);
+    ctl.appendChild(switchEl(!!skills.autoRoute, (next) => { void saveField("autoRoute", next); }));
+    row.appendChild(ctl);
+    parent.appendChild(row);
+  }
+
+  // ── Left pane: grouped source list ─────────────────────────────────────
+  function groupTitle(label, first) {
+    return el("div", {
+      className: "section-title prov-group-title" + (first ? " is-first" : ""),
+    }, label);
+  }
+
+  function sourceItem({ id, p, selected, inUse, onSelect }) {
+    const item = el("button", {
+      type: "button",
+      className: "prov-item" + (selected ? " selected" : ""),
+      onClick: onSelect,
     });
-    activeCard.appendChild(el("h3", { style: { margin: "0 0 12px 0", fontSize: "15px", fontWeight: "600" } }, "Active Model"));
+    item.appendChild(tile(tileFor(id)));
+    const text = el("div", { className: "prov-item-text" });
+    text.appendChild(el("span", { className: "prov-item-name" }, displayName(p)));
+    const sub = subLabel(p);
+    if (sub) text.appendChild(el("span", { className: "prov-item-sub" }, sub));
+    item.appendChild(text);
+    if (inUse) item.appendChild(el("span", { className: "prov-tag" }, t("provInUse")));
+    else item.appendChild(el("span", { className: "prov-dot" + (p ? "" : " idle") }));
+    return item;
+  }
 
-    const selRow = el("div", { style: { display: "flex", alignItems: "center", gap: "12px", marginBottom: "8px" } });
-    selRow.appendChild(el("span", { style: { fontSize: "13px", whiteSpace: "nowrap" } }, "Current provider:"));
-    const sel = el("select", { className: "setting-select", style: { flex: "1", maxWidth: "240px", fontSize: "13px" } });
-    [["local", "Local (DeskPet)"], ...providers.map((p) => [p.provider, p.model ? `${p.provider} / ${p.model}` : p.provider])]
-      .forEach(([val, label]) => {
-        const opt = el("option", { value: val }, label);
-        if (val === defaultProvider) opt.selected = true;
-        sel.appendChild(opt);
-      });
-    sel.addEventListener("change", () => saveField("defaultProvider", sel.value));
-    selRow.appendChild(sel);
-    activeCard.appendChild(selRow);
+  function renderList(listEl, skills, providers) {
+    const defaultProvider = skills.defaultProvider || "local";
+    const select = (id) => {
+      selectedSource = id;
+      renderAll();
+    };
 
-    const arRow = el("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between" } });
-    arRow.appendChild(el("span", { style: { fontSize: "13px" } }, "Auto-route (smart model selection)"));
-    const arWrap = el("label", { className: "toggle-switch" });
-    const arCb = el("input", {
-      type: "checkbox", className: "toggle-input",
-      checked: autoRoute ? "checked" : undefined,
-      onchange: () => { saveField("autoRoute", arCb.checked); },
-    });
-    arWrap.appendChild(arCb); arWrap.appendChild(el("span", { className: "toggle-slider" }));
-    arRow.appendChild(arWrap);
-    activeCard.appendChild(arRow);
-    parent.appendChild(activeCard);
+    listEl.appendChild(groupTitle(t("provGroupBuiltin"), true));
+    listEl.appendChild(sourceItem({
+      id: "local", p: null,
+      selected: selectedSource === "local",
+      inUse: defaultProvider === "local",
+      onSelect: () => select("local"),
+    }));
 
-    // ── API providers card ──
-    const apiCard = el("div", {
-      style: { background: "var(--panel-bg)", borderRadius: "8px", padding: "16px", marginTop: "12px", border: "1px solid var(--border)" },
-    });
-    apiCard.appendChild(el("h3", { style: { margin: "0 0 4px 0", fontSize: "15px", fontWeight: "600" } }, "API Providers"));
-    apiCard.appendChild(el("p", { style: { margin: "0 0 12px 0", fontSize: "12px", color: "var(--text-secondary)" } }, "DeepSeek, Ollama, OpenRouter, Groq, etc."));
+    const localServers = providers.filter((p) => p && (p.provider === "lmstudio" || p.provider === "ollama"));
+    const custom = providers.filter((p) => p && p.provider !== "lmstudio" && p.provider !== "ollama");
 
-    if (providers.length === 0) {
-      apiCard.appendChild(el("p", { style: { color: "var(--text-secondary)", fontSize: "13px", fontStyle: "italic" } }, "No API providers configured."));
-    } else {
-      for (const p of providers) {
-        if (_editingProvider === p.provider) {
-          const card = el("div", {
-            style: { padding: "10px 12px", marginBottom: "8px", borderRadius: "6px", border: "1px solid var(--accent)", background: "var(--bg)", color: "var(--text-primary)" },
-          });
-          card.appendChild(el("div", { style: { fontSize: "14px", fontWeight: "600", color: "var(--accent)", marginBottom: "8px" } }, "Edit: " + p.provider));
-
-          const editFields = [
-            { key: "apiKey", label: "Key", type: "password", placeholder: "sk-..." },
-            { key: "baseUrl", label: "URL", type: "text", placeholder: "https://api.openai.com/v1" },
-            { key: "model", label: "Model", type: "text", placeholder: "model name" },
-            { key: "contextWindow", label: "Context", type: "text", placeholder: "max tokens" },
-          ];
-          const editInputs = {};
-          for (const ef of editFields) {
-            const row = el("div", { style: { display: "flex", alignItems: "center", margin: "4px 0", gap: "8px" } });
-            row.appendChild(el("label", { style: { minWidth: "44px", fontSize: "12px", color: "var(--text-secondary)" } }, ef.label));
-            const inp = el("input", {
-              type: ef.type,
-              placeholder: ef.placeholder,
-              value: p[ef.key] != null ? String(p[ef.key]) : "",
-              style: { flex: "1", padding: "4px 6px", fontSize: "12px", border: "1px solid var(--border)", borderRadius: "4px", background: "var(--bg)", color: "var(--text-primary)" },
-            });
-            editInputs[ef.key] = inp; row.appendChild(inp); card.appendChild(row);
-          }
-          const thinkRow = el("div", { style: { display: "flex", alignItems: "center", margin: "4px 0", gap: "8px" } });
-          thinkRow.appendChild(el("label", { style: { minWidth: "44px", fontSize: "12px", color: "var(--text-secondary)" } }, "Think"));
-          const thinkCb = el("input", { type: "checkbox", style: { margin: "0 8px" } });
-          thinkCb.checked = !!p.thinking;
-          thinkRow.appendChild(thinkCb);
-          thinkRow.appendChild(el("span", { style: { fontSize: "11px", color: "var(--text-secondary)" } }, "Enable thinking mode"));
-          card.appendChild(thinkRow);
-          const effortRow = el("div", { style: { display: "flex", alignItems: "center", margin: "4px 0", gap: "8px" } });
-          effortRow.appendChild(el("label", { style: { minWidth: "44px", fontSize: "12px", color: "var(--text-secondary)" } }, "Effort"));
-          const effortSel = el("select", { style: { padding: "4px 6px", fontSize: "12px", border: "1px solid var(--border)", borderRadius: "4px", background: "var(--bg)", color: "var(--text-primary)" } });
-          ["", "low", "medium", "high", "xhigh", "max"].forEach((v) => {
-            const opt = el("option", { value: v }, v || "default");
-            if (v === (p.reasoningEffort || "")) opt.selected = true;
-            effortSel.appendChild(opt);
-          });
-          effortRow.appendChild(effortSel);
-          card.appendChild(effortRow);
-
-          const btnRow = el("div", { style: { display: "flex", gap: "8px", marginTop: "8px" } });
-          const saveBtn = el("button", {
-            style: { padding: "4px 14px", fontSize: "12px", background: "#1677ff", color: "#fff", border: "none", borderRadius: "4px", cursor: "pointer" },
-            onclick: async () => {
-              const updated = {
-                ...p,
-                apiKey: editInputs.apiKey.value.trim() || p.apiKey,
-                baseUrl: editInputs.baseUrl.value.trim() || "https://api.openai.com/v1",
-                model: editInputs.model.value.trim() || null,
-                thinking: thinkCb.checked,
-                reasoningEffort: effortSel.value || null,
-                contextWindow: Number(editInputs.contextWindow.value) || null,
-              };
-              const newProviders = providers.map((x) => x.provider === p.provider ? updated : x);
-              await saveProviders(newProviders);
-              _editingProvider = null;
-              renderAll();
-            },
-          }, "Save");
-          btnRow.appendChild(saveBtn);
-          const cancelBtn = el("button", {
-            style: { padding: "4px 14px", fontSize: "12px", background: "var(--bg)", color: "var(--text-secondary)", border: "1px solid var(--border)", borderRadius: "4px", cursor: "pointer" },
-            onclick: () => { _editingProvider = null; renderAll(); },
-          }, "Cancel");
-          btnRow.appendChild(cancelBtn);
-          card.appendChild(btnRow);
-          apiCard.appendChild(card);
-        } else {
-          const card = el("div", {
-            style: { padding: "10px 12px", marginBottom: "8px", borderRadius: "6px", border: "1px solid var(--border)", background: "var(--bg)", color: "var(--text-primary)" },
-          });
-          const top = el("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center" } });
-          const left = el("div", {});
-          left.appendChild(el("div", { style: { fontSize: "14px", fontWeight: "600", color: "var(--accent)" } }, p.provider));
-          left.appendChild(el("div", { style: { fontSize: "11px", color: "var(--text-secondary)", fontFamily: "monospace", marginTop: "2px" } },
-            p.baseUrl ? p.baseUrl.slice(0, 50) + (p.baseUrl.length > 50 ? "..." : "") : ""
-          ));
-          if (p.thinking != null) left.appendChild(el("span", {
-            style: { fontSize: "10px", color: p.thinking ? "#52c41a" : "var(--text-secondary)", marginTop: "2px" },
-          }, p.thinking ? "thinking: on" : "thinking: off"));
-          if (p.reasoningEffort) left.appendChild(el("span", {
-            style: { fontSize: "10px", color: "var(--accent)", marginLeft: "8px" },
-          }, "effort: " + p.reasoningEffort));
-          top.appendChild(left);
-
-          const right = el("div", { style: { display: "flex", alignItems: "center", gap: "8px" } });
-          if (p.model) right.appendChild(el("span", {
-            style: { fontSize: "11px", background: "color-mix(in srgb, var(--accent) 12%, transparent)", color: "var(--accent)", padding: "2px 8px", borderRadius: "10px" },
-          }, p.model));
-          if (p.contextWindow) right.appendChild(el("span", {
-            style: { fontSize: "11px", background: "color-mix(in srgb, var(--accent) 12%, transparent)", color: "var(--accent)", padding: "2px 8px", borderRadius: "10px", marginLeft: "4px" },
-          }, "ctx:" + p.contextWindow));
-          const editBtn = el("button", {
-            style: { fontSize: "11px", padding: "3px 10px", border: "1px solid var(--border)", borderRadius: "4px", background: "var(--bg)", color: "var(--text-primary)", cursor: "pointer" },
-            onclick: () => { _editingProvider = p.provider; renderAll(); },
-          }, "Edit");
-          right.appendChild(editBtn);
-          const delBtn = el("button", {
-            style: { fontSize: "11px", padding: "3px 10px", border: "1px solid #ff4d4f", borderRadius: "4px", background: "var(--bg)", color: "#ff4d4f", cursor: "pointer" },
-            onclick: async () => {
-              const newProviders = providers.filter((x) => x.provider !== p.provider);
-              await saveProviders(newProviders);
-              renderAll();
-            },
-          }, "Remove");
-          right.appendChild(delBtn);
-          top.appendChild(right);
-          card.appendChild(top);
-          apiCard.appendChild(card);
-        }
+    if (localServers.length > 0) {
+      listEl.appendChild(groupTitle(t("provGroupLocalServers")));
+      for (const p of localServers) {
+        listEl.appendChild(sourceItem({
+          id: p.provider, p,
+          selected: selectedSource === p.provider,
+          inUse: defaultProvider === p.provider,
+          onSelect: () => select(p.provider),
+        }));
+      }
+    }
+    if (custom.length > 0) {
+      listEl.appendChild(groupTitle(t("provGroupCustom")));
+      for (const p of custom) {
+        listEl.appendChild(sourceItem({
+          id: p.provider, p,
+          selected: selectedSource === p.provider,
+          inUse: defaultProvider === p.provider,
+          onSelect: () => select(p.provider),
+        }));
       }
     }
 
-    // Add form
-    const form = el("div", {
-      style: { marginTop: "12px", padding: "12px", border: "1px solid var(--border)", borderRadius: "6px", background: "var(--bg)", color: "var(--text-primary)" },
+    listEl.appendChild(softBtn("+ " + t("provAddProvider"), () => {
+      selectedSource = "__add__";
+      renderAll();
+    }, { accent: selectedSource === "__add__" })).classList.add("prov-add-btn");
+  }
+
+  // ── Right pane: detail for the selected source ─────────────────────────
+  function fieldRow(label, input) {
+    const row = el("div", { className: "prov-field" });
+    row.appendChild(el("span", { className: "prov-field-label" }, label));
+    row.appendChild(input);
+    return row;
+  }
+
+  function textInput(value, opts = {}) {
+    return el("input", {
+      type: opts.type || "text",
+      className: "prov-input",
+      placeholder: opts.placeholder || "",
+      value: value != null ? String(value) : "",
     });
-    form.appendChild(el("h4", { style: { margin: "0 0 8px 0", fontSize: "13px", fontWeight: "600" } }, "Add Provider"));
-    // One-click presets for local OpenAI-compatible servers. These are the
-    // recommended way to run local models: LM Studio / Ollama already
-    // handle engine binaries, CUDA builds and per-model tuning, so the pet
-    // just talks to them over HTTP. The placeholder apiKey is required by
-    // the provider schema but both servers ignore it.
-    const presetRow = el("div", { style: { display: "flex", gap: "8px", marginBottom: "10px", flexWrap: "wrap" } });
-    const mkPreset = (label, cfg, hint) => {
-      const b = el("button", {
-        title: hint,
-        style: { padding: "6px 12px", fontSize: "12px", border: "1px solid var(--border)", borderRadius: "4px", cursor: "pointer", background: "var(--bg)", color: "var(--text-primary)" },
-        onclick: async () => {
-          const next = providers.filter((x) => x.provider !== cfg.provider);
-          next.push(cfg);
-          await saveProviders(next);
-          renderAll();
-        },
-      }, label);
-      return b;
+  }
+
+  function useButton(defaultProvider, id) {
+    if (defaultProvider === id) return null;
+    return softBtn(t("provUseIt"), async () => {
+      await saveField("defaultProvider", id);
+      renderAll();
+    }, { accent: true });
+  }
+
+  function renderLocalDetail(d, skills) {
+    d.appendChild(el("div", { className: "prov-detail-title" },
+      tile(tileFor("local")),
+      el("span", { className: "prov-detail-name" }, t("provLocalName")),
+      skills.defaultProvider === "local" ? el("span", { className: "prov-tag" }, t("provInUse")) : null));
+
+    d.appendChild(el("p", { className: "prov-detail-desc" }, t("provLocalDesc")));
+
+    // Live engine status line — filled async, same source as the Models page.
+    const statusLine = el("div", { className: "prov-detail-status" }, t("provStatusChecking"));
+    d.appendChild(statusLine);
+    if (window.petSettings && typeof window.petSettings.getStatus === "function") {
+      window.petSettings.getStatus().then((st) => {
+        if (!statusLine.isConnected) return;
+        const h = (st && st.health) || {};
+        const ready = !!(st && (st.sidecarReady || st.healthy));
+        const llama = ready && (h.alive === true || !!(h.llama_server && h.llama_server.status === "ok"));
+        const name = h.model_name || "";
+        statusLine.textContent = llama
+          ? `● ${t("provStatusRunning")}${name ? " · " + name : ""}`
+          : (ready ? `● ${t("provStatusWarming")}` : `● ${t("provStatusOffline")}`);
+        statusLine.className = "prov-detail-status " + (llama || ready ? "is-ok" : "is-off");
+      }).catch(() => {
+        if (statusLine.isConnected) {
+          statusLine.textContent = `● ${t("provStatusOffline")}`;
+          statusLine.className = "prov-detail-status is-off";
+        }
+      });
+    }
+
+    const actions = el("div", { className: "prov-actions" });
+    const use = useButton(skills.defaultProvider || "local", "local");
+    if (use) actions.appendChild(use);
+    if (actions.childElementCount > 0) d.appendChild(actions);
+  }
+
+  function renderServerDetail(d, skills, providers, p) {
+    const id = p.provider;
+    d.appendChild(el("div", { className: "prov-detail-title" },
+      tile(tileFor(id)),
+      el("span", { className: "prov-detail-name" }, displayName(p)),
+      skills.defaultProvider === id ? el("span", { className: "prov-tag" }, t("provInUse")) : null));
+
+    d.appendChild(el("p", { className: "prov-detail-desc" },
+      id === "lmstudio" ? t("provLmstudioDesc") : t("provOllamaDesc")));
+
+    const urlInp = textInput(p.baseUrl, { placeholder: id === "lmstudio" ? "http://127.0.0.1:1234/v1" : "http://127.0.0.1:11434/v1" });
+    const modelInp = textInput(p.model, { placeholder: id === "ollama" ? "llama3.2" : "local-model" });
+    d.appendChild(fieldRow(t("provFieldUrl"), urlInp));
+    d.appendChild(fieldRow(t("provFieldModel"), modelInp));
+
+    const actions = el("div", { className: "prov-actions" });
+    const use = useButton(skills.defaultProvider || "local", id);
+    if (use) actions.appendChild(use);
+    actions.appendChild(softBtn(t("provSave"), async () => {
+      const updated = {
+        ...p,
+        baseUrl: urlInp.value.trim() || p.baseUrl,
+        model: modelInp.value.trim() || p.model,
+      };
+      await saveProviders(providers.map((x) => x.provider === id ? updated : x));
+      toast(t("provSaved"));
+      renderAll();
+    }));
+    actions.appendChild(softBtn(t("provRemove"), async () => {
+      await saveProviders(providers.filter((x) => x.provider !== id));
+      if (selectedSource === id) selectedSource = skills.defaultProvider || "local";
+      renderAll();
+    }));
+    d.appendChild(actions);
+  }
+
+  function renderCustomDetail(d, skills, providers, p) {
+    const id = p.provider;
+    d.appendChild(el("div", { className: "prov-detail-title" },
+      tile(tileFor(id)),
+      el("span", { className: "prov-detail-name" }, displayName(p)),
+      skills.defaultProvider === id ? el("span", { className: "prov-tag" }, t("provInUse")) : null));
+
+    d.appendChild(el("p", { className: "prov-detail-desc" }, t("provCustomDesc")));
+
+    const keyInp = textInput(p.apiKey, { type: "password", placeholder: "sk-..." });
+    const urlInp = textInput(p.baseUrl, { placeholder: "https://api.deepseek.com/v1" });
+    const modelInp = textInput(p.model, { placeholder: "deepseek-chat" });
+    const ctxInp = textInput(p.contextWindow, { placeholder: "131072" });
+    d.appendChild(fieldRow(t("provFieldKey"), keyInp));
+    d.appendChild(fieldRow(t("provFieldUrl"), urlInp));
+    d.appendChild(fieldRow(t("provFieldModel"), modelInp));
+    d.appendChild(fieldRow(t("provFieldContext"), ctxInp));
+
+    const thinkRow = el("div", { className: "prov-field" });
+    thinkRow.appendChild(el("span", { className: "prov-field-label" }, t("provThinking")));
+    const thinkWrap = el("div", { className: "row-control" });
+    thinkWrap.appendChild(switchEl(!!p.thinking, () => {}));
+    const thinkCb = thinkWrap.querySelector(".switch");
+    thinkRow.appendChild(thinkWrap);
+    d.appendChild(thinkRow);
+
+    const effortSel = el("select", { className: "prov-input", style: { flex: "0 0 140px" } });
+    ["", "low", "medium", "high", "xhigh", "max"].forEach((v) => {
+      const opt = el("option", { value: v }, v || t("provEffortDefault"));
+      if (v === (p.reasoningEffort || "")) opt.selected = true;
+      effortSel.appendChild(opt);
+    });
+    d.appendChild(fieldRow(t("provEffort"), effortSel));
+
+    const actions = el("div", { className: "prov-actions" });
+    const use = useButton(skills.defaultProvider || "local", id);
+    if (use) actions.appendChild(use);
+    actions.appendChild(softBtn(t("provSave"), async () => {
+      const updated = {
+        ...p,
+        apiKey: keyInp.value.trim() || p.apiKey,
+        baseUrl: urlInp.value.trim() || "https://api.openai.com/v1",
+        model: modelInp.value.trim() || null,
+        thinking: thinkCb.classList.contains("on"),
+        reasoningEffort: effortSel.value || null,
+        contextWindow: Number(ctxInp.value) || null,
+      };
+      await saveProviders(providers.map((x) => x.provider === id ? updated : x));
+      toast(t("provSaved"));
+      renderAll();
+    }));
+    actions.appendChild(softBtn(t("provRemove"), async () => {
+      await saveProviders(providers.filter((x) => x.provider !== id));
+      if (selectedSource === id) selectedSource = skills.defaultProvider || "local";
+      renderAll();
+    }));
+    d.appendChild(actions);
+  }
+
+  function renderAddDetail(d, skills, providers) {
+    d.appendChild(el("div", { className: "prov-detail-title" },
+      el("span", { className: "prov-detail-name" }, t("provAddTitle"))));
+    d.appendChild(el("p", { className: "prov-detail-desc" }, t("provAddHint")));
+
+    // Preset cards — the recommended path for local models: LM Studio /
+    // Ollama already handle engine binaries; the pet just talks to them.
+    const grid = el("div", { className: "prov-preset-grid" });
+    const mkPreset = (name, desc, cfg) => {
+      const card = el("button", { type: "button", className: "prov-preset-card" });
+      card.appendChild(el("span", { className: "prov-preset-name" }, tile(tileFor(cfg.provider)), name));
+      card.appendChild(el("span", { className: "prov-preset-desc" }, desc));
+      card.addEventListener("click", async () => {
+        const next = providers.filter((x) => x.provider !== cfg.provider);
+        next.push(cfg);
+        await saveProviders(next);
+        selectedSource = cfg.provider;
+        renderAll();
+      });
+      return card;
     };
-    presetRow.appendChild(mkPreset("+ LM Studio (local)", {
+    grid.appendChild(mkPreset("LM Studio", t("provPresetLmstudioDesc"), {
       provider: "lmstudio",
       apiKey: "lm-studio",          // LM Studio ignores the key
       baseUrl: "http://127.0.0.1:1234/v1",
@@ -265,8 +429,8 @@
       thinking: false,
       reasoningEffort: null,
       contextWindow: null,
-    }, "Connect to a model loaded in LM Studio (127.0.0.1:1234)"));
-    presetRow.appendChild(mkPreset("+ Ollama (local)", {
+    }));
+    grid.appendChild(mkPreset("Ollama", t("provPresetOllamaDesc"), {
       provider: "ollama",
       apiKey: "ollama",             // Ollama ignores the key locally
       baseUrl: "http://127.0.0.1:11434/v1",
@@ -274,100 +438,119 @@
       thinking: false,
       reasoningEffort: null,
       contextWindow: null,
-    }, "Connect to Ollama (127.0.0.1:11434) — remember to pull the model first"));
-    // Restart hint once a local server provider has been added.
-    if (providers.some((x) => x && (x.provider === "lmstudio" || x.provider === "ollama"))) {
-      presetRow.appendChild(el("span", { style: { fontSize: "11px", color: "var(--text-secondary)", alignSelf: "center" } },
-        "Local server connected — restart the sidecar to route chats through it."));
-    }
-    form.appendChild(el("div", { style: { fontSize: "11px", color: "var(--text-secondary)", marginBottom: "8px" } },
-      "Recommended for local models: let LM Studio / Ollama run the engine, the pet just uses its API."));
-    form.appendChild(presetRow);
-    const fields = [
-      { key: "provider", label: "ID", placeholder: "e.g. deepseek", hint: "short identifier" },
-      { key: "apiKey", label: "Key", placeholder: "sk-...", hint: "API key" },
-      { key: "baseUrl", label: "URL", placeholder: "https://api.deepseek.com/v1", hint: "endpoint" },
-      { key: "model", label: "Model", placeholder: "deepseek-chat", hint: "model name" },
-      { key: "contextWindow", label: "Context", placeholder: "131072", hint: "max tokens" },
-    ];
-    const inputs = {};
-    for (const fi of fields) {
-      const row = el("div", { style: { display: "flex", alignItems: "center", margin: "6px 0", gap: "8px" } });
-      row.appendChild(el("label", { style: { minWidth: "44px", fontSize: "12px", color: "var(--text-secondary)" } }, fi.label));
-      const inp = el("input", {
-        type: (fi.key === "apiKey") ? "password" : "text",
-        placeholder: fi.placeholder,
-        style: { flex: "1", padding: "5px 8px", fontSize: "13px", border: "1px solid var(--border)", borderRadius: "4px", background: "var(--bg)", color: "var(--text-primary)" },
-      });
-      inputs[fi.key] = inp; row.appendChild(inp); form.appendChild(row);
-    }
-    // Thinking toggle row
-    const thinkRow = el("div", { style: { display: "flex", alignItems: "center", margin: "6px 0", gap: "8px" } });
-    thinkRow.appendChild(el("label", { style: { minWidth: "44px", fontSize: "12px", color: "var(--text-secondary)" } }, "Think"));
-    const thinkCb = el("input", { type: "checkbox", style: { margin: "0 8px" } });
-    thinkCb.checked = true; // default enabled
-    thinkRow.appendChild(thinkCb);
-    thinkRow.appendChild(el("span", { style: { fontSize: "11px", color: "var(--text-secondary)" } }, "Enable thinking mode"));
-    form.appendChild(thinkRow);
-    // Reasoning effort row
-    const effortRow = el("div", { style: { display: "flex", alignItems: "center", margin: "6px 0", gap: "8px" } });
-    effortRow.appendChild(el("label", { style: { minWidth: "44px", fontSize: "12px", color: "var(--text-secondary)" } }, "Effort"));
-    const effortSel = el("select", { style: { padding: "5px 8px", fontSize: "13px", border: "1px solid var(--border)", borderRadius: "4px", background: "var(--bg)", color: "var(--text-primary)" } });
+    }));
+    d.appendChild(grid);
+
+    // Manual OpenAI-compatible form.
+    d.appendChild(el("div", { className: "section-title prov-manual-title" }, t("provManualTitle")));
+    const idInp = textInput("", { placeholder: "e.g. deepseek" });
+    const keyInp = textInput("", { type: "password", placeholder: "sk-..." });
+    const urlInp = textInput("", { placeholder: "https://api.deepseek.com/v1" });
+    const modelInp = textInput("", { placeholder: "deepseek-chat" });
+    const ctxInp = textInput("", { placeholder: "131072" });
+    d.appendChild(fieldRow(t("provFieldId"), idInp));
+    d.appendChild(fieldRow(t("provFieldKey"), keyInp));
+    d.appendChild(fieldRow(t("provFieldUrl"), urlInp));
+    d.appendChild(fieldRow(t("provFieldModel"), modelInp));
+    d.appendChild(fieldRow(t("provFieldContext"), ctxInp));
+
+    const thinkRow = el("div", { className: "prov-field" });
+    thinkRow.appendChild(el("span", { className: "prov-field-label" }, t("provThinking")));
+    const thinkWrap = el("div", { className: "row-control" });
+    thinkWrap.appendChild(switchEl(true, () => {}));
+    const thinkCb = thinkWrap.querySelector(".switch");
+    thinkRow.appendChild(thinkWrap);
+    d.appendChild(thinkRow);
+
+    const effortSel = el("select", { className: "prov-input", style: { flex: "0 0 140px" } });
     ["", "low", "medium", "high", "xhigh", "max"].forEach((v) => {
-      effortSel.appendChild(el("option", { value: v }, v || "default"));
+      effortSel.appendChild(el("option", { value: v }, v || t("provEffortDefault")));
     });
-    effortRow.appendChild(effortSel);
-    form.appendChild(effortRow);
-    const addBtn = el("button", {
-      style: { marginTop: "8px", padding: "6px 20px", fontSize: "13px", background: "var(--accent)", color: "#fff", border: "none", borderRadius: "4px", cursor: "pointer" },
-      onclick: async () => {
-        const id = (inputs.provider.value || "").replace(/\s+/g, "").toLowerCase();
-        if (!id || !(inputs.apiKey.value || "").trim()) return;
-        const newProviders = providers.filter((x) => x.provider !== id);
-        newProviders.push({
-          provider: id,
-          apiKey: inputs.apiKey.value.trim(),
-          baseUrl: inputs.baseUrl.value.trim() || "https://api.openai.com/v1",
-          model: inputs.model.value.trim() || "gpt-4o",
-          thinking: thinkCb.checked,
-          reasoningEffort: effortSel.value || null,
-          contextWindow: Number(inputs.contextWindow.value) || null,
-        });
-        await saveProviders(newProviders);
-        inputs.provider.value = inputs.apiKey.value = inputs.baseUrl.value = inputs.model.value = inputs.contextWindow.value = "";
-        renderAll();
-      },
-    }, "Add Provider");
-    form.appendChild(addBtn);
-    apiCard.appendChild(form);
-    apiCard.setAttribute("data-section", "providers");
+    d.appendChild(fieldRow(t("provEffort"), effortSel));
 
-    // Restart
-    apiCard.appendChild(el("p", { style: { color: "var(--text-secondary)", fontSize: "11px", marginTop: "10px" } }, "New providers need sidecar restart to take effect."));
-    const restartBtn = el("button", {
-      style: { marginTop: "4px", padding: "6px 16px", fontSize: "13px", background: "var(--accent)", color: "#fff", border: "none", borderRadius: "4px", cursor: "pointer" },
-      onclick: async () => {
-        restartBtn.textContent = "Restarting..."; restartBtn.disabled = true;
-        try { if (window.petSettings && typeof window.petSettings.restartSidecar === "function") await window.petSettings.restartSidecar(); } catch {}
-        setTimeout(() => { restartBtn.textContent = "Restart Sidecar"; restartBtn.disabled = false; }, 5000);
-      },
-    }, "Restart Sidecar");
-    apiCard.appendChild(restartBtn);
-    parent.appendChild(apiCard);
+    const actions = el("div", { className: "prov-actions" });
+    actions.appendChild(softBtn(t("provAddAction"), async () => {
+      const id = (idInp.value || "").replace(/\s+/g, "").toLowerCase();
+      if (!id || !(keyInp.value || "").trim()) {
+        toast(t("provAddMissing"), true);
+        return;
+      }
+      const newProviders = providers.filter((x) => x.provider !== id);
+      newProviders.push({
+        provider: id,
+        apiKey: keyInp.value.trim(),
+        baseUrl: urlInp.value.trim() || "https://api.openai.com/v1",
+        model: modelInp.value.trim() || "gpt-4o",
+        thinking: thinkCb.classList.contains("on"),
+        reasoningEffort: effortSel.value || null,
+        contextWindow: Number(ctxInp.value) || null,
+      });
+      await saveProviders(newProviders);
+      selectedSource = id;
+      renderAll();
+    }, { accent: true }));
+    d.appendChild(actions);
   }
 
-  async function render(parent) {
-    cleanupTimers();
-    mounted = true;
-    _parent = parent;
-    renderAll();
+  function renderDetail(d, skills, providers) {
+    d.innerHTML = "";
+    const defaultProvider = skills.defaultProvider || "local";
+    if (!selectedSource) selectedSource = defaultProvider;
+
+    if (selectedSource === "__add__") {
+      renderAddDetail(d, skills, providers);
+      return;
+    }
+    if (selectedSource === "local") {
+      renderLocalDetail(d, skills);
+      return;
+    }
+    const p = providers.find((x) => x && x.provider === selectedSource);
+    if (!p) {
+      // The source disappeared (removed elsewhere) — fall back gracefully.
+      selectedSource = defaultProvider;
+      if (selectedSource === "local") { renderLocalDetail(d, skills); return; }
+      renderAddDetail(d, skills, providers);
+      return;
+    }
+    if (p.provider === "lmstudio" || p.provider === "ollama") {
+      renderServerDetail(d, skills, providers, p);
+    } else {
+      renderCustomDetail(d, skills, providers, p);
+    }
   }
 
+  function renderContent(parent) {
+    const skills = (core.state.snapshot && core.state.snapshot.skills) || {};
+    const providers = Array.isArray(skills.modelProviders) ? [...skills.modelProviders] : [];
+    if (!selectedSource) selectedSource = skills.defaultProvider || "local";
+    // A stale selection (provider removed on disk) falls back in renderDetail.
+
+    renderStateRow(parent, skills, providers);
+
+    const pane = el("div", { className: "prov-pane" });
+    const list = el("div", { className: "prov-list" });
+    const detail = el("div", { className: "section-rows prov-detail" });
+
+    renderList(list, skills, providers);
+    pane.appendChild(list);
+    pane.appendChild(detail);
+    parent.appendChild(pane);
+
+    renderDetail(detail, skills, providers);
+  }
+
+  let _parent = null;
   function renderAll() {
     if (!_parent) return;
     _parent.innerHTML = "";
     renderHeader(_parent);
     renderContent(_parent);
+  }
+
+  async function render(parent) {
+    _parent = parent;
+    renderAll();
   }
 
   function init(coreArg) {

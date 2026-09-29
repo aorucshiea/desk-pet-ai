@@ -553,6 +553,22 @@ class Sidecar {
     return out;
   }
 
+  // Holo GUI agent credentials (Settings → Screen click). Injected at
+  // spawn like the provider keys — holo_agent.py reads them per request.
+  _holoToEnv() {
+    const out = {};
+    try {
+      const p = readDeskPetPrefsRaw() || {};
+      if (p.holo_enabled) {
+        out.PET_HOLO_ENABLED = "1";
+        if (p.holo_api_key) out.PET_HOLO_API_KEY = String(p.holo_api_key);
+        if (p.holo_base_url) out.PET_HOLO_BASE_URL = String(p.holo_base_url);
+        if (p.holo_model) out.PET_HOLO_MODEL = String(p.holo_model);
+      }
+    } catch {}
+    return out;
+  }
+
   async ensureRunning(initialModelDir) {
     if (await this.isHealthy(initialModelDir)) return { status: "already-running" };
     if (this.starting) return this.starting;
@@ -696,6 +712,8 @@ class Sidecar {
       // 20 GB checkpoint into RAM wholesale); everything else unset so
       // llama.cpp keeps its own default.
       ...this._engineParamsToEnv(),
+      // Holo GUI agent (H Company) — screenshot-driven desktop control.
+      ...this._holoToEnv(),
     };
 
     // Strip proxy environment variables to avoid socksio dependency issues.
