@@ -136,15 +136,15 @@
         : badge(p.suspended ? t("evolveBadgeSuspended") : t("evolveBadgeRunning"), p.suspended ? "warn" : "ok"));
       info.appendChild(nameRow);
 
-      if (!p.muted) {
-        const chips = el("div", { className: "evl-row-chips" });
-        const tools = (p.tools || []).length;
-        if (tools) chips.appendChild(chip(`${t("evolveChipTools")} ${tools}`));
-        for (const s of p.provides || []) chips.appendChild(chip(`→ ${s}`));
-        for (const s of p.inject || []) chips.appendChild(chip(`← ${s}`));
-        if (p.effects) chips.appendChild(chip(`${t("evolveChipEffects")} ${p.effects}`));
-        if (chips.childNodes.length) info.appendChild(chips);
-      }
+      // Muted rows keep their capability chips: the kernel freezes the
+      // tool list at unload time, so "已停用" still shows what it had.
+      const chips = el("div", { className: "evl-row-chips" });
+      const tools = (p.tools || []).length;
+      if (tools) chips.appendChild(chip(`${t("evolveChipTools")} ${tools}`));
+      for (const s of p.provides || []) chips.appendChild(chip(`→ ${s}`));
+      for (const s of p.inject || []) chips.appendChild(chip(`← ${s}`));
+      if (p.effects) chips.appendChild(chip(`${t("evolveChipEffects")} ${p.effects}`));
+      if (chips.childNodes.length) info.appendChild(chips);
       row.appendChild(info);
 
       if (!isKernelCore(p.name)) {
