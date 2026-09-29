@@ -738,9 +738,17 @@ class PluginManager:
                 log.exception("plugin shutdown failed: %s", name)
 
     def _seed_example(self, pdir: Path) -> None:
-        """First boot: write a small self-referential example so the model
-        (and the user) can see what a plugin looks like — and edit it."""
-        example = '''"""self_note — 示例插件：给自己写一张随时可读的便签。
+        """Idempotently deliver the example plugins (self_note, mood_watch).
+
+        Mirrors seed_core_plugins(): a file that already exists is NEVER
+        overwritten (the model may have edited it), and missing files are
+        delivered on every sync - not just on a virgin directory. That
+        fixes a real gap: a plugins dir that predates the second example
+        never received it, so mood_watch silently never shipped.
+        """
+        seeds = {}
+
+        seeds["self_note.py"] = '''"""self_note - 示例插件：给自己写一张随时可读的便签。
 
 这就是一个完整的插件：apply(ctx) 是入口，ctx.tool() 注册模型可调用的能力，
 inject 声明依赖的服务，config 声明可调参数（内核会校验并补默认值）。
@@ -786,16 +794,8 @@ def apply(ctx):
     )
     ctx.on("theme_switched", lambda theme: notes.append("[换到了 %s 的身体]" % theme))
 '''
-        try:
-            (pdir / "self_note.py").write_text(example, encoding="utf-8")
-            log.info("seeded example plugin: self_note.py")
-        except Exception as exc:
-            log.warning("seed example plugin failed: %s", exc)
 
-        # Second seed: the "inject a real service" pattern. self_note shows
-        # tools + config; mood_watch shows the part that makes this a
-        # KERNEL — waiting on another component's service and reading it.
-        watcher = '''"""mood_watch — 注入真实服务的范本（这就是"潜意识"最朴素的形态）。
+        seeds["mood_watch.py"] = '''"""mood_watch - 注入真实服务的范本（这就是"潜意识"最朴素的形态）。
 
 它 inject 了 mood / events 两个服务：内核会在这些服务就绪时才把它唤醒
 （服务没来就 parked 等着，来了自动激活）。它不打扰你，但一直在看。
@@ -836,11 +836,15 @@ def apply(ctx):
     ctx.on("mood_changed", on_mood)
     ctx.log("mood_watch armed (limit=%d)" % limit)
 '''
-        try:
-            (pdir / "mood_watch.py").write_text(watcher, encoding="utf-8")
-            log.info("seeded example plugin: mood_watch.py")
-        except Exception as exc:
-            log.warning("seed mood_watch example failed: %s", exc)
+
+        for fname, code in seeds.items():
+            try:
+                if (pdir / fname).exists():
+                    continue  # idempotent: never overwrite a model/user edit
+                (pdir / fname).write_text(code, encoding="utf-8")
+                log.info("seeded example plugin: %s", fname)
+            except Exception as exc:
+                log.warning("seed %s failed: %s", fname, exc)
 
     # ── hot-reload loop (self-evolution) ──────────────────────────────
     def start_watching(self) -> None:
