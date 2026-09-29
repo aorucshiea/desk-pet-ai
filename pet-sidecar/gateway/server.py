@@ -54,6 +54,21 @@ from .memory import continuity as _continuity_module
 from .memory import resonance as _resonance_module
 from .memory import somatic as _somatic_module
 from . import petplugins as _petplugins_module
+
+# Kernel container mirror: _stream_chat_provider is a MODULE-level function
+# and cannot see build_app's closure, so the live PluginManager is mirrored
+# here at boot. _organ_service() resolves an organ service through it and
+# falls back to the built-in module when the organ is off or absent.
+_plugin_container_ref: dict = {}
+
+
+def _organ_service(name: str, fallback):
+    try:
+        _mgr = _plugin_container_ref.get("mgr")
+        _svc = _mgr.get_service(name) if _mgr else None
+    except Exception:
+        _svc = None
+    return _svc or fallback
 from .memory.recall import (
     RECALL_TOOL_SCHEMA,
     recall_tool_handler,
@@ -597,20 +612,7 @@ def build_app(
         _pet_plugins.register_service(_svc_name, _svc_obj, owner="kernel")
     # gateway service = the container itself (plugins can introspect peers)
     _pet_plugins.register_service("gateway", _pet_plugins, owner="kernel")
-
-    def _organ(name: str, fallback):
-        """Resolve an organ service, falling back to the built-in module
-        when the organ plugin is switched off (or absent).
-
-        Every chat-stream organ goes through this: the pet keeps talking
-        whatever the plugin kernel is doing — a disabled or broken organ
-        degrades to the built-in implementation instead of raising.
-        """
-        try:
-            svc = _pet_plugins.get_service(name)
-        except Exception:
-            svc = None
-        return svc or fallback
+    _plugin_container_ref["mgr"] = _pet_plugins  # module-level mirror
     try:
         _sync = _pet_plugins.sync()
         if _sync["loaded"] or _sync["failed"]:
@@ -1484,7 +1486,7 @@ def build_app(
         Returns the two-layer loaded context (top-5 + flashback + faded
         directory) that the renderer prepends to the system prompt.
         """
-        context = _organ("loader", _loader_module).build_memory_context(event_store)
+        context = _organ_service("loader", _loader_module).build_memory_context(event_store)
         return {
             "context": context,
             "event_count": event_store.event_count(),
@@ -1573,7 +1575,7 @@ def build_app(
                         conversation_tokens=conversation_tokens,
                     )
                     result["events_added"].append(evt["id"])
-                _organ("resonance", _resonance_module).mark_stale()
+                _organ_service("resonance", _resonance_module).mark_stale()
 
                 # Core memory bank: the model's explicit picks (by title)
                 # take priority, then very high-weight events auto-promote
@@ -1611,7 +1613,7 @@ def build_app(
         become light episodic events (throttled per kind so a gesture
         storm can't flood the memory stream).
         """
-        detail, ev_title, ev_content = _organ("somatic", _somatic_module).record(
+        detail, ev_title, ev_content = _organ_service("somatic", _somatic_module).record(
             _somatic_buffer, payload.model_dump()
         )
         if ev_title:
@@ -1681,7 +1683,7 @@ def build_app(
         Body: { "message": "user's latest message" }
         """
         message = str(payload.get("message") or "")
-        results = _organ("resonance", _resonance_module).find_resonance(event_store, message)
+        results = _organ_service("resonance", _resonance_module).find_resonance(event_store, message)
         return {
             "resonant": [
                 {"id": e["id"], "title": e["title"], "content": e["content"]}
@@ -2828,7 +2830,7 @@ async def _stream_chat_provider(
             # 1. Episodic memory context (top-5 + mood-modulated flashback +
             #    faded directory). Emotion index shapes the subconscious:
             #    冷静 → 高权重被过滤、闪现少；开心 → 闪现频发.
-            episodic_ctx = _organ("loader", _loader_module).build_memory_context(
+            episodic_ctx = _organ_service("loader", _loader_module).build_memory_context(
                 active_event_store,
                 emotion_index=mood_store.emotion_index if mood_store is not None else 0.0,
             )
@@ -2838,7 +2840,7 @@ async def _stream_chat_provider(
             # 1.5 Continuity of self (持续自我存在): the same self, continuously
             #     existing. The body changed; the self did not — the system
             #     subconscious keeps the thread alive.
-            renote = _organ("continuity", _continuity_module).get_current_note()
+            renote = _organ_service("continuity", _continuity_module).get_current_note()
             if renote:
                 system = (system or "") + "\n\n" + renote
 
@@ -2851,7 +2853,7 @@ async def _stream_chat_provider(
         #     being dragged across the screen, being poked. Inject while
         #     fresh so the pet can react to what physically happened to
         #     it instead of being an amnesiac puppet.
-        somatic_ctx = _organ("somatic", _somatic_module).build_somatic_block(_somatic_buffer)
+        somatic_ctx = _organ_service("somatic", _somatic_module).build_somatic_block(_somatic_buffer)
         if somatic_ctx:
             system = (system or "") + "\n\n" + somatic_ctx
 
@@ -2885,11 +2887,11 @@ async def _stream_chat_provider(
                     b.get("text", "") for b in last_msg["content"] if isinstance(b, dict) and b.get("type") == "text"
                 )
             if msg_text:
-                resonance_hits = await _organ("resonance", _resonance_module).find_resonance(active_event_store, msg_text)
+                resonance_hits = await _organ_service("resonance", _resonance_module).find_resonance(active_event_store, msg_text)
                 if resonance_hits:
                     # v2: felt-language + time annotation (this is a memory
                     # surfacing, not a database hit).
-                    system = (system or "") + _organ("resonance", _resonance_module).build_resonance_block(resonance_hits)
+                    system = (system or "") + _organ_service("resonance", _resonance_module).build_resonance_block(resonance_hits)
     except Exception as exc:
         log.warning("LingLing context injection failed (continuing): %s", exc)
 
@@ -3204,7 +3206,7 @@ async def _stream_chat_provider(
         _impulse_gap = _impulse_svc.compute_gap(
             emotion_index=mood_store.emotion_index if mood_store is not None else 0.0,
             proactive_streak=_proactive_streak,
-            recall_count=_organ("recall", _recall_module).get_session_recall_count(),
+            recall_count=_organ_service("recall", _recall_module).get_session_recall_count(),
         )
         log.info("speech impulse: no [NEXT_CHAT] tag, subconscious gap=%ds (streak=%d)", _impulse_gap, _proactive_streak)
         yield _sse({"event": "next_chat", "seconds": _impulse_gap})
