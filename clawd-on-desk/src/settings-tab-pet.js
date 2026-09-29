@@ -664,6 +664,19 @@
       const gateText = el("div", { className: "row-text" });
       gateText.appendChild(el("span", { className: "row-label" }, t("petEngineGateTitle")));
       gateText.appendChild(el("span", { className: "row-desc" }, t("petEngineGateDesc")));
+      // The gate reflects the PREF (engine_enabled), but the sidecar
+      // auto-manages the llama-server process whenever the pet needs local
+      // inference (a local model is selected and something asks for
+      // completion). Pref off + live process = this exact confusion, so
+      // say it out loud instead of letting two widgets contradict each
+      // other (Norman: feedback must show the system's real state).
+      const liveLlama = !!(ctx && ctx.healthSnapshot && ctx.healthSnapshot.llamaReady);
+      if (liveLlama) {
+        gateText.appendChild(el("div", {
+          className: "row-desc",
+          style: { marginTop: "6px", color: "var(--text-primary)" },
+        }, t("petEngineGateLive")));
+      }
       gateRow.appendChild(gateText);
       const gateBtn = softBtn(t("petEngineGateEnable"), async () => {
         gateBtn.disabled = true;
