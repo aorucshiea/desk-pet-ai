@@ -168,7 +168,11 @@
     card.appendChild(line1);
 
     card.appendChild(el("div", { className: "prov-active-kind" },
-      isLocal ? t("provKindLocal") : t("provKindRemote")));
+      isLocal
+        ? t("provKindBuiltin")
+        : (active && (active.provider === "lmstudio" || active.provider === "ollama"))
+          ? t("provKindLocalApi")
+          : t("provKindRemote")));
     card.appendChild(el("div", { className: "prov-active-explain" }, t("provActiveExplain")));
     parent.appendChild(card);
   }
@@ -197,6 +201,21 @@
     return item;
   }
 
+  // A sub-group heading under a parent group (used for the two kinds of
+  // "local": something you run yourself, or the engine built into the pet).
+  function subGroupTitle(label) {
+    return el("div", { className: "prov-subgroup-title" }, label);
+  }
+
+  // ── Left pane: sources grouped the way the user thinks about them ──
+  //
+  //   服务商          — models served by someone else's machine
+  //   本地
+  //     本地推理引擎 API — LM Studio / Ollama, running on THIS machine
+  //     桌宠内置推理引擎 — the llama.cpp build the pet ships, hot-updatable
+  //
+  // The old order (Builtin / LocalServers / Custom) read as three unrelated
+  // lists; this one answers "where does the model live?" first.
   function renderList(listEl, skills, providers) {
     const defaultProvider = skills.defaultProvider || "local";
     const select = (id) => {
@@ -204,44 +223,48 @@
       renderAll();
     };
 
-    listEl.appendChild(groupTitle(t("provGroupBuiltin"), true));
+    // ── 服务商 (remote APIs) ────────────────────────────────────────────
+    const custom = providers.filter((p) => p && p.provider !== "lmstudio" && p.provider !== "ollama");
+    listEl.appendChild(groupTitle(t("provGroupCustom"), true));
+    for (const p of custom) {
+      listEl.appendChild(sourceItem({
+        id: p.provider, p,
+        selected: selectedSource === p.provider,
+        inUse: defaultProvider === p.provider,
+        onSelect: () => select(p.provider),
+      }));
+    }
+    listEl.appendChild(softBtn("+ " + t("provAddProvider"), () => {
+      selectedSource = "__add__";
+      renderAll();
+    }, { accent: selectedSource === "__add__" })).classList.add("prov-add-btn");
+
+    // ── 本地 (the model runs on this machine) ───────────────────────────
+    listEl.appendChild(groupTitle(t("provGroupLocal")));
+
+    // 本地推理引擎 API: something the user runs themselves (LM Studio/Ollama)
+    const localServers = providers.filter((p) => p && (p.provider === "lmstudio" || p.provider === "ollama"));
+    listEl.appendChild(subGroupTitle(t("provGroupLocalServers")));
+    if (!localServers.length) {
+      listEl.appendChild(el("div", { className: "prov-subgroup-empty" }, t("provNoLocalApi")));
+    }
+    for (const p of localServers) {
+      listEl.appendChild(sourceItem({
+        id: p.provider, p,
+        selected: selectedSource === p.provider,
+        inUse: defaultProvider === p.provider,
+        onSelect: () => select(p.provider),
+      }));
+    }
+
+    // 桌宠内置推理引擎: shipped with the pet, engine hot-updatable
+    listEl.appendChild(subGroupTitle(t("provGroupBuiltin")));
     listEl.appendChild(sourceItem({
       id: "local", p: null,
       selected: selectedSource === "local",
       inUse: defaultProvider === "local",
       onSelect: () => select("local"),
     }));
-
-    const localServers = providers.filter((p) => p && (p.provider === "lmstudio" || p.provider === "ollama"));
-    const custom = providers.filter((p) => p && p.provider !== "lmstudio" && p.provider !== "ollama");
-
-    if (localServers.length > 0) {
-      listEl.appendChild(groupTitle(t("provGroupLocalServers")));
-      for (const p of localServers) {
-        listEl.appendChild(sourceItem({
-          id: p.provider, p,
-          selected: selectedSource === p.provider,
-          inUse: defaultProvider === p.provider,
-          onSelect: () => select(p.provider),
-        }));
-      }
-    }
-    if (custom.length > 0) {
-      listEl.appendChild(groupTitle(t("provGroupCustom")));
-      for (const p of custom) {
-        listEl.appendChild(sourceItem({
-          id: p.provider, p,
-          selected: selectedSource === p.provider,
-          inUse: defaultProvider === p.provider,
-          onSelect: () => select(p.provider),
-        }));
-      }
-    }
-
-    listEl.appendChild(softBtn("+ " + t("provAddProvider"), () => {
-      selectedSource = "__add__";
-      renderAll();
-    }, { accent: selectedSource === "__add__" })).classList.add("prov-add-btn");
   }
 
   // ── Right pane: detail for the selected source ─────────────────────────
