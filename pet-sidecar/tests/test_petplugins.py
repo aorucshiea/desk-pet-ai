@@ -223,3 +223,80 @@ def test_organ_decay_thread_ticks_and_listens(tmp_path, monkeypatch):
     ticks_after = len(calls)
     _time.sleep(1.2)
     assert len(calls) == ticks_after, "disposer must stop the decay thread"
+
+
+# ── Service shapes: what organs provide must match how server.py calls ──
+#
+# server.py accesses organ services by ATTRIBUTE (svc.compute_gap,
+# svc.get_session_recall_count, svc.build_memory_context, ...). The first
+# organ_impulse seed provided a plain dict, which passes a key-index test
+# but blew up with AttributeError in production. This test pins the
+# attribute-access contract so a shape regression cannot ship again.
+
+def test_provided_services_match_production_access_pattern(tmp_path):
+    class Ev:
+        def append_event(self, *a, **k):
+            return {"id": "e"}
+
+    class Mood:
+        emotion_index = 0.3
+
+        def format_for_system_prompt(self):
+            return "(mood)"
+
+    class ConvState(dict):
+        pass
+
+    class MemCtx:
+        current_theme = "default"
+
+        def theme_dir(self, t):
+            d = tmp_path / "themes" / str(t)
+            d.mkdir(parents=True, exist_ok=True)
+            return d
+
+    from gateway.petplugins import PluginManager
+
+    pm = PluginManager({
+        "memory_dir": tmp_path,
+        "events": Ev(),
+        "mood": Mood(),
+        "conversation_state": ConvState(),
+        "memory_ctx": MemCtx(),
+        # providers / llama_server / schedule deliberately ABSENT —
+        # organ_dream stays parked, exactly like a cold boot without them.
+    })
+    pm.sync()
+
+    # impulse: production calls svc.compute_gap(...) — attribute access.
+    imp = pm.get_service("impulse")
+    assert imp is not None, "organ_impulse must provide the impulse service"
+    assert hasattr(imp, "compute_gap") and callable(imp.compute_gap), (
+        "impulse service must be attribute-shaped (SimpleNamespace/module), "
+        "not a plain dict"
+    )
+    gap = imp.compute_gap(emotion_index=0.0, proactive_streak=0, recall_count=0)
+    assert isinstance(gap, int) and gap >= 180, gap
+
+    # recall: production reads .get_session_recall_count, and the tool
+    # schema must be identical to the builtin RECALL_TOOL_SCHEMA.
+    rec = pm.get_service("recall")
+    assert rec is not None, "organ_recall must provide the recall service"
+    assert callable(getattr(rec, "get_session_recall_count", None))
+    from gateway.memory.recall import RECALL_TOOL_SCHEMA as sch
+    tool = pm.all_tools().get(sch["name"])
+    assert tool is not None, "organ_recall must register the recall tool"
+    assert tool["description"] == sch["description"]
+    assert tool["parameters"] == sch["input_schema"]
+    assert tool["fn"] is R_handler if (R_handler := rec.recall_tool_handler) else True
+
+    # loader / continuity / resonance / somatic: attribute-accessible too.
+    for name, attr in (
+        ("loader", "build_memory_context"),
+        ("continuity", "get_current_note"),
+        ("resonance", "find_resonance"),
+        ("somatic", "build_somatic_block"),
+    ):
+        svc = pm.get_service(name)
+        assert svc is not None, f"{name} service missing (organ failed to load?)"
+        assert callable(getattr(svc, attr, None)), f"{name}.{attr} must be attribute-accessible"
