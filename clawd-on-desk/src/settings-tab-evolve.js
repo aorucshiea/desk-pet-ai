@@ -12,6 +12,7 @@
 (function initSettingsTabEvolve(root) {
   let core = null; let helpers = null; let ops = null; let mounted = false;
   let pollTimer = null; let lastStateJson = "";
+  let _lastFetchError = null; // surfaced verbatim on the offline hero
 
   function t(key) { return helpers.t(key); }
 
@@ -110,6 +111,15 @@
       main.appendChild(chips);
     } else {
       main.appendChild(el("div", { className: "evl-hero-offline" }, t("evolveOfflineHint")));
+      // Show WHY it is offline, verbatim - "unavailable" means the preload
+      // API is missing entirely, "sidecar unreachable/timeout" means the
+      // gateway process is down or on the wrong port. Vague badges cost an
+      // hour of debugging every time.
+      if (_lastFetchError) {
+        main.appendChild(el("div", {
+          style: { marginTop: "6px", fontSize: "12px", color: "var(--text-secondary)", fontFamily: "monospace" },
+        }, `(${_lastFetchError})`));
+      }
     }
     hero.appendChild(main);
     parent.appendChild(hero);
@@ -460,6 +470,7 @@
         && ["INPUT", "SELECT", "TEXTAREA", "BUTTON"].includes(active.tagName)) return;
     }
     lastStateJson = json;
+    _lastFetchError = state && state.status === "error" ? (state.message || "unknown error") : null;
     renderContent(parent, state && state.status === "ok" ? state : null);
   }
 
