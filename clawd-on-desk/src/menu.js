@@ -229,20 +229,34 @@ module.exports = function initMenu(ctx) {
   // the hub has to come from the pet's own visible rect (theme-aware, with the
   // hit rect as fallback). Null means "no idea" and the caller falls back to
   // the cursor, which is what the list menu always did.
+  // Rects here come in two shapes: window bounds are {x, y, width, height},
+  // while the geometry helpers (hit rect, theme anchor rect) return
+  // {left, top, right, bottom}. Reading .width off an anchor rect yields
+  // undefined, the finite check fails, and the caller silently drops back to
+  // the window centre — which is off by exactly the sprite's transparent
+  // padding. Accept both.
+  function rectCenter(r) {
+    if (!r) return null;
+    if (Number.isFinite(r.left) && Number.isFinite(r.right)
+      && Number.isFinite(r.top) && Number.isFinite(r.bottom)) {
+      return { x: Math.round((r.left + r.right) / 2), y: Math.round((r.top + r.bottom) / 2) };
+    }
+    if (Number.isFinite(r.x) && Number.isFinite(r.y)
+      && Number.isFinite(r.width) && Number.isFinite(r.height)
+      && r.width > 0 && r.height > 0) {
+      return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) };
+    }
+    return null;
+  }
+
   function petHubPoint() {
-    // Prefer the sprite rect; fall back to the window rect (still the pet, just
-    // with its transparent padding counted) before giving up on the pointer.
-    const sources = [];
-    if (typeof ctx.getPetAnchorRect === "function") sources.push(() => ctx.getPetAnchorRect());
-    if (typeof ctx.getPetWindowBounds === "function") sources.push(() => ctx.getPetWindowBounds());
-    for (const read of sources) {
+    const readers = [];
+    if (typeof ctx.getPetAnchorRect === "function") readers.push(() => ctx.getPetAnchorRect());
+    if (typeof ctx.getPetWindowBounds === "function") readers.push(() => ctx.getPetWindowBounds());
+    for (const read of readers) {
       try {
-        const r = read();
-        if (r && Number.isFinite(r.x) && Number.isFinite(r.y)
-          && Number.isFinite(r.width) && Number.isFinite(r.height)
-          && r.width > 0 && r.height > 0) {
-          return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) };
-        }
+        const hub = rectCenter(read());
+        if (hub) return hub;
       } catch {}
     }
     return null;

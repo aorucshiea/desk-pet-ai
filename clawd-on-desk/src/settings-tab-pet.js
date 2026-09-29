@@ -678,15 +678,33 @@
         }, t("petEngineGateLive")));
       }
       gateRow.appendChild(gateText);
-      const gateBtn = softBtn(t("petEngineGateEnable"), async () => {
-        gateBtn.disabled = true;
-        gateBtn.classList.add("is-busy");
-        try {
-          await window.petSettings.setEngineParams({ engine_enabled: true });
-        } catch {}
-        void ctx.refreshAll();
-      });
-      gateRow.appendChild(el("div", { className: "row-control" }, gateBtn));
+      if (liveLlama) {
+        // The engine is actually running, so the useful action is to STOP
+        // the process — not to flip a preference that the auto-manager
+        // ignores anyway. This really calls POST /api/engine/stop.
+        const stopBtn = softBtn(t("petEngineStopNow"), async () => {
+          stopBtn.disabled = true;
+          stopBtn.classList.add("is-busy");
+          try {
+            const r = await window.petSettings.engineStop();
+            if (!r || r.status !== "ok") notifyError((r && r.message) || t("petEngineStopFailed"));
+          } catch (e) {
+            notifyError(t("petEngineStopFailed") + ((e && e.message) || e || ""));
+          }
+          void ctx.refreshAll();
+        });
+        gateRow.appendChild(el("div", { className: "row-control" }, stopBtn));
+      } else {
+        const gateBtn = softBtn(t("petEngineGateEnable"), async () => {
+          gateBtn.disabled = true;
+          gateBtn.classList.add("is-busy");
+          try {
+            await window.petSettings.setEngineParams({ engine_enabled: true });
+          } catch {}
+          void ctx.refreshAll();
+        });
+        gateRow.appendChild(el("div", { className: "row-control" }, gateBtn));
+      }
       gateRows.appendChild(gateRow);
       box.appendChild(gateCard);
       return;
