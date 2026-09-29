@@ -4,10 +4,12 @@ const core = globalThis.ClawdSettingsCore;
 
 const SIDEBAR_TABS = [
   { id: "general", labelKey: "sidebarGeneral", available: true },
-  // One "Models" page: the local DeskPet tab renders the API provider
-  // section inside it (see the tab-merge wrapper near the bottom of this
-  // file). The separate "providers" entry is gone on purpose.
+  // Model *management* (which local file / engine) lives on "pet"; model
+  // *serving* (LM Studio, Ollama, cloud APIs) lives on "providers". They
+  // used to be merged into one page — the provider block kept landing
+  // underneath the model cards, which read as duplicate/confusing UI.
   { id: "pet", labelKey: "sidebarModels", available: true },
+  { id: "providers", labelKey: "sidebarProviders", available: true },
   // "agents" tab intentionally removed: this is a desktop pet, not a
   // coding-agent companion. See AGENTS.md / hooks/ for the removed
   // integration layer.
@@ -135,22 +137,12 @@ if (core.tabs.animMap && core.tabs.animOverrides) {
   }
 }
 
-// ── Merge the API-provider page into the single "Models" page ─────────
-// The sidebar exposes one "Models" entry (the pet tab). We wrap its
-// render() so the API-provider section is appended underneath inside its
-// own container: settings-tab-providers wipes its parent on every render,
-// so it must never be handed the DOM that holds the DeskPet sections.
-if (core.tabs.pet && core.tabs.providers) {
-  const petRender = core.tabs.pet.render;
-  const providersRender = core.tabs.providers.render;
-  core.tabs.pet.render = (parent) => {
-    petRender(parent);                     // sync-appends the DeskPet boxes
-    const apiHolder = document.createElement("div");
-    apiHolder.id = "modelsProviderSection";
-    parent.appendChild(apiHolder);             // lands *after* the DeskPet boxes
-    providersRender(apiHolder);
-  };
-}
+// Model management ("pet") and model serving ("providers") are separate
+// pages now. The old tab-merge wrapper appended the whole API-provider
+// section inside the Models page — the provider block kept landing
+// underneath the model cards and read as duplicate UI, so it is gone.
+// "providers" owns the Active Model card, the provider list and the add
+// form; nothing is appended across page boundaries any more.
 
 if (window.settingsAPI && typeof window.settingsAPI.onChanged === "function") {
   window.settingsAPI.onChanged((payload) => core.ops.applyChanges(payload));
