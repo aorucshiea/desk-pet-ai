@@ -26,23 +26,28 @@ test("settings-tab-pet.js never calls window.alert (blocks the main process)", (
   assert.match(code, /ops\.showToast\(/, "notifyError must route through ops.showToast");
 });
 
-test("model section is a single picker row with the path merged into it", () => {
+test("model section is a hero card plus a lazy model switcher", () => {
   const code = fs.readFileSync(path.join(SRC_DIR, "settings-tab-pet.js"), "utf8");
   // The read-only info row is gone (the engine section's own info row
   // is a different construct and must remain).
   assert.doesNotMatch(code, /const infoRow = el\(/);
-  // The picker row carries the canonical "当前模型" label and pre-selects
-  // the current model (its ✓ flag doubles as the status display).
-  assert.match(code, /className: "row pet-model-picker-row"/);
-  assert.match(code, /t\("petRowCurrentModel"\)/);
-  assert.match(code, /const currentPath = /);
-  assert.match(code, /picker\.value = currentPath \|\| "";/);
+  // The hero card carries the canonical "current model" display: name,
+  // live status badge, full path (ellipsis + title tooltip) and actions.
+  assert.match(code, /className: "section-rows pet-model-hero"/);
+  assert.match(code, /pet-model-hero-status tone-\$/);
+  assert.match(code, /pickLabelFromPath\(modelDir\)/);
+  assert.match(code, /t\("petChangeModel"\)/);
+  // The standalone path row is gone; the hero shows the full path.
+  assert.doesNotMatch(code, /className: "row pet-path-row"/);
+  assert.match(code, /pet-model-hero-path/);
   // The duplicate-description picker label key is no longer used here.
   assert.doesNotMatch(code, /t\("petModelPickerLabel"\)/);
-  // No standalone path row anymore — the truncated path lives in the
-  // picker row's description (pet-path-value class).
-  assert.doesNotMatch(code, /className: "row pet-path-row"/);
-  assert.match(code, /row-desc pet-path-value/);
+  // The switcher card is built unappended and only inserted when the
+  // scan finds at least two models — no flash of an empty picker.
+  assert.match(code, /t\("petRowSwitchModel"\)/);
+  assert.match(code, /box\.insertBefore\(switchSection, trigger\)/);
+  assert.match(code, /models\.length < 2/);
+  assert.match(code, /picker\.value = currentPath \|\| "";/);
 });
 
 test("scanned folders live behind a collapsed disclosure", () => {

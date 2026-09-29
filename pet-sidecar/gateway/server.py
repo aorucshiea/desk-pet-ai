@@ -1249,6 +1249,23 @@ def build_app(
         key = str(p.get("api_key") or "").strip() or os.environ.get("PET_HOLO_API_KEY", "")
         return await holo_probe(base, key)
 
+    @app.get("/api/plugins")
+    async def plugins_state():
+        """Kernel introspection (cordis-style observability).
+
+        Loaded plugins with their tools/services/deps, plugins parked on
+        missing services (coeffect waiting room), the service table and
+        the central effect ledger — everything the self-evolution loop
+        needs to explain itself.
+        """
+        return {
+            "ok": True,
+            "plugins": _pet_plugins.describe(),
+            "pending": _pet_plugins.describe_pending(),
+            "effects": _pet_plugins.effects_report(),
+            "services": sorted(str(s) for s in _pet_plugins.services.keys()),
+        }
+
     mcp_manager.register_builtin({
         "name": "screen_click",
         "description": (
