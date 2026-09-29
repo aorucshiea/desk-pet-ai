@@ -4725,3 +4725,14 @@ html, body {
 /* ── Providers: local sub-groups (推理引擎 API / 内置引擎) ── */
 .prov-subgroup-title { margin: 10px 0 4px 10px; font-size: 12px; font-weight: 600; color: var(--text-secondary); }
 .prov-subgroup-empty { margin: 0 0 6px 10px; font-size: 12px; color: var(--text-secondary); opacity: 0.8; }
+
+/* ── Sidebar settings search (rule #1: search before hierarchy) ── */
+.sidebar-search { padding: 8px 10px 10px 10px; }
+.sidebar-search-input {
+  width: 100%; box-sizing: border-box; padding: 7px 10px;
+  border: 1px solid var(--border); border-radius: 8px;
+  background: var(--input-bg, var(--panel-bg, #fff)); color: var(--text-primary);
+  font-size: 13px; outline: none;
+}
+.sidebar-search-input:focus { border-color: var(--accent, #4a9eff); }
+.sidebar-search-empty { padding: 8px 12px; font-size: 12px; color: var(--text-secondary); }
