@@ -873,6 +873,33 @@ function registerSettingsIpc(options = {}) {
     };
   });
 
+  // ── Plugin kernel (Settings → Evolve) ───────────────────────────────
+  // Introspection: GET /api/plugins returns loaded plugins (tools /
+  // services / injects), the coeffect waiting room (pending), the service
+  // table and the central effect ledger. unload/load map to the sidecar's
+  // plugin manager; load with an empty name forces a full rescan.
+  handle("settings:plugins-state", async () => {
+    const r = await sidecarJson("GET", "/api/plugins", 4000);
+    if (!r.ok) return { status: "error", message: r.error || "sidecar unreachable" };
+    return { status: "ok", ...(r.json || {}) };
+  });
+
+  handle("settings:plugins-unload", async (_event, { name } = {}) => {
+    if (typeof name !== "string" || !name) {
+      return { status: "error", message: "plugins:unload requires a plugin name" };
+    }
+    const r = await sidecarJson("POST", "/api/plugins/unload", 8000, { name });
+    if (!r.ok) return { status: "error", message: r.error || "sidecar unreachable" };
+    return { status: "ok", ...(r.json || {}) };
+  });
+
+  handle("settings:plugins-load", async (_event, { name } = {}) => {
+    const body = typeof name === "string" && name ? { name } : {};
+    const r = await sidecarJson("POST", "/api/plugins/load", 15000, body);
+    if (!r.ok) return { status: "error", message: r.error || "sidecar unreachable" };
+    return { status: "ok", ...(r.json || {}) };
+  });
+
   handle("settings:sync-screen-consent", async (_event, value) => {
     // Push the "always allow screen" setting to the live sidecar (its
     // consent_state is process memory; the persisted pref is the truth).

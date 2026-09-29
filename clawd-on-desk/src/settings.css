@@ -4452,3 +4452,202 @@ html, body {
 .mobile-action-btn:hover { background: var(--accent); color: #fff; }
 .mobile-action-danger { border-color: var(--red, #7f1d1d); color: var(--red, #fca5a5); }
 .mobile-action-danger:hover { background: var(--red, #7f1d1d); color: #fff; }
+
+/* ── Self-Evolution tab: the plugin kernel, made visible ── */
+.evl-panel { padding-bottom: 24px; }
+.evl-header {
+  padding: 0 0 14px 0;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 14px;
+}
+.evl-header h2 {
+  margin: 0 0 4px 0;
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.evl-header p {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+.evl-card {
+  margin-bottom: 12px;
+  padding: 12px 14px;
+}
+.evl-section-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.evl-section-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.evl-section-count {
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+.evl-hero {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+  padding: 14px 16px;
+}
+.evl-hero-name-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.evl-hero-name {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.evl-hero-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.evl-hero-offline {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+.evl-hero-actions { flex: 0 0 auto; }
+.evl-badge {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.evl-badge.tone-ok {
+  color: #34c759;
+  border-color: rgba(52, 199, 89, 0.45);
+}
+.evl-badge.tone-warn {
+  color: #ff9f0a;
+  border-color: rgba(255, 159, 10, 0.45);
+}
+.evl-badge.tone-bad {
+  color: #ff453a;
+  border-color: rgba(255, 69, 58, 0.45);
+}
+.evl-badge.tone-info {
+  color: var(--accent);
+  border-color: rgba(var(--accent-rgb), 0.45);
+}
+.evl-tile {
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--text-primary) 7%, transparent);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+.evl-chip {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text-primary) 6%, transparent);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.evl-chip-wrap {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.evl-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 9px 10px;
+  border-radius: 8px;
+}
+.evl-row:hover {
+  background: color-mix(in srgb, var(--text-primary) 4%, transparent);
+}
+.evl-row-info {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.evl-row-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.evl-row-title {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+.evl-row-title.evl-mono {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 12px;
+}
+.evl-row-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 4px;
+}
+.evl-row-sub {
+  margin-top: 3px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.evl-row-hint {
+  margin-top: 1px;
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+.evl-tag {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(var(--accent-rgb), 0.12);
+  color: var(--accent);
+}
+.evl-row-action { flex: 0 0 auto; }
+.evl-effect-row { align-items: center; }
+.evl-effect-owner {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+.evl-empty {
+  padding: 6px 2px;
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+.evl-explainer {
+  padding: 14px 16px;
+  margin-bottom: 12px;
+}
+.evl-explainer-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.evl-explainer-body {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+  margin-top: 6px;
+}

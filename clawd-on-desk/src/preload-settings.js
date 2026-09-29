@@ -175,6 +175,10 @@ contextBridge.exposeInMainWorld("petSettings", {
   setDevice: (device) => ipcRenderer.invoke("pet-settings:set-device", { device }),
   setDeviceAndRestart: (device) => ipcRenderer.invoke("pet-settings:set-device-and-restart", { device }),
   restartSidecar: () => ipcRenderer.invoke("pet-settings:restart-sidecar"),
+  // Plugin kernel (Settings → Evolve): introspection + unload/rescan.
+  pluginsState: () => ipcRenderer.invoke("settings:plugins-state"),
+  pluginsUnload: (name) => ipcRenderer.invoke("settings:plugins-unload", { name }),
+  pluginsLoad: (name) => ipcRenderer.invoke("settings:plugins-load", { name }),
   getModelDir: () => ipcRenderer.invoke("pet-settings:get-model-dir"),
   pickModelDir: () => ipcRenderer.invoke("pet-settings:pick-model-dir"),
   listLocalModels: () => ipcRenderer.invoke("pet-settings:list-local-models"),
