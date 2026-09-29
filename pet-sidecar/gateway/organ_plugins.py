@@ -232,8 +232,11 @@ def apply(ctx):
         hi = int(cfg.get("max_gap_seconds", 10800))
         return int(max(lo, min(hi, round(gap))))
 
-    # 暴露给聊天流；器官被停用时 server.py 降级回内置 memory/impulse.py
-    ctx.provide("impulse", {"compute_gap": compute_gap})
+    # 暴露给聊天流；器官被停用时 server.py 降级回内置 memory/impulse.py。
+    # 服务必须是"带属性的对象"而不是 dict：调用点是 svc.compute_gap(...)，
+    # 而降级目标（内置模块）就是属性形状，两者必须一致。
+    from types import SimpleNamespace
+    ctx.provide("impulse", SimpleNamespace(compute_gap=compute_gap))
     ctx.log("speech impulse armed (base=%ss)" % cfg.get("base_gap_seconds"))
 '''
 
