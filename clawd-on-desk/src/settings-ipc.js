@@ -848,6 +848,15 @@ function registerSettingsIpc(options = {}) {
     return { status: "ok", ...r.json };
   });
 
+  handle("settings:holo-test", async (_e, { baseUrl, apiKey } = {}) => {
+    const r = await sidecarJson("POST", "/api/holo/test", 20000, {
+      base_url: baseUrl || "",
+      api_key: apiKey || "",
+    });
+    if (!r.ok) return { status: "error", message: r.error || "sidecar unreachable" };
+    return { status: "ok", ...r.json };
+  });
+
   handle("settings:get-memory-view", async () => {
     // Settings → Memory viewer: identity notes + episodic events +
     // mood for the CURRENT theme (换身体 = 换灵魂).

@@ -191,12 +191,100 @@
       parent.appendChild(el("h3", { style: { margin: "20px 0 4px 0", fontSize: "15px", fontWeight: "600" } }, t("holoSectionTitle")));
       parent.appendChild(el("p", { style: { margin: "0 0 4px 0", fontSize: "12px", color: "var(--text-secondary)" } }, t("holoSectionDesc")));
       parent.appendChild(makeToggle("holo_enabled", t("holoEnabled"), t("holoEnabledDesc")));
-      parent.appendChild(makeTextInput("holo_api_key", t("holoApiKey"), t("holoApiKeyDesc"), "hk-..."));
-      parent.appendChild(makeTextInput("holo_base_url", t("holoBaseUrl"), t("holoBaseUrlDesc"), "https://api.hcompany.ai/v1/"));
-      parent.appendChild(makeTextInput("holo_model", t("holoModel"), t("holoModelDesc"), "holo3-1-35b-a3b"));
+      parent.appendChild(makeHoloSourceCard());
       parent.appendChild(makeHoloRunner());
       parent.appendChild(el("p", { style: { margin: "8px 0 0 0", fontSize: "11px", color: "var(--text-secondary)" } }, t("holoRestartHint")));
     } catch(e) { console.warn("screenclick: render error", e); }
+  }
+
+  // Which AI actually drives the clicks. Presets fill the address so the
+  // user never has to remember ports; "builtin" is the pet's own
+  // llama-server (127.0.0.1:18766), the rest are local servers that run
+  // the model for us. Local endpoints need no API key.
+  var HOLO_SOURCES = [
+    { id: "lmstudio", url: "http://127.0.0.1:1234/v1", local: true },
+    { id: "ollama", url: "http://127.0.0.1:11434/v1", local: true },
+    { id: "builtin", url: "http://127.0.0.1:18766/v1", local: true },
+    { id: "hcompany", url: "https://api.hcompany.ai/v1/", local: false },
+    { id: "custom", url: "", local: true },
+  ];
+
+  function makeHoloSourceCard() {
+    var card = el("div", { style: { background: "var(--panel-bg)", borderRadius: "8px", padding: "16px", marginTop: "12px", border: "1px solid var(--border)", display: "flex", flexDirection: "column", gap: "10px" } });
+    card.appendChild(el("div", null,
+      el("div", { style: { fontSize: "14px", fontWeight: "500", marginBottom: "4px" } }, t("holoSource")),
+      el("div", { style: { fontSize: "12px", color: "var(--text-secondary)" } }, t("holoSourceDesc")),
+    ));
+
+    var curUrl = read("holo_base_url", "");
+    var curKey = read("holo_api_key", "");
+    var curModel = read("holo_model", "");
+
+    // Preset picker
+    var srcSel = el("select", { className: "setting-select", style: { padding: "6px 10px", fontSize: "13px", border: "1px solid var(--border)", borderRadius: "4px", background: "var(--bg)", color: "var(--text-primary)", maxWidth: "360px" } });
+    var matched = HOLO_SOURCES.find(function(s) { return s.url && s.url === curUrl; }) || HOLO_SOURCES[4];
+    for (var si = 0; si < HOLO_SOURCES.length; si++) {
+      var s = HOLO_SOURCES[si];
+      var o = el("option", { value: s.id }, t("holoSource_" + s.id));
+      if (s.id === matched.id) o.selected = true;
+      srcSel.appendChild(o);
+    }
+    srcSel.onchange = function() {
+      var pick = HOLO_SOURCES.find(function(s) { return s.id === srcSel.value; }) || HOLO_SOURCES[4];
+      if (pick.url) { urlInput.value = pick.url; save("holo_base_url", pick.url); }
+      keyInput.disabled = !!pick.local;
+      hint.textContent = pick.local ? t("holoLocalNoKey") : t("holoCloudNeedsKey");
+    };
+
+    var urlLabel = el("div", { style: { fontSize: "12px", color: "var(--text-secondary)" } }, t("holoBaseUrl"));
+    var urlInput = el("input", { type: "text", className: "setting-input", value: curUrl, placeholder: "http://127.0.0.1:1234/v1",
+      style: { padding: "6px 10px", fontSize: "13px", border: "1px solid var(--border)", borderRadius: "4px", background: "var(--bg)", color: "var(--text-primary)", width: "100%", maxWidth: "420px", boxSizing: "border-box" },
+      onchange: function() { save("holo_base_url", urlInput.value.trim()); } });
+    var keyLabel = el("div", { style: { fontSize: "12px", color: "var(--text-secondary)" } }, t("holoApiKey"));
+    var keyInput = el("input", { type: "password", className: "setting-input", value: curKey, placeholder: "hk-...",
+      style: { padding: "6px 10px", fontSize: "13px", border: "1px solid var(--border)", borderRadius: "4px", background: "var(--bg)", color: "var(--text-primary)", width: "100%", maxWidth: "420px", boxSizing: "border-box" },
+      onchange: function() { save("holo_api_key", keyInput.value.trim()); } });
+    var modelLabel = el("div", { style: { fontSize: "12px", color: "var(--text-secondary)" } }, t("holoModel"));
+    var modelInput = el("input", { type: "text", className: "setting-input", value: curModel, placeholder: "holo1.5-3b / holo3-1-35b-a3b",
+      style: { padding: "6px 10px", fontSize: "13px", border: "1px solid var(--border)", borderRadius: "4px", background: "var(--bg)", color: "var(--text-primary)", width: "100%", maxWidth: "420px", boxSizing: "border-box" },
+      onchange: function() { save("holo_model", modelInput.value.trim()); } });
+    var hint = el("div", { style: { fontSize: "11px", color: "var(--text-secondary)" } },
+      matched.local ? t("holoLocalNoKey") : t("holoCloudNeedsKey"));
+    keyInput.disabled = !!matched.local;
+
+    var result = el("div", { style: { fontSize: "12px", color: "var(--text-secondary)" } }, "");
+    var testBtn = el("button", {
+      className: "btn-secondary",
+      style: { padding: "6px 14px", fontSize: "13px", borderRadius: "4px", cursor: "pointer", alignSelf: "flex-start" },
+      onclick: async function() {
+        testBtn.disabled = true;
+        result.textContent = t("holoTesting");
+        try {
+          var ret = await window.settingsAPI.holoTest(urlInput.value.trim(), keyInput.value.trim());
+          if (ret && ret.status === "ok" && ret.ok) {
+            var names = (ret.models || []).slice(0, 6).join(", ");
+            result.textContent = t("holoTestOk") + (names ? "  →  " + names : "");
+          } else {
+            result.textContent = t("holoTestFail") + ((ret && (ret.message || ret.error)) || "");
+          }
+        } catch (err) {
+          result.textContent = t("holoTestFail") + (err && err.message || err);
+        } finally { testBtn.disabled = false; }
+      },
+    }, t("holoTest"));
+
+    function save(key, value) {
+      try { if (window.settingsAPI && window.settingsAPI.update) window.settingsAPI.update(key, value); } catch (e) {}
+    }
+
+    card.appendChild(srcSel);
+    card.appendChild(urlLabel); card.appendChild(urlInput);
+    card.appendChild(keyLabel); card.appendChild(keyInput);
+    card.appendChild(modelLabel); card.appendChild(modelInput);
+    card.appendChild(hint);
+    card.appendChild(testBtn);
+    card.appendChild(result);
+    return card;
   }
 
   // Task runner card: type a goal in natural language, the agent works it

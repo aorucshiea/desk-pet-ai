@@ -203,6 +203,7 @@ contextBridge.exposeInMainWorld("petSettings", {
   holoStatus: () => ipcRenderer.invoke("settings:holo-status"),
   holoRun: (task) => ipcRenderer.invoke("settings:holo-run", { task }),
   holoCancel: () => ipcRenderer.invoke("settings:holo-cancel"),
+  holoTest: (baseUrl, apiKey) => ipcRenderer.invoke("settings:holo-test", { baseUrl, apiKey }),
   engineUpdateApply: () => ipcRenderer.invoke("settings:engine-update-apply"),
   engineUpdateApplyDir: () => ipcRenderer.invoke("settings:engine-update-apply-dir"),
   onEngineUpdateProgress: (cb) => {

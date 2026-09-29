@@ -63,7 +63,7 @@ from .memory.recall import (
     set_event_store,
 )
 from .screen_consent import ScreenPermissionManager
-from .holo_agent import HoloRunner
+from .holo_agent import HoloRunner, probe as holo_probe
 from .memory_context import MemoryContext, theme_slug
 from .memory.mood import build_mood_assessment_prompt, EMOTION_TO_MOOD
 
@@ -1237,6 +1237,17 @@ def build_app(
     @app.post("/api/holo/cancel")
     async def holo_cancel():
         return holo_runner.cancel()
+
+    @app.post("/api/holo/test")
+    async def holo_test(payload: dict = None):
+        """Probe an OpenAI-compatible endpoint (cloud or local) and return
+        the model ids it serves — powers the 测试连接 button."""
+        p = payload if isinstance(payload, dict) else {}
+        base = (str(p.get("base_url") or "").strip()
+                or os.environ.get("PET_HOLO_BASE_URL")
+                or "https://api.hcompany.ai/v1/")
+        key = str(p.get("api_key") or "").strip() or os.environ.get("PET_HOLO_API_KEY", "")
+        return await holo_probe(base, key)
 
     mcp_manager.register_builtin({
         "name": "screen_click",

@@ -347,6 +347,40 @@ def _holo_configured() -> bool:
     return bool(os.environ.get("PET_HOLO_API_KEY"))
 
 
+async def probe(base_url: str, api_key: str = "") -> Dict[str, Any]:
+    """Ask an OpenAI-compatible endpoint which models it serves.
+
+    Used by Settings → Screen click → 测试连接 to verify an address (and
+    to show which model name to put in the Model field) before running a
+    real desktop task. Never raises.
+    """
+    base = (base_url or "").strip() or DEFAULT_BASE_URL
+    url = base.rstrip("/") + "/models"
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(8.0)) as client:
+            resp = await client.get(url, headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
+        ids = [
+            str(m.get("id"))
+            for m in (data.get("data") or [])
+            if isinstance(m, dict) and m.get("id")
+        ]
+        return {
+            "ok": True,
+            "models": ids[:25],
+            "local": _is_local_endpoint(base),
+            "base_url": base,
+        }
+    except Exception as exc:  # noqa: BLE001 — surfaced to the UI verbatim
+        return {
+            "ok": False,
+            "error": f"{type(exc).__name__}: {exc}",
+            "base_url": base,
+        }
+
+
 async def call_holo(
     http: httpx.AsyncClient,
     base_url: str,
