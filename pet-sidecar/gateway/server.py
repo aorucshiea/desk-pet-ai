@@ -560,14 +560,19 @@ def build_app(
     # One process-wide container (module scope: the chat stream reads it
     # outside build_app's closure — same reason as _somatic_buffer).
     # Services = the soul-layer stores; plugins inject what they need.
-    _plugin_services = {
-        "mood": mood_store,
-        "events": event_store,
-        "memory": memory_store,
-        "memory_dir": memory_dir,
-    }
-    _pet_plugins = _petplugins_module.PluginManager(_plugin_services)
-    _plugin_services["gateway"] = _pet_plugins  # gateway service = the container itself
+    # Registered THROUGH the kernel rather than by writing the dict, so
+    # injecting plugins get a coeffect notification: a plugin injected on
+    # "mood" parks at boot and activates the instant mood lands.
+    _pet_plugins = _petplugins_module.PluginManager({})
+    for _svc_name, _svc_obj in (
+        ("mood", mood_store),
+        ("events", event_store),
+        ("memory", memory_store),
+        ("memory_dir", memory_dir),
+    ):
+        _pet_plugins.register_service(_svc_name, _svc_obj, owner="kernel")
+    # gateway service = the container itself (plugins can introspect peers)
+    _pet_plugins.register_service("gateway", _pet_plugins, owner="kernel")
     try:
         _sync = _pet_plugins.sync()
         if _sync["loaded"] or _sync["failed"]:
@@ -590,14 +595,39 @@ def build_app(
                 return "[forge error: invalid or oversized code]"
             pdir = _petplugins_module.PluginManager.plugin_dir(memory_dir)
             pdir.mkdir(parents=True, exist_ok=True)
-            (pdir / f"{name}.py").write_text(code, encoding="utf-8")
+            target = pdir / f"{name}.py"
+            # Rollback insurance (cordis temporal composability applied to
+            # self-evolution): keep the previous revision so a bad rewrite
+            # cannot destroy a working organ. That is the difference
+            # between "the pet tried to evolve" and "the pet bricked
+            # itself while trying".
+            previous = target.read_text(encoding="utf-8") if target.exists() else None
+            target.write_text(code, encoding="utf-8")
             # sync immediately — the plugin is alive when the tool returns
             result = _pet_plugins.sync()
-            ok = name in result["loaded"]
-            return (
-                f"插件 '{name}' 已铸造并加载。可用工具: "
-                f"{[t for c in _pet_plugins.describe() if c['name'] == name for t in c['tools']]}"
-            ) if ok else f"插件 '{name}' 已写入但加载失败: {result['failed']}"
+            if name in result["loaded"]:
+                tools = [
+                    t for c in _pet_plugins.describe()
+                    if c["name"] == name for t in c["tools"]
+                ]
+                return f"插件 '{name}' 已铸造并加载。可用工具: {tools or '（无）'}"
+            if name in result["skipped"]:
+                waiting = [
+                    p for p in _pet_plugins.describe_pending() if p["name"] == name
+                ]
+                missing = waiting[0]["missing"] if waiting else ["?"]
+                return (
+                    f"插件 '{name}' 已写入，正在等待服务 {missing} —— "
+                    f"服务出现后会自动激活，不必重写。"
+                )
+            # failed → restore the last working revision
+            if previous is not None:
+                target.write_text(previous, encoding="utf-8")
+                _pet_plugins.sync()
+                return f"插件 '{name}' 加载失败，已回滚到上一可用版本（旧器官仍在工作）。"
+            target.unlink(missing_ok=True)
+            _pet_plugins.sync()
+            return f"插件 '{name}' 加载失败（无可回滚的旧版本），文件已移除。"
         def unforge(args: dict) -> str:
             name = str(args.get("name", "")).strip()
             pdir = _petplugins_module.PluginManager.plugin_dir(memory_dir)
