@@ -48,6 +48,7 @@ from .memory.tool import (
     set_memory_store,
 )
 from .memory import impulse as _impulse_module
+from .memory import recall as _recall_module
 from .memory import loader as _loader_module
 from .memory import continuity as _continuity_module
 from .memory import resonance as _resonance_module
@@ -1376,12 +1377,16 @@ def build_app(
     })
 
     # ── Builtin tool: recall (LingLing model-initiated memory recall) ──
-    mcp_manager.register_builtin({
-        "name": RECALL_TOOL_SCHEMA["name"],
-        "description": RECALL_TOOL_SCHEMA["description"],
-        "input_schema": RECALL_TOOL_SCHEMA["input_schema"],
-        "handler": recall_tool_handler,
-    })
+    # 现在由可插拔器官 organ_recall 提供（它用 ctx.tool() 注册同名工具）。
+    # 只有器官缺席时才在这里兜底注册 —— 这样"停用器官"对模型是真的失去
+    # 这个能力，而不是换了个实现偷偷继续工作。
+    if not _pet_plugins.get_service("recall"):
+        mcp_manager.register_builtin({
+            "name": RECALL_TOOL_SCHEMA["name"],
+            "description": RECALL_TOOL_SCHEMA["description"],
+            "input_schema": RECALL_TOOL_SCHEMA["input_schema"],
+            "handler": recall_tool_handler,
+        })
 
     # ── Builtin tool: skill_create (external distillation write surface) ─
     # Lets the model persist a workflow it just executed (or one the user
@@ -3199,7 +3204,7 @@ async def _stream_chat_provider(
         _impulse_gap = _impulse_svc.compute_gap(
             emotion_index=mood_store.emotion_index if mood_store is not None else 0.0,
             proactive_streak=_proactive_streak,
-            recall_count=get_session_recall_count(),
+            recall_count=_organ("recall", _recall_module).get_session_recall_count(),
         )
         log.info("speech impulse: no [NEXT_CHAT] tag, subconscious gap=%ds (streak=%d)", _impulse_gap, _proactive_streak)
         yield _sse({"event": "next_chat", "seconds": _impulse_gap})

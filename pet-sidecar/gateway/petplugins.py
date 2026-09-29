@@ -399,6 +399,10 @@ class PluginManager:
         # exists, so a plain sync() would bring them straight back — this
         # set is the kernel remembering the *intent* to keep them down.
         self._muted: set[str] = set()
+        # Frozen ability list per muted plugin — dispose() clears the live
+        # ctx, but the settings UI still wants to show what the organ used
+        # to do while it is switched off.
+        self._muted_tools: dict[str, list[str]] = {}
         # Declared config schema per plugin (module-level `config` dict),
         # so the settings UI can render editors without importing the file.
         self._schemas: dict[str, dict[str, Any]] = {}
@@ -517,6 +521,9 @@ class PluginManager:
     def _unload(self, name: str) -> None:
         ctx = self._contexts.pop(name, None)
         if ctx is not None:
+            # Freeze the ability list BEFORE dispose() wipes the context, so
+            # the UI can still show what this organ used to do.
+            self._muted_tools[name] = list(ctx._tools.keys())
             published = self._provided.pop(name, ())
             ctx.dispose()
             log.info("plugin unloaded: %s", name)
@@ -864,7 +871,17 @@ def apply(ctx):
             return {"ok": True, "name": name, "muted": True}
 
     def load_by_name(self, name: str) -> dict:
-        """Re-activate a plugin that was switched off (or parked)."""
+        """Re-activate a plugin that was switched off (or parked).
+
+        An EMPTY name means "rescan the directory" — that is what the
+        Evolve page's 重新扫描 button sends. Rescanning deliberately does
+        NOT un-mute organs the user switched off: walking the folder again
+        is not the same as overriding their decision.
+        """
+        name = (name or "").strip()
+        if not name:
+            result = self.sync()
+            return {"ok": True, "rescan": True, **result}
         with self._lock:
             memory_dir = self.services.get("memory_dir")
             if not memory_dir:
@@ -873,6 +890,7 @@ def apply(ctx):
             if not path.is_file():
                 return {"ok": False, "error": f"找不到插件文件 {name}.py"}
             self._muted.discard(name)
+            self._muted_tools.pop(name, None)
             result = self._load_file(path)
             if result == "loaded":
                 return {"ok": True, "name": name, "result": result}
@@ -950,7 +968,7 @@ def apply(ctx):
                     continue
                 rows.append({
                     "name": name,
-                    "tools": [],
+                    "tools": list(self._muted_tools.get(name, [])),
                     "provides": [],
                     "inject": list(self._injects.get(name, ())),
                     "suspended": False,
