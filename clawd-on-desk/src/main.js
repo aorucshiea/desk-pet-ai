@@ -2833,9 +2833,24 @@ const _menuCtx = {
   getMiniMode: () => _mini.getMiniMode(),
   getMiniTransitioning: () => _mini.getMiniTransitioning(),
   miniHandleResize: (sizeKey) => _mini.handleResize(sizeKey),
-  // The radial menu centres itself on the pet's visible body, not on the
-  // pointer — same theme-aware rect the update bubble anchors to.
-  getPetAnchorRect: () => getUpdateBubbleAnchorRect(getPetWindowBounds()),
+  // The radial menu centres itself on the pet's own body, not on the pointer
+  // (a right-click can land anywhere on the sprite, and the window carries
+  // transparent padding around it). Both candidate rects come as
+  // {left, top, right, bottom}: the visible-content anchor first, then the
+  // interactive hit rect — themes with no margin envelope return null from
+  // the first, and the hit rect is the box that actually took the click.
+  getPetAnchorRect: () => {
+    const bounds = getPetWindowBounds();
+    const anchor = getUpdateBubbleAnchorRect(bounds);
+    const hit = anchor || getHitRectScreen(bounds);
+    try {
+      // One line per ring open: the only way to tell a null rect apart from a
+      // wrong one without asking the user for another restart.
+      const line = `${new Date().toISOString()} ring-anchor bounds=${JSON.stringify(bounds)} anchor=${JSON.stringify(anchor)} resolved=${JSON.stringify(hit)}\n`;
+      fs.appendFileSync(path.join(app.getPath("userData"), "clawd-main.log"), line);
+    } catch {}
+    return hit;
+  },
   checkForUpdates: (...args) => checkForUpdates(...args),
   getUpdateMenuItem: () => getUpdateMenuItem(),
   openDashboard: () => showDashboard(),
