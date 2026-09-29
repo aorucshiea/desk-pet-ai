@@ -395,6 +395,13 @@ class PluginManager:
         self._provided: dict[str, tuple[str, ...]] = {}  # name -> services it published
         self._pending: dict[str, Path] = {}  # skipped plugins waiting for services
         self._protected: set[str] = set()  # core contexts sync() must not touch
+        # Plugins the user/UI deliberately switched OFF. Their file still
+        # exists, so a plain sync() would bring them straight back — this
+        # set is the kernel remembering the *intent* to keep them down.
+        self._muted: set[str] = set()
+        # Declared config schema per plugin (module-level `config` dict),
+        # so the settings UI can render editors without importing the file.
+        self._schemas: dict[str, dict[str, Any]] = {}
         self._service_owners: dict[str, str] = {}  # service -> plugin name
         # RLock, not Lock: ctx.provide() runs inside apply() which already
         # holds this lock during a load, and register_service reconciles.
@@ -537,6 +544,10 @@ class PluginManager:
             exec(code, module.__dict__)
             inject = tuple(str(i) for i in getattr(module, "inject", []))
             self._injects[name] = inject
+            # Record the schema BEFORE the service check so a parked plugin
+            # is still configurable in the settings UI while it waits.
+            _schema = getattr(module, "config", None)
+            self._schemas[name] = _schema if isinstance(_schema, dict) else {}
             missing = [i for i in inject if i not in self.services]
             if missing:
                 # NOT fatal any more: park it so coeffect resolution can
@@ -550,6 +561,8 @@ class PluginManager:
                 raise ImportError("plugin has no apply(ctx)")
             ctx = PluginContext(name, self)
             schema = getattr(module, "config", None)
+            schema = schema if isinstance(schema, dict) else None
+            self._schemas[name] = schema or {}
             if schema is not None:
                 supplied = (self._config_overrides or {}).get(name, {})
                 ctx.config = resolve_config(schema, supplied, name)
@@ -640,6 +653,8 @@ class PluginManager:
                 if f.name.startswith("_"):
                     continue
                 seen.add(f.stem)
+                if f.stem in self._muted:
+                    continue  # deliberately switched off — leave it down
                 mtime = f.stat().st_mtime
                 if self._signatures.get(f.stem) == mtime:
                     continue
@@ -830,19 +845,119 @@ def apply(ctx):
     def stop_watching(self) -> None:
         self._stop.set()
 
+    # ── user-facing control surface (settings UI / HTTP API) ──────────
+    def unload_by_name(self, name: str) -> dict:
+        """Switch a plugin OFF without deleting its file.
+
+        The file stays on disk (it is the user's or the model's code); the
+        kernel just remembers the intent, so the next sync() does not
+        revive it the way a plain hot-reload would.
+        """
+        with self._lock:
+            if name in self._protected:
+                return {"ok": False, "error": f"'{name}' 是受保护的核心上下文，不能停用"}
+            if name not in self._contexts:
+                return {"ok": False, "error": f"'{name}' 当前没有运行"}
+            self._unload(name)
+            self._muted.add(name)
+            self.emit("plugin_muted", name=name)
+            return {"ok": True, "name": name, "muted": True}
+
+    def load_by_name(self, name: str) -> dict:
+        """Re-activate a plugin that was switched off (or parked)."""
+        with self._lock:
+            memory_dir = self.services.get("memory_dir")
+            if not memory_dir:
+                return {"ok": False, "error": "memory_dir 服务不可用"}
+            path = self.plugin_dir(memory_dir) / f"{name}.py"
+            if not path.is_file():
+                return {"ok": False, "error": f"找不到插件文件 {name}.py"}
+            self._muted.discard(name)
+            result = self._load_file(path)
+            if result == "loaded":
+                return {"ok": True, "name": name, "result": result}
+            if result == "skipped":
+                waiting = [s for s in self._injects.get(name, ()) if s not in self.services]
+                return {
+                    "ok": False, "name": name, "result": result,
+                    "error": f"等待服务 {waiting}（就绪后会自动激活）",
+                }
+            return {"ok": False, "name": name, "result": result, "error": "加载失败（见日志）"}
+
+    def config_report(self) -> dict[str, Any]:
+        """Every plugin's declared config schema + resolved values."""
+        with self._lock:
+            overrides = self._config_overrides or {}
+            out: dict[str, Any] = {}
+            for name in sorted(set(self._schemas) | set(overrides)):
+                ctx = self._contexts.get(name)
+                if ctx is not None:
+                    values = dict(ctx.config)
+                else:
+                    values = resolve_config(self._schemas.get(name) or {}, overrides.get(name, {}), name)
+                out[name] = {
+                    "schema": self._schemas.get(name) or {},
+                    "values": values,
+                    "overrides": overrides.get(name, {}),
+                    "loaded": ctx is not None,
+                    "muted": name in self._muted,
+                }
+            return out
+
+    def set_plugin_config(self, name: str, values: dict | None) -> dict:
+        """Persist config overrides for one plugin and hot-apply them."""
+        if not name:
+            return {"ok": False, "error": "need name"}
+        overrides = dict(self._config_overrides or {})
+        merged = dict(overrides.get(name) or {})
+        for key, value in (values or {}).items():
+            if value is None:
+                merged.pop(key, None)
+            else:
+                merged[key] = value
+        overrides[name] = merged
+        self.set_config_overrides(overrides)
+        with self._lock:
+            memory_dir = self.services.get("memory_dir")
+            path = self.plugin_dir(memory_dir) / f"{name}.py" if memory_dir else None
+            if path is not None and path.is_file() and name not in self._muted:
+                # reload so apply() re-reads ctx.config under the new values
+                self._load_file(path)
+            elif name in self._contexts:
+                self._contexts[name].config = resolve_config(
+                    self._schemas.get(name) or {}, merged, name
+                )
+        return {"ok": True, "name": name, "values": merged}
+
     def describe(self) -> list[dict]:
         with self._lock:
-            return [
+            rows = [
                 {
                     "name": name,
                     "tools": list(ctx._tools.keys()),
                     "provides": list(ctx.provides),
                     "inject": list(self._injects.get(name, ())),
                     "suspended": ctx.suspended,
+                    "muted": False,
                     "effects": len(self.effects.of(name)),
                 }
-                for name, ctx in sorted(self._contexts.items())
+                for name, ctx in self._contexts.items()
             ]
+            # Muted plugins have no context any more, but the UI still needs
+            # to list them — otherwise "switched off" looks like "deleted".
+            for name in self._muted:
+                if name in self._contexts:
+                    continue
+                rows.append({
+                    "name": name,
+                    "tools": [],
+                    "provides": [],
+                    "inject": list(self._injects.get(name, ())),
+                    "suspended": False,
+                    "muted": True,
+                    "effects": 0,
+                })
+            return sorted(rows, key=lambda r: r["name"])
 
     def describe_pending(self) -> list[dict]:
         """Plugins parked on missing services (coeffect waiting room)."""

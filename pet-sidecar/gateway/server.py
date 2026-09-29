@@ -1235,6 +1235,40 @@ def build_app(
             "services": sorted(str(s) for s in _pet_plugins.services.keys()),
         }
 
+    @app.post("/api/plugins/unload")
+    async def plugins_unload(payload: dict = None):
+        """Switch a plugin OFF — the file stays, the kernel remembers the
+        intent so hot-reload does not immediately revive it."""
+        name = str((payload or {}).get("name") or "").strip()
+        if not name:
+            return JSONResponse({"ok": False, "error": "need name"}, status_code=400)
+        return _pet_plugins.unload_by_name(name)
+
+    @app.post("/api/plugins/load")
+    async def plugins_load(payload: dict = None):
+        """Re-activate a plugin that was switched off (or is parked)."""
+        name = str((payload or {}).get("name") or "").strip()
+        if not name:
+            return JSONResponse({"ok": False, "error": "need name"}, status_code=400)
+        return _pet_plugins.load_by_name(name)
+
+    @app.get("/api/plugins/config")
+    async def plugins_config():
+        """Per-plugin config schema + resolved values, for settings editors."""
+        return {"ok": True, "plugins": _pet_plugins.config_report()}
+
+    @app.post("/api/plugins/config")
+    async def plugins_set_config(payload: dict = None):
+        """Persist config overrides for one plugin and hot-apply them."""
+        p = payload if isinstance(payload, dict) else {}
+        name = str(p.get("name") or "").strip()
+        if not name:
+            return JSONResponse({"ok": False, "error": "need name"}, status_code=400)
+        values = p.get("values")
+        if not isinstance(values, dict):
+            return JSONResponse({"ok": False, "error": "values must be an object"}, status_code=400)
+        return _pet_plugins.set_plugin_config(name, values)
+
     mcp_manager.register_builtin({
         "name": "screen_click",
         "description": (
