@@ -75,6 +75,30 @@ def _kernel():
     """Module-level access to the plugin container (None before boot)."""
     return _plugin_container_ref.get("mgr")
 
+
+# Where the chat pipeline swallows an exception. The file logger runs at INFO,
+# so a log.debug() inside `except Exception` is indistinguishable from "never
+# happened": the model went a week without seeing a single plugin tool because
+# the only trace was a debug line. Count instead, and surface the count.
+_silent_failures: dict[str, int] = {}
+
+
+def _count_failure(site: str) -> int:
+    _silent_failures[site] = _silent_failures.get(site, 0) + 1
+    return _silent_failures[site]
+
+
+def _note_failure(site: str, exc: BaseException) -> None:
+    """Count a swallowed error and log it at a level that actually reaches disk.
+
+    Throttled to the first occurrence and every 20th: these sit on the chat
+    hot path, and an MCP server that stays down would otherwise repeat one
+    line per turn forever.
+    """
+    n = _count_failure(site)
+    if n == 1 or n % 20 == 0:
+        get_logger().warning("swallowed error at %s (x%d): %s", site, n, exc)
+
 from .memory.recall import (
     RECALL_TOOL_SCHEMA,
     recall_tool_handler,
@@ -1288,6 +1312,18 @@ def build_app(
     async def plugins_config():
         """Per-plugin config schema + resolved values, for settings editors."""
         return {"ok": True, "plugins": _pet_plugins.config_report()}
+
+    @app.get("/api/diagnostics")
+    async def diagnostics():
+        """Read-only: how many errors the chat pipeline has swallowed.
+
+        Every `except Exception` on the hot path counts itself here rather than
+        logging at debug and vanishing. Non-empty `swallowed_errors` means
+        something is quietly not working — the model's plugin tool table once
+        stayed empty for a week and the only trace was a debug line the INFO
+        file logger never wrote.
+        """
+        return {"ok": True, "swallowed_errors": dict(_silent_failures)}
 
     @app.post("/api/plugins/config")
     async def plugins_set_config(payload: dict = None):
@@ -2744,7 +2780,7 @@ async def _gather_tools(mcp_manager: MCPManager, req: ChatRequest) -> Optional[l
         if tools_data:
             tool_defs.extend(ToolDef(**t) for t in tools_data)
     except Exception as exc:
-        get_logger().debug("gather_tools error: %s", exc)
+        _note_failure("mcp_list_all_tools", exc)
     try:
         _mgr = _kernel()
         for name, tool in (_mgr.all_tools() if _mgr else {}).items():
@@ -2755,7 +2791,7 @@ async def _gather_tools(mcp_manager: MCPManager, req: ChatRequest) -> Optional[l
                 input_schema=tool.get("parameters") or {"type": "object", "properties": {}},
             ))
     except Exception as exc:
-        get_logger().debug("gather plugin tools error: %s", exc)
+        _note_failure("gather_plugin_tools", exc)
     return tool_defs or None
 
 
@@ -2901,6 +2937,7 @@ async def _stream_chat_provider(
                     # surfacing, not a database hit).
                     system = (system or "") + _organ_service("resonance", _resonance_module).build_resonance_block(resonance_hits)
     except Exception as exc:
+        _count_failure("context_injection")   # greppable forensics anchor
         log.warning("LingLing context injection failed (continuing): %s", exc)
 
     cw = getattr(provider, "_context_window", None) or req.context_window
