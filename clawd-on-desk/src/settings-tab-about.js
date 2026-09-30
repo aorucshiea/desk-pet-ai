@@ -9,10 +9,6 @@
     return helpers.t(key);
   }
 
-  function formatVersionForMessage(version) {
-    return String(version || "").replace(/^v/i, "");
-  }
-
   const STATIC_ABOUT_KEYS = ["repoUrl", "modelRepoUrl", "license", "copyright", "upstreamRepoUrl", "upstreamLabel", "heroSvgContent"];
   function fetchAboutInfo() {
     if (!window.settingsAPI || typeof window.settingsAPI.getAboutInfo !== "function") {
@@ -26,8 +22,6 @@
       }
       merged.version = info.version;
       merged.appName = info.appName;
-      merged.pendingUpdateVersion = info.pendingUpdateVersion || "";
-      merged.autoUpdateCheck = info.autoUpdateCheck !== false;
       runtime.about.infoCache = merged;
       return merged;
     }).catch(() => runtime.about.infoCache || null);
@@ -233,55 +227,9 @@
       vv.className = "about-info-value";
       vv.textContent = "v" + (safe.version || "?");
       vvWrap.appendChild(vv);
-      if (safe.pendingUpdateVersion) {
-        const hint = document.createElement("span");
-        hint.className = "about-update-hint";
-        hint.textContent = "· " + t("aboutUpdateAvailableHint").replace(
-          "{version}",
-          formatVersionForMessage(safe.pendingUpdateVersion)
-        );
-        hint.style.cursor = "pointer";
-        hint.addEventListener("click", () => {
-          if (!window.settingsAPI || typeof window.settingsAPI.checkForUpdates !== "function") return;
-          window.settingsAPI.checkForUpdates().catch(() => {});
-        });
-        vvWrap.appendChild(hint);
-      }
-      const updateBtn = document.createElement("button");
-      updateBtn.className = "about-check-update-btn";
-      updateBtn.textContent = t("aboutCheckForUpdates");
-      updateBtn.addEventListener("click", () => {
-        if (!window.settingsAPI || typeof window.settingsAPI.checkForUpdates !== "function") return;
-        updateBtn.disabled = true;
-        window.settingsAPI.checkForUpdates()
-          .catch(() => {})
-          .finally(() => { updateBtn.disabled = false; });
-      });
-      vvWrap.appendChild(updateBtn);
       versionRow.appendChild(vl);
       versionRow.appendChild(vvWrap);
       infoSection.appendChild(versionRow);
-
-      const autoUpdateRow = document.createElement("div");
-      autoUpdateRow.className = "about-info-row";
-      const autoUpdateLabelWrap = document.createElement("div");
-      autoUpdateLabelWrap.className = "about-info-label";
-      const autoUpdateLabel = document.createElement("div");
-      autoUpdateLabel.textContent = t("autoUpdateCheck");
-      autoUpdateLabelWrap.appendChild(autoUpdateLabel);
-      const autoUpdateValue = document.createElement("div");
-      autoUpdateValue.className = "about-info-value";
-      const autoUpdateBox = document.createElement("input");
-      autoUpdateBox.type = "checkbox";
-      autoUpdateBox.checked = safe.autoUpdateCheck !== false;
-      autoUpdateBox.addEventListener("change", () => {
-        if (!window.settingsAPI || typeof window.settingsAPI.update !== "function") return;
-        window.settingsAPI.update("autoUpdateCheck", autoUpdateBox.checked).catch(() => {});
-      });
-      autoUpdateValue.appendChild(autoUpdateBox);
-      autoUpdateRow.appendChild(autoUpdateLabelWrap);
-      autoUpdateRow.appendChild(autoUpdateValue);
-      infoSection.appendChild(autoUpdateRow);
 
       if (safe.repoUrl) {
         infoSection.appendChild(buildAboutLinkRow(

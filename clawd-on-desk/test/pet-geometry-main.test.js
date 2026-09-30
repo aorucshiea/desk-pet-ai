@@ -153,55 +153,6 @@ test("getHitRectScreen passes hitbox and mini padding, with a full-window fallba
   assert.strictEqual(normal.runtime.getHitRectScreen(null), null);
 });
 
-test("getUpdateBubbleAnchorRect prefers stable anchors, then current-file anchors, then hit rect", () => {
-  const stable = createHarness();
-  assert.deepStrictEqual(stable.runtime.getUpdateBubbleAnchorRect(BOUNDS), {
-    left: 20,
-    top: 30,
-    right: 80,
-    bottom: 90,
-  });
-  assert.deepStrictEqual(stable.calls, [
-    ["computeThemeAnchorRect", THEME, BOUNDS],
-  ]);
-
-  const currentFile = createHarness({
-    anchorResults: [
-      null,
-      { left: 30, top: 40, right: 90, bottom: 100 },
-    ],
-  });
-  assert.deepStrictEqual(currentFile.runtime.getUpdateBubbleAnchorRect(BOUNDS), {
-    left: 30,
-    top: 40,
-    right: 90,
-    bottom: 100,
-  });
-  assert.deepStrictEqual(currentFile.calls, [
-    ["computeThemeAnchorRect", THEME, BOUNDS],
-    ["getThemeMarginBox", THEME],
-    [
-      "computeThemeAnchorRect",
-      THEME,
-      BOUNDS,
-      { box: { x: 1, y: 2, width: 3, height: 4 }, state: "thinking", file: "thinking.svg" },
-    ],
-  ]);
-
-  const fallback = createHarness({ anchorResults: [null, null] });
-  assert.deepStrictEqual(fallback.runtime.getUpdateBubbleAnchorRect(BOUNDS), {
-    left: 12,
-    top: 24,
-    right: 88,
-    bottom: 96,
-  });
-  assert.strictEqual(fallback.calls[fallback.calls.length - 1][0], "getHitRectScreen");
-
-  const noBounds = createHarness();
-  assert.strictEqual(noBounds.runtime.getUpdateBubbleAnchorRect(null), null);
-  assert.deepStrictEqual(noBounds.calls, []);
-});
-
 test("getSessionHudAnchorRect uses the theme margin box and returns null when unavailable", () => {
   const anchored = createHarness();
   assert.deepStrictEqual(anchored.runtime.getSessionHudAnchorRect(BOUNDS), {

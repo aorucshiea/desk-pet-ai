@@ -86,7 +86,6 @@ function createContext(focusCalls) {
     getHudReservedOffset: () => 0,
     guardAlwaysOnTop: () => {},
     reapplyMacVisibility: () => {},
-    repositionUpdateBubble: () => {},
     clearShortcutFailure: () => {},
     reportShortcutFailure: () => {},
     permDebugLog: null,

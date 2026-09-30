@@ -68,7 +68,7 @@ describe("visible margin envelopes", () => {
     assert.ok(stable.bottom <= Math.round(bounds.y + bounds.height - idleRect.bottom));
   });
 
-  it("builds the update anchor from marginBox and the idle file", () => {
+  it("builds the theme anchor from marginBox and the idle file", () => {
     const cloudling = themeLoader.loadTheme("cloudling");
     const expected = hitGeometry.getContentRectScreen(cloudling, bounds, "idle", cloudling.states.idle[0], {
       box: cloudling.layout.marginBox,
@@ -77,19 +77,8 @@ describe("visible margin envelopes", () => {
     assert.deepStrictEqual(computeThemeAnchorRect(cloudling, bounds), expected);
   });
 
-  it("prefers updateBubbleAnchorBox over layout-derived boxes when present", () => {
-    const cloudling = structuredClone(themeLoader.loadTheme("cloudling"));
-    cloudling.updateBubbleAnchorBox = { x: -2, y: -1, width: 12, height: 11 };
 
-    assert.deepStrictEqual(
-      computeThemeAnchorRect(cloudling, bounds),
-      hitGeometry.getContentRectScreen(cloudling, bounds, "idle", cloudling.states.idle[0], {
-        box: cloudling.updateBubbleAnchorBox,
-      })
-    );
-  });
-
-  it("keeps a stable update anchor for calico even though per-state hit bottoms differ", () => {
+  it("keeps a stable theme anchor for calico even though per-state hit bottoms differ", () => {
     const calico = themeLoader.loadTheme("calico");
     const anchor = computeThemeAnchorRect(calico, bounds);
     const thinkingHit = hitGeometry.getHitRectScreen(
@@ -116,24 +105,12 @@ describe("visible margin envelopes", () => {
     );
   });
 
-  it("returns null for the update anchor when the theme has no layout", () => {
+  it("returns null for the theme anchor when the theme has no layout", () => {
     const theme = structuredClone(themeLoader.loadTheme("cloudling"));
     delete theme.layout;
     assert.strictEqual(computeThemeAnchorRect(theme, bounds), null);
   });
 
-  it("still returns an anchor without layout when updateBubbleAnchorBox is present", () => {
-    const theme = structuredClone(themeLoader.loadTheme("cloudling"));
-    delete theme.layout;
-    theme.updateBubbleAnchorBox = { x: 0, y: 0, width: 20, height: 10 };
-
-    assert.deepStrictEqual(
-      computeThemeAnchorRect(theme, bounds),
-      hitGeometry.getContentRectScreen(theme, bounds, "idle", theme.states.idle[0], {
-        box: theme.updateBubbleAnchorBox,
-      })
-    );
-  });
 });
 
 describe("edge pinning margin policy", () => {

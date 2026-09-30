@@ -74,28 +74,6 @@ function createPetGeometryMain(options = {}) {
     return hit || getFullHitRect(bounds);
   }
 
-  function getUpdateBubbleAnchorRect(bounds) {
-    if (!bounds) return getHitRectScreen(bounds);
-    const theme = getActiveTheme();
-    if (!theme) return getHitRectScreen(bounds);
-
-    const stableAnchor = computeThemeAnchorRect(theme, bounds);
-    if (stableAnchor) return stableAnchor;
-
-    const box = getThemeMarginBox(theme);
-    const currentFile = getCurrentSvg();
-    if (box && currentFile) {
-      const currentAnchor = computeThemeAnchorRect(theme, bounds, {
-        box,
-        state: getCurrentState(),
-        file: currentFile,
-      });
-      if (currentAnchor) return currentAnchor;
-    }
-
-    return getHitRectScreen(bounds);
-  }
-
   function getSessionHudAnchorRect(bounds) {
     if (!bounds) return null;
     const theme = getActiveTheme();
@@ -109,7 +87,6 @@ function createPetGeometryMain(options = {}) {
     getObjRect,
     getAssetPointerPayload,
     getHitRectScreen,
-    getUpdateBubbleAnchorRect,
     getSessionHudAnchorRect,
   };
 }

@@ -272,7 +272,6 @@ describe("topmost runtime Windows recovery", () => {
     const hitWin = new FakeWindow();
     const permissionBubble = new FakeWindow();
     const hiddenPermissionBubble = new FakeWindow({ visible: false });
-    const updateBubble = new FakeWindow();
     const sessionHud = new FakeWindow();
     const contextMenuOwner = new FakeWindow();
     const kept = [];
@@ -284,7 +283,6 @@ describe("topmost runtime Windows recovery", () => {
         { bubble: permissionBubble },
         { bubble: hiddenPermissionBubble },
       ],
-      getUpdateBubbleWindow: () => updateBubble,
       getSessionHudWindow: () => sessionHud,
       getContextMenuOwner: () => contextMenuOwner,
       keepOutOfTaskbar: (window) => kept.push(window),
@@ -299,12 +297,12 @@ describe("topmost runtime Windows recovery", () => {
     assert.strictEqual(timers.intervals[0].ms, createTopmostRuntime.TOPMOST_WATCHDOG_MS);
     timers.intervals[0].fn();
 
-    for (const window of [win, hitWin, permissionBubble, updateBubble, sessionHud]) {
+    for (const window of [win, hitWin, permissionBubble, sessionHud]) {
       assert.deepStrictEqual(window.calls, [["setAlwaysOnTop", true, createTopmostRuntime.WIN_TOPMOST_LEVEL]]);
     }
     assert.deepStrictEqual(hiddenPermissionBubble.calls, []);
     assert.deepStrictEqual(contextMenuOwner.calls, []);
-    assert.deepStrictEqual(kept, [win, hitWin, permissionBubble, updateBubble, sessionHud, contextMenuOwner]);
+    assert.deepStrictEqual(kept, [win, hitWin, permissionBubble, sessionHud, contextMenuOwner]);
 
     runtime.stopTopmostWatchdog();
     assert.strictEqual(timers.intervals[0].cleared, true);
@@ -368,7 +366,6 @@ describe("topmost runtime macOS visibility", () => {
     const win = new FakeWindow();
     const hitWin = new FakeWindow();
     const permissionBubble = new FakeWindow();
-    const updateBubble = new FakeWindow();
     const sessionHud = new FakeWindow();
     const contextMenuOwner = new FakeWindow();
     const stationaryCalls = [];
@@ -377,7 +374,6 @@ describe("topmost runtime macOS visibility", () => {
       getWin: () => win,
       getHitWin: () => hitWin,
       getPendingPermissions: () => [{ bubble: permissionBubble }],
-      getUpdateBubbleWindow: () => updateBubble,
       getSessionHudWindow: () => sessionHud,
       getContextMenuOwner: () => contextMenuOwner,
       getShowDock: () => false,
@@ -389,7 +385,7 @@ describe("topmost runtime macOS visibility", () => {
 
     runtime.reapplyMacVisibility();
 
-    for (const window of [win, hitWin, permissionBubble, updateBubble, sessionHud, contextMenuOwner]) {
+    for (const window of [win, hitWin, permissionBubble, sessionHud, contextMenuOwner]) {
       assert.deepStrictEqual(window.calls, [
         ["setAlwaysOnTop", true, createTopmostRuntime.MAC_TOPMOST_LEVEL],
         ["setVisibleOnAllWorkspaces", true, {
@@ -398,7 +394,7 @@ describe("topmost runtime macOS visibility", () => {
         }],
       ]);
     }
-    assert.strictEqual(stationaryCalls.length, 12);
+    assert.strictEqual(stationaryCalls.length, 10);
   });
 
   it("honors deferred macOS visibility markers", () => {

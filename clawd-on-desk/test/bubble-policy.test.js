@@ -36,33 +36,38 @@ describe("bubble policy", () => {
     );
   });
 
-  it("maps notification and update seconds to enabled policies", () => {
+  it("maps notificationBubbleAutoCloseSeconds to an enabled policy", () => {
     assert.deepStrictEqual(getBubblePolicy({ notificationBubbleAutoCloseSeconds: 2 }, "notification"), {
       enabled: true,
       autoCloseMs: 2000,
     });
-    assert.deepStrictEqual(getBubblePolicy({ updateBubbleAutoCloseSeconds: 0 }, "update"), {
+    assert.deepStrictEqual(getBubblePolicy({ notificationBubbleAutoCloseSeconds: 0 }, "notification"), {
       enabled: false,
       autoCloseMs: 0,
     });
   });
 
-  it("treats aggregate hidden as all three categories off", () => {
+  it("rejects the retired update bubble kind instead of silently defaulting", () => {
+    assert.throws(() => getBubblePolicy({}, "update"), /Unknown bubble policy kind/);
+    assert.deepStrictEqual(
+      buildCategoryEnabledCommit({ permissionBubblesEnabled: true }, "update", true),
+      { error: "setBubbleCategoryEnabled.category must be one of: permission, notification" }
+    );
+  });
+
+  it("treats aggregate hidden as every category off", () => {
     assert.strictEqual(isAllBubblesHidden({
       hideBubbles: true,
       permissionBubblesEnabled: true,
       notificationBubbleAutoCloseSeconds: 12,
-      updateBubbleAutoCloseSeconds: 8,
     }), true);
     assert.strictEqual(isAllBubblesHidden({
       permissionBubblesEnabled: false,
       notificationBubbleAutoCloseSeconds: 0,
-      updateBubbleAutoCloseSeconds: 0,
     }), true);
     assert.strictEqual(isAllBubblesHidden({
       permissionBubblesEnabled: false,
-      notificationBubbleAutoCloseSeconds: 0,
-      updateBubbleAutoCloseSeconds: 9,
+      notificationBubbleAutoCloseSeconds: 9,
     }), false);
   });
 
@@ -70,13 +75,11 @@ describe("bubble policy", () => {
     const snapshot = {
       permissionBubblesEnabled: false,
       notificationBubbleAutoCloseSeconds: 0,
-      updateBubbleAutoCloseSeconds: 0,
     };
     const result = buildCategoryEnabledCommit(snapshot, "notification", true);
     assert.deepStrictEqual(result.commit, {
       permissionBubblesEnabled: false,
       notificationBubbleAutoCloseSeconds: 6,
-      updateBubbleAutoCloseSeconds: 0,
       hideBubbles: false,
     });
   });
@@ -86,12 +89,10 @@ describe("bubble policy", () => {
       hideBubbles: true,
       permissionBubblesEnabled: true,
       notificationBubbleAutoCloseSeconds: 1,
-      updateBubbleAutoCloseSeconds: 12,
     }, "notification", true);
     assert.deepStrictEqual(result.commit, {
       permissionBubblesEnabled: true,
       notificationBubbleAutoCloseSeconds: 1,
-      updateBubbleAutoCloseSeconds: 12,
       hideBubbles: false,
     });
   });
@@ -107,7 +108,6 @@ describe("bubble policy", () => {
     assert.deepStrictEqual(buildAggregateHideCommit(true, {
       permissionBubblesEnabled: true,
       notificationBubbleAutoCloseSeconds: 12,
-      updateBubbleAutoCloseSeconds: 8,
     }), {
       hideBubbles: true,
     });
@@ -115,7 +115,6 @@ describe("bubble policy", () => {
       hideBubbles: true,
       permissionBubblesEnabled: true,
       notificationBubbleAutoCloseSeconds: 12,
-      updateBubbleAutoCloseSeconds: 8,
     }), {
       hideBubbles: false,
     });
@@ -126,12 +125,10 @@ describe("bubble policy", () => {
       hideBubbles: true,
       permissionBubblesEnabled: false,
       notificationBubbleAutoCloseSeconds: 0,
-      updateBubbleAutoCloseSeconds: 0,
     }), {
       hideBubbles: false,
       permissionBubblesEnabled: true,
       notificationBubbleAutoCloseSeconds: 6,
-      updateBubbleAutoCloseSeconds: 9,
     });
   });
 });

@@ -241,11 +241,6 @@ const updateRegistry = {
     0,
     MAX_AUTO_CLOSE_SECONDS
   ),
-  updateBubbleAutoCloseSeconds: requireIntegerInRange(
-    "updateBubbleAutoCloseSeconds",
-    0,
-    MAX_AUTO_CLOSE_SECONDS
-  ),
   // Session stale-cleanup intervals. Cross-field invariant
   // (sessionStaleMs > 0 -> workingStaleMs <= sessionStaleMs) is enforced
   // here against the live snapshot AND atomically through the
@@ -349,23 +344,6 @@ const updateRegistry = {
     },
   },
 
-  // ── #329 background update check (Phase 4) ──
-  autoUpdateCheck: requireBoolean("autoUpdateCheck"),
-  pendingUpdateVersion: requireString("pendingUpdateVersion", { allowEmpty: true }),
-  dismissedUpdateVersions(value) {
-    if (!value || typeof value !== "object" || Array.isArray(value)) {
-      return { status: "error", message: "dismissedUpdateVersions must be a plain object" };
-    }
-    for (const key of Object.keys(value)) {
-      if (typeof key !== "string" || !key) {
-        return { status: "error", message: "dismissedUpdateVersions keys must be non-empty strings" };
-      }
-      if (value[key] !== true) {
-        return { status: "error", message: `dismissedUpdateVersions["${key}"] must be the literal true` };
-      }
-    }
-    return { status: "ok" };
-  },
   dismissedAgentInstallHints(value) {
     if (!value || typeof value !== "object" || Array.isArray(value)) {
       return { status: "error", message: "dismissedAgentInstallHints must be a plain object" };

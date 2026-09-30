@@ -55,8 +55,6 @@ function createHarness(options = {}) {
     clearCodexNotifyBubbles: (...args) => calls.push(["clearCodexNotifyBubbles", ...args]),
     clearKimiNotifyBubbles: (...args) => calls.push(["clearKimiNotifyBubbles", ...args]),
     refreshPassiveNotifyAutoClose: () => calls.push(["refreshPassiveNotifyAutoClose"]),
-    hideUpdateBubbleForPolicy: () => calls.push(["hideUpdateBubbleForPolicy"]),
-    refreshUpdateBubbleAutoClose: () => calls.push(["refreshUpdateBubbleAutoClose"]),
     repositionFloatingBubbles: () => calls.push(["repositionFloatingBubbles"]),
     applyTextScale: () => calls.push(["applyTextScale"]),
     syncSessionHudVisibility: () => calls.push(["syncSessionHudVisibility"]),
@@ -111,7 +109,7 @@ describe("settings-effect-router", () => {
     ]);
   });
 
-  it("routes bubble policy changes to permission and update bubble effects", () => {
+  it("routes bubble policy changes to permission and notification effects", () => {
     const { calls, emit } = createHarness();
 
     emit({ hideBubbles: true });
@@ -121,7 +119,6 @@ describe("settings-effect-router", () => {
       ["dismissInteractivePermissionBubbles"],
       ["clearCodexNotifyBubbles", undefined, "settings-policy-disabled"],
       ["clearKimiNotifyBubbles", undefined, "settings-policy-disabled"],
-      ["hideUpdateBubbleForPolicy"],
       ["rebuildAllMenus"],
     ]);
 
@@ -130,14 +127,6 @@ describe("settings-effect-router", () => {
     assert.deepStrictEqual(calls, [
       ["updateMirrors", { notificationBubbleAutoCloseSeconds: 5 }],
       ["refreshPassiveNotifyAutoClose"],
-      ["rebuildAllMenus"],
-    ]);
-
-    calls.length = 0;
-    emit({ updateBubbleAutoCloseSeconds: 8 });
-    assert.deepStrictEqual(calls, [
-      ["updateMirrors", { updateBubbleAutoCloseSeconds: 8 }],
-      ["refreshUpdateBubbleAutoClose"],
       ["rebuildAllMenus"],
     ]);
   });

@@ -116,22 +116,6 @@ describe("theme-loader strict mode", () => {
         }),
       },
       {
-        id: "updatebubbleanchor",
-        builtin: true,
-        json: validThemeJson({
-          name: "Update Bubble Anchor",
-          updateBubbleAnchorBox: { x: 10, y: 20, width: 30, height: 40 },
-        }),
-      },
-      {
-        id: "badupdatebubbleanchor",
-        builtin: true,
-        json: validThemeJson({
-          name: "Bad Update Bubble Anchor",
-          updateBubbleAnchorBox: { x: 10, y: "bad", width: 30, height: 40 },
-        }),
-      },
-      {
         id: "badrendering",
         builtin: true,
         json: validThemeJson({
@@ -183,18 +167,6 @@ describe("theme-loader strict mode", () => {
     assert.throws(
       () => themeLoader.loadTheme("badupdatevisuals", { strict: true }),
       /updateVisuals\.checking/
-    );
-  });
-
-  it("preserves updateBubbleAnchorBox on a valid theme", () => {
-    const theme = themeLoader.loadTheme("updatebubbleanchor", { strict: true });
-    assert.deepStrictEqual(theme.updateBubbleAnchorBox, { x: 10, y: 20, width: 30, height: 40 });
-  });
-
-  it("strict load rejects malformed updateBubbleAnchorBox", () => {
-    assert.throws(
-      () => themeLoader.loadTheme("badupdatebubbleanchor", { strict: true }),
-      /updateBubbleAnchorBox/
     );
   });
 

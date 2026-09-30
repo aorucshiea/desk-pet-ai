@@ -15,15 +15,11 @@ function createFloatingWindowRuntime(options = {}) {
   const getPendingPermissions = options.getPendingPermissions || (() => []);
   const keepOutOfTaskbar = options.keepOutOfTaskbar || noop;
   const repositionPermissionBubbles = options.repositionPermissionBubbles || noop;
-  const repositionUpdateBubble = options.repositionUpdateBubble || noop;
   const repositionSessionHud = options.repositionSessionHud || noop;
   const syncSessionHudVisibility = options.syncSessionHudVisibility || noop;
-  const syncUpdateBubbleVisibility = options.syncUpdateBubbleVisibility || noop;
-  const hideUpdateBubble = options.hideUpdateBubble || noop;
 
   function repositionFloatingBubbles() {
     if (getPendingList(getPendingPermissions).length) repositionPermissionBubbles();
-    repositionUpdateBubble();
   }
 
   function repositionAnchoredSurfaces() {
@@ -44,7 +40,6 @@ function createFloatingWindowRuntime(options = {}) {
         keepOutOfTaskbar(bubble);
       }
     }
-    syncUpdateBubbleVisibility();
   }
 
   function hideFloatingSurfacesForPet() {
@@ -54,7 +49,6 @@ function createFloatingWindowRuntime(options = {}) {
         bubble.hide();
       }
     }
-    hideUpdateBubble();
   }
 
   return {

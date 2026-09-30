@@ -615,7 +615,6 @@ function makeGeneralSnapshot(overrides = {}) {
     bubbleFollowPet: true,
     permissionBubblesEnabled: true,
     notificationBubbleAutoCloseSeconds: 8,
-    updateBubbleAutoCloseSeconds: 12,
     ...overrides,
   };
 }
@@ -2631,23 +2630,18 @@ describe("settings renderer browser environment", () => {
     assert.ok(generalSource.includes("setBubbleCategoryEnabled"));
     assert.ok(generalSource.includes("state.mountedControls.bubblePolicyControls"));
     assert.ok(generalSource.includes("state.mountedControls.bubblePolicySummary"));
-    assert.ok(generalSource.includes("confirmDisableUpdateBubbles"));
     assert.ok(generalSource.indexOf("buildBubblePolicyRow()") < generalSource.indexOf('key: "bubbleFollowPet"'));
-    assert.ok(generalSource.includes("category === \"update\" && next === 0"));
     assert.ok(generalSource.includes("notificationBubbleAutoCloseSeconds"));
-    assert.ok(generalSource.includes("updateBubbleAutoCloseSeconds"));
     assert.ok(generalSource.includes("bubble-policy-prefix"));
     assert.ok(generalSource.includes('input.type = "text"'));
     assert.ok(generalSource.includes("input.maxLength = 4"));
     assert.ok(generalSource.includes('input.pattern = "[0-9]*"'));
     assert.ok(generalSource.includes('input.value.replace(/\\D+/g, "").slice(0, 4)'));
     assert.ok(generalSource.includes("showSettingsConfirmModal"));
-    assert.ok(generalSource.includes("updateBubbleDisableConfirmTitle"));
     assert.ok(/\.bubble-policy-seconds\s*\{[\s\S]*width:\s*42px;/.test(css));
     assert.ok(/\.bubble-policy-seconds\s*\{[\s\S]*box-sizing:\s*border-box;[\s\S]*text-align:\s*center;[\s\S]*padding:\s*0 3px;/.test(css));
     assert.ok(i18nSource.includes("rowHideBubbles"));
     assert.ok(i18nSource.includes("rowBubblePolicy"));
-    assert.ok(i18nSource.includes("bubbleUpdateWarning"));
     assert.ok(i18nSource.includes("bubbleSecondsPrefix"));
   });
 
@@ -2991,32 +2985,7 @@ describe("settings renderer browser environment", () => {
     assert.ok(generalSource.includes("flushSecondsCommit();"));
     assert.ok(generalSource.includes('input.addEventListener("change", () => {'));
     assert.ok(generalSource.includes("const next = parseBubbleSecondsInputValue(raw);"));
-    assert.ok(generalSource.includes('if (category === "update" && next === 0) return;'));
-    assert.ok(generalSource.includes("commitSecondsValue(secondsInput, secondsKey, next, category)"));
-    assert.ok(!generalSource.includes("commitSecondsValue(input, secondsKey, next, category).then("));
-  });
-
-  it("keeps update bubble disable confirmation inside the Settings renderer", () => {
-    const preloadSource = fs.readFileSync(PRELOAD_SETTINGS, "utf8");
-    const mainSource = fs.readFileSync(MAIN_PROCESS, "utf8");
-    const generalSource = fs.readFileSync(path.join(SRC_DIR, "settings-tab-general.js"), "utf8");
-    const i18nSource = fs.readFileSync(SETTINGS_I18N, "utf8");
-    const css = fs.readFileSync(SETTINGS_CSS, "utf8");
-    assert.ok(generalSource.includes("settings-confirm-modal"));
-    assert.ok(generalSource.includes("updateBubbleDisableConfirmAction"));
-    assert.ok(css.includes(".settings-confirm-modal"));
-    assert.ok(css.includes(".settings-confirm-backdrop"));
-    assert.ok(!preloadSource.includes("confirmDisableUpdateBubbles"));
-    assert.ok(!preloadSource.includes("settings:confirm-disable-update-bubbles"));
-    assert.ok(!mainSource.includes("UPDATE_BUBBLE_DIALOG_STRINGS"));
-    assert.ok(!mainSource.includes('ipcMain.handle("settings:confirm-disable-update-bubbles"'));
-    assert.ok(i18nSource.includes("Hide update bubbles"));
-    assert.ok(i18nSource.includes("隐藏更新气泡"));
-    assert.ok(generalSource.includes('{ id: "confirm", label: t("updateBubbleDisableConfirmAction"), tone: "danger" }'));
-    assert.ok(generalSource.includes('{ id: "cancel", label: t("updateBubbleDisableConfirmCancel"), tone: "accent", defaultFocus: true }'));
-    assert.ok(generalSource.includes('if (actionId === "confirm") runToggleCommit(nextEnabled);'));
-    assert.ok(generalSource.includes('tone === "accent"'));
-    assert.ok(generalSource.includes('tone === "danger"'));
+    assert.ok(generalSource.includes("commitSecondsValue(secondsInput, secondsKey, next)"));
   });
 
   it("keeps Claude hooks confirmations inside the Settings renderer", () => {
@@ -3028,6 +2997,8 @@ describe("settings renderer browser environment", () => {
     assert.ok(generalSource.includes("confirmDisableClaudeHookManagement"));
     assert.ok(generalSource.includes("runDisconnectClaudeHooks"));
     assert.ok(generalSource.includes("showSettingsConfirmModal({"));
+    assert.ok(css.includes(".settings-confirm-modal"));
+    assert.ok(css.includes(".settings-confirm-backdrop"));
     assert.ok(generalSource.includes("claudeHooksDisableConfirmTitle"));
     assert.ok(generalSource.includes("claudeHooksDisconnectConfirmTitle"));
     assert.ok(generalSource.includes("buttons.find((action) => action.action && action.action.defaultFocus)"));
@@ -3623,7 +3594,7 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(notificationSwitch.classList.contains("on"), true);
     assert.strictEqual(notificationSeconds.disabled, false);
     assert.strictEqual(notificationSeconds.value, "8");
-    assert.strictEqual(summary.children.length, 3);
+    assert.strictEqual(summary.children.length, 2);
     assert.ok(summary.children.every((chip) => chip.classList.contains("accent")));
   });
 
@@ -3915,7 +3886,6 @@ describe("settings renderer browser environment", () => {
     assert.ok(generalSource.includes('key: "hideBubbles"'));
     assert.ok(i18nSource.includes("bubblePolicySummaryPermission"));
     assert.ok(i18nSource.includes("bubblePolicySummaryNotification"));
-    assert.ok(i18nSource.includes("bubblePolicySummaryUpdate"));
   });
 
   it("renders Agent management as collapsed per-agent groups with master switches always visible", () => {

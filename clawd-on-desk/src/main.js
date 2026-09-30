@@ -108,8 +108,6 @@ const {
 } = require("./telegram-approval-runtime-status");
 const { createTelegramMigrationController } = require("./telegram-migration-controller");
 const { createTelegramSidecarStatusBridge } = require("./telegram-sidecar-status-bridge");
-const initUpdateBubble = require("./update-bubble");
-const { registerUpdateBubbleIpc } = initUpdateBubble;
 const createSettingsAnimationOverridesMain = require("./settings-animation-overrides-main");
 const { registerSettingsAnimationOverridesIpc } = createSettingsAnimationOverridesMain;
 const createShortcutRuntime = require("./shortcut-runtime");
@@ -839,7 +837,7 @@ function effectiveTextScaleForKey(key) {
   return resolveTextScaleForKey(textScaleByDisplay, textScale, key);
 }
 
-// Pet-anchored floating windows (permission bubbles, update bubble, session
+// Pet-anchored floating windows (permission bubbles, session
 // HUD) all read the scale of whichever display the pet is on right now.
 function getTextScaleForPetWindows() {
   return effectiveTextScaleForKey(getPetDisplayKey());
@@ -1201,7 +1199,6 @@ const topmostRuntime = createTopmostRuntime({
   getWin: () => win,
   getHitWin: () => hitWin,
   getPendingPermissions: () => pendingPermissions,
-  getUpdateBubbleWindow: () => _updateBubble.getBubbleWindow(),
   getSessionHudWindow: () => getSessionHudWindow(),
   getContextMenuOwner: () => contextMenuOwner,
   getNearestWorkArea,
@@ -1265,7 +1262,6 @@ const _permCtx = {
   }),
   reportShortcutFailure: (actionId, reason) => shortcutRuntime.reportFailure(actionId, reason),
   clearShortcutFailure: (actionId) => shortcutRuntime.clearFailure(actionId),
-  repositionUpdateBubble: () => repositionUpdateBubble(),
   getTelegramApprovalClient: () => getTelegramApprovalClient(),
   onPermissionsChanged: () => {
     if (hardwareBuddyAdapter) hardwareBuddyAdapter.notifyPermissionsChanged();
@@ -1279,7 +1275,6 @@ const _perm = initPermission(_permCtx);
 const { showPermissionBubble, resolvePermissionEntry, sendPermissionResponse, repositionBubbles, permLog, PASSTHROUGH_TOOLS, addPendingPermission, removePendingPermission, maybeStartRemoteApproval, showCodexNotifyBubble, clearCodexNotifyBubbles, showKimiNotifyBubble, clearKimiNotifyBubbles, syncPermissionShortcuts, replyOpencodePermission } = _perm;
 const pendingPermissions = _perm.pendingPermissions;
 let permDebugLog = null; // set after app.whenReady()
-let updateDebugLog = null; // set after app.whenReady()
 let sessionDebugLog = null; // set after app.whenReady()
 let focusDebugLog = null; // set after app.whenReady()
 
@@ -1304,37 +1299,11 @@ function getPendingPermissionFocusEntry(sessionId) {
   return focusEntry;
 }
 
-const _updateBubbleCtx = {
-  get win() { return win; },
-  get bubbleFollowPet() { return bubbleFollowPet; },
-  get petHidden() { return petWindowRuntime.isPetHidden(); },
-  getBubblePolicy: getRuntimeBubblePolicy,
-  getPendingPermissions: () => pendingPermissions,
-  getPetWindowBounds,
-  getNearestWorkArea,
-  getUpdateBubbleAnchorRect,
-  getHitRectScreen,
-  getHudReservedOffset: () => getSessionHudReservedOffset(),
-  getTextScale: () => getTextScaleForPetWindows(),
-  guardAlwaysOnTop,
-  reapplyMacVisibility,
-};
-const _updateBubble = initUpdateBubble(_updateBubbleCtx);
-const {
-  showUpdateBubble,
-  hideUpdateBubble,
-  repositionUpdateBubble,
-  syncVisibility: syncUpdateBubbleVisibility,
-} = _updateBubble;
-
 floatingWindowRuntime = createFloatingWindowRuntime({
   getPendingPermissions: () => pendingPermissions,
   repositionPermissionBubbles: () => repositionBubbles(),
-  repositionUpdateBubble: () => repositionUpdateBubble(),
   repositionSessionHud: () => repositionSessionHud(),
   syncSessionHudVisibility: () => syncSessionHudVisibility(),
-  syncUpdateBubbleVisibility: () => syncUpdateBubbleVisibility(),
-  hideUpdateBubble: () => hideUpdateBubble(),
   keepOutOfTaskbar,
 });
 
@@ -1361,11 +1330,6 @@ let showDashboard = () => {};
 let broadcastDashboardSessionSnapshot = () => {};
 let sendDashboardI18n = () => {};
 
-// Forward hook for the #329 updater scheduler. State/mini ctxs reference
-// this via notifyUpdaterSilentExit; the actual implementation is wired
-// after the updater module is constructed below.
-let notifyUpdaterSilentExit = () => {};
-
 const _stateCtx = {
   get theme() { return getActiveTheme(); },
   get win() { return win; },
@@ -1385,7 +1349,6 @@ const _stateCtx = {
   set forceEyeResend(v) { setForceEyeResend(v); },
   get mouseStillSince() { return _tick ? _tick._mouseStillSince : Date.now(); },
   get pendingPermissions() { return pendingPermissions; },
-  notifyUpdaterSilentExit: () => notifyUpdaterSilentExit(),
   sendToRenderer,
   sendToHitWin,
   syncHitWin,
@@ -1504,7 +1467,6 @@ function releasePowerSaveBlocker() {
 
 // ── Hit-test: SVG bounding box → screen coordinates ──
 function getHitRectScreen(bounds) { return petWindowRuntime.getHitRectScreen(bounds); }
-function getUpdateBubbleAnchorRect(bounds) { return petWindowRuntime.getUpdateBubbleAnchorRect(bounds); }
 function getSessionHudAnchorRect(bounds) { return petWindowRuntime.getSessionHudAnchorRect(bounds); }
 
 // ── Main tick — delegated to src/tick.js ──
@@ -1776,12 +1738,6 @@ if (_settingsController.get("mobilePreviewEnabled") === true) {
     getSettingsSnapshot: () => _settingsController.getSnapshot(),
     isEnabled: () => _settingsController.get("mobilePreviewEnabled") === true,
   });
-}
-
-function updateLog(msg) {
-  if (!updateDebugLog) return;
-  const { rotatedAppend } = require("./log-rotate");
-  rotatedAppend(updateDebugLog, `[${new Date().toISOString()}] ${msg}\n`);
 }
 
 function sessionLog(msg) {
@@ -2833,8 +2789,6 @@ const _menuCtx = {
   getMiniMode: () => _mini.getMiniMode(),
   getMiniTransitioning: () => _mini.getMiniTransitioning(),
   miniHandleResize: (sizeKey) => _mini.handleResize(sizeKey),
-  checkForUpdates: (...args) => checkForUpdates(...args),
-  getUpdateMenuItem: () => getUpdateMenuItem(),
   openDashboard: () => showDashboard(),
   launchClaudeSession: (mode, cwd, sessionId) => launchClaudeSession(mode, cwd, sessionId),
   newSessionWithFolder: async (t) => {
@@ -2997,8 +2951,6 @@ const settingsEffectRouter = createSettingsEffectRouter({
   clearKimiNotifyBubbles,
   refreshPassiveNotifyAutoClose: () => callRuntimeMethod(_perm, "refreshPassiveNotifyAutoClose"),
   refreshPermissionAutoCloseForPolicy: () => callRuntimeMethod(_perm, "refreshPermissionAutoCloseForPolicy"),
-  hideUpdateBubbleForPolicy: () => callRuntimeMethod(_updateBubble, "hideForPolicy"),
-  refreshUpdateBubbleAutoClose: () => callRuntimeMethod(_updateBubble, "refreshAutoCloseForPolicy"),
   repositionFloatingBubbles,
   applyTextScale: () => applyTextScaleNow(),
   syncSessionHudVisibility: () => syncSessionHudVisibility(),
@@ -3055,58 +3007,6 @@ registerSettingsAnimationOverridesIpc({
   ipcMain,
   animationOverridesMain,
 });
-// ── Auto-updater — delegated to src/updater.js ──
-const _updaterCtx = {
-  get doNotDisturb() { return doNotDisturb; },
-  get miniMode() { return _mini.getMiniMode(); },
-  get lang() { return lang; },
-  t, rebuildAllMenus, updateLog,
-  showUpdateBubble: (payload) => showUpdateBubble(payload),
-  hideUpdateBubble: () => hideUpdateBubble(),
-  setUpdateVisualState: (kind) => _state.setUpdateVisualState(kind),
-  applyState: (state, svgOverride) => applyState(state, svgOverride),
-  resolveDisplayState: () => resolveDisplayState(),
-  getSvgOverride: (state) => getSvgOverride(state),
-  resetSoundCooldown: () => resetSoundCooldown(),
-  // #329 scheduler / pending-state prefs IO. Reads go straight to the
-  // settingsController snapshot; writes go through applyUpdate so the
-  // single-writer architecture (settings-controller.js) is honored.
-  getUpdatePref: (key) => {
-    try { return _settingsController.get(key); } catch { return undefined; }
-  },
-  setUpdatePref: (key, value) => {
-    try { _settingsController.applyUpdate(key, value); } catch {}
-  },
-};
-const _updater = require("./updater")(_updaterCtx);
-const {
-  setupAutoUpdater,
-  checkForUpdates,
-  getUpdateMenuItem,
-  getUpdateMenuLabel,
-  reconcilePendingOnStartup,
-  onSilentModeExit: updaterOnSilentModeExit,
-  startUpdateScheduler,
-  stopUpdateScheduler,
-} = _updater;
-// Now that updater is constructed, point the forward hook at it.
-notifyUpdaterSilentExit = () => { try { updaterOnSilentModeExit(); } catch {} };
-
-// #329: react to the autoUpdateCheck toggle in real time so users see
-// the scheduler start/stop without restarting Clawd.
-try {
-  _settingsController.subscribeKey("autoUpdateCheck", (value) => {
-    try {
-      if (value === false) stopUpdateScheduler();
-      else startUpdateScheduler();
-    } catch (err) {
-      updateLog(`scheduler toggle failed: ${err && err.message}`);
-    }
-  });
-} catch (err) {
-  updateLog(`scheduler subscribeKey failed: ${err && err.message}`);
-}
-
 // ── Doctor tab IPC ──
 const { registerDoctorIpc } = require("./doctor-ipc");
 registerDoctorIpc({
@@ -3221,7 +3121,6 @@ registerSettingsIpc({
   sendQuickCommand: (payload) => hardwareBuddyAdapter && typeof hardwareBuddyAdapter.createQuickCommand === "function"
     ? hardwareBuddyAdapter.createQuickCommand(payload)
     : { status: "error", code: "quick_commands_unavailable", message: "Quick Commands are unavailable" },
-  checkForUpdates,
   aboutHeroSvgPath: path.join(__dirname, "..", "assets", "svg", "model-mark.svg"),
   getLanWsServer: () => _lanWss,
   getDeskPetChat: () => _petChat,
@@ -3398,11 +3297,6 @@ function createWindow() {
     permission: _perm,
   });
 
-  registerUpdateBubbleIpc({
-    ipcMain,
-    updateBubble: _updateBubble,
-  });
-
   initFocusHelper();
   startMainTick();
   startHttpServer();
@@ -3485,7 +3379,6 @@ const _miniCtx = {
   get doNotDisturb() { return doNotDisturb; },
   set doNotDisturb(v) { doNotDisturb = v; },
   get currentState() { return _state.getCurrentState(); },
-  notifyUpdaterSilentExit: () => notifyUpdaterSilentExit(),
   SIZES,
   getCurrentPixelSize,
   getEffectiveCurrentPixelSize,
@@ -3679,7 +3572,6 @@ if (!gotTheLock) {
     lang = resolveEffectiveLang(storedLang, () => app.getLocale());
 
     permDebugLog = path.join(app.getPath("userData"), "permission-debug.log");
-    updateDebugLog = path.join(app.getPath("userData"), "update-debug.log");
     sessionDebugLog = path.join(app.getPath("userData"), "session-debug.log");
     focusDebugLog = path.join(app.getPath("userData"), "focus-debug.log");
     initTelegramMigrationController().catch((err) => {
@@ -3761,20 +3653,10 @@ if (!gotTheLock) {
     try { installTerminalFocusExtension(); } catch (err) {
       console.warn("Clawd: failed to auto-install terminal-focus extension:", err.message);
     }
-
-    // Auto-updater: setup event handlers (user triggers check via tray menu)
-    setupAutoUpdater();
-    // #329: reconcile any stale pending-update entry (e.g. user installed
-    // out-of-band on macOS) and start the background scheduler. Both are
-    // safe in dev mode — reconcile is a no-op when nothing is pending,
-    // and startUpdateScheduler() short-circuits on !app.isPackaged.
-    try { reconcilePendingOnStartup(); } catch (err) { updateLog(`reconcile failed: ${err && err.message}`); }
-    try { startUpdateScheduler(); } catch (err) { updateLog(`scheduler start failed: ${err && err.message}`); }
   });
 
   app.on("before-quit", () => {
     isQuitting = true;
-    try { stopUpdateScheduler(); } catch {}
     releasePowerSaveBlocker();
     flushRuntimeStateToPrefs();
     globalShortcut.unregisterAll();
@@ -3788,7 +3670,6 @@ if (!gotTheLock) {
     _perm.cleanup();
     _server.cleanup();
     if (_lanWss) _lanWss.cleanup();
-    _updateBubble.cleanup();
     _state.cleanup();
     _tick.cleanup();
     _mini.cleanup();

@@ -55,27 +55,4 @@ describe("settings effect router notification auto-close sync", () => {
       ["clearKimi", undefined, "settings-policy-disabled"],
     ]);
   });
-
-  it("hides 0-second update bubbles and refreshes visible update-bubble timers for positive values", () => {
-    const calls = [];
-    const { controller, emit } = createFakeSettingsController();
-    const router = createSettingsEffectRouter({
-      settingsController: controller,
-      hideUpdateBubbleForPolicy: () => calls.push(["hideUpdate"]),
-      refreshUpdateBubbleAutoClose: () => calls.push(["refreshUpdate"]),
-      updateMirrors: () => {},
-    });
-
-    router.start();
-    emit({ updateBubbleAutoCloseSeconds: 0 });
-    assert.deepStrictEqual(calls, [["hideUpdate"]]);
-
-    calls.length = 0;
-    emit({ updateBubbleAutoCloseSeconds: 10 });
-    assert.deepStrictEqual(calls, [["refreshUpdate"]]);
-
-    calls.length = 0;
-    emit({ hideBubbles: true, updateBubbleAutoCloseSeconds: 10 });
-    assert.deepStrictEqual(calls, [["hideUpdate"]]);
-  });
 });

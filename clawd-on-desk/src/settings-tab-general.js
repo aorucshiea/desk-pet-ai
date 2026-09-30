@@ -28,7 +28,6 @@
     "bubbleFollowPet",
     "permissionBubblesEnabled",
     "notificationBubbleAutoCloseSeconds",
-    "updateBubbleAutoCloseSeconds",
     "sessionStaleMs",
     "workingStaleMs",
     "detachedIdleStaleMs",
@@ -37,7 +36,6 @@
     "permissionBubblesEnabled",
     "permissionBubbleAutoCloseSeconds",
     "notificationBubbleAutoCloseSeconds",
-    "updateBubbleAutoCloseSeconds",
   ]);
   const SESSION_CLEANUP_NUMBER_KEYS = new Set([
     "sessionStaleMs",
@@ -809,7 +807,6 @@
     return {
       permissionOn: !aggregateHidden && !!(state.snapshot && state.snapshot.permissionBubblesEnabled !== false),
       notificationSeconds: aggregateHidden ? 0 : Number(state.snapshot && state.snapshot.notificationBubbleAutoCloseSeconds) || 0,
-      updateSeconds: aggregateHidden ? 0 : Number(state.snapshot && state.snapshot.updateBubbleAutoCloseSeconds) || 0,
     };
   }
 
@@ -831,10 +828,6 @@
       {
         text: t("bubblePolicySummaryNotification").replace("{seconds}", String(snapshot.notificationSeconds)),
         accent: snapshot.notificationSeconds > 0,
-      },
-      {
-        text: t("bubblePolicySummaryUpdate").replace("{seconds}", String(snapshot.updateSeconds)),
-        accent: snapshot.updateSeconds > 0,
       },
       ];
       for (const item of items) {
@@ -867,13 +860,6 @@
       labelKey: "bubbleNotificationLabel",
       descKey: "bubbleNotificationDesc",
       secondsKey: "notificationBubbleAutoCloseSeconds",
-    }));
-    list.appendChild(buildBubbleCategoryControl({
-      category: "update",
-      labelKey: "bubbleUpdateLabel",
-      descKey: "bubbleUpdateDesc",
-      warningKey: "bubbleUpdateWarning",
-      secondsKey: "updateBubbleAutoCloseSeconds",
     }));
     return list;
   }
@@ -952,7 +938,7 @@
       secondsDraftValue = next;
       secondsInFlightValue = next;
       const seq = ++secondsCommitSeq;
-      return commitSecondsValue(secondsInput, secondsKey, next, category).then((committed) => {
+      return commitSecondsValue(secondsInput, secondsKey, next).then((committed) => {
         if (seq === secondsCommitSeq && secondsInFlightValue === next) secondsInFlightValue = null;
         if (seq !== secondsCommitSeq) return committed;
         if (committed && secondsDraftValue === next) secondsDraftValue = null;
@@ -986,14 +972,6 @@
     function runToggle() {
       if (sw.classList.contains("pending")) return;
       const nextEnabled = !currentEnabled();
-      if (category === "update" && !nextEnabled) {
-        setVisual(nextEnabled, true);
-        confirmDisableUpdateBubbles().then((actionId) => {
-          if (actionId === "confirm") runToggleCommit(nextEnabled);
-          else setVisual(currentEnabled(), false);
-        });
-        return;
-      }
       runToggleCommit(nextEnabled);
     }
 
@@ -1049,7 +1027,6 @@
           secondsDraftValue = null;
           return;
         }
-        if (category === "update" && next === 0) return;
         scheduleSecondsCommit(next);
       });
       input.addEventListener("blur", () => {
@@ -1081,17 +1058,6 @@
     }
 
     return item;
-  }
-
-  function confirmDisableUpdateBubbles() {
-    return showSettingsConfirmModal({
-      title: t("updateBubbleDisableConfirmTitle"),
-      detail: t("updateBubbleDisableConfirmDetail"),
-      actions: [
-        { id: "confirm", label: t("updateBubbleDisableConfirmAction"), tone: "danger" },
-        { id: "cancel", label: t("updateBubbleDisableConfirmCancel"), tone: "accent", defaultFocus: true },
-      ],
-    });
   }
 
   function showClaudeHooksDisableConfirmModal() {
@@ -1187,8 +1153,7 @@
     });
   }
 
-  function commitSecondsValue(input, secondsKey, next, category) {
-    const previous = Number(state.snapshot && state.snapshot[secondsKey]) || 0;
+  function commitSecondsValue(input, secondsKey, next) {
     const doCommit = () => {
       return window.settingsAPI.update(secondsKey, next).then((result) => {
         if (!result || result.status !== "ok") {
@@ -1204,13 +1169,6 @@
         return false;
       });
     };
-    if (category === "update" && next === 0 && previous !== 0) {
-      return confirmDisableUpdateBubbles().then((actionId) => {
-        if (actionId === "confirm") return doCommit();
-        input.value = String(previous);
-        return false;
-      });
-    }
     return doCommit();
   }
 

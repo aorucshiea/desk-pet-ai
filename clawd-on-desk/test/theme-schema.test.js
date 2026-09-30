@@ -30,20 +30,18 @@ function validThemeJson(overrides = {}) {
 }
 
 describe("theme schema validation", () => {
-  it("validates schema, rendering, and update bubble anchor shape", () => {
+  it("validates schema and rendering shape", () => {
     const errors = schema.validateTheme({
       schemaVersion: 2,
       states: {},
       viewBox: { x: 0, y: 0, width: 0 },
       rendering: { svgChannel: "img" },
-      updateBubbleAnchorBox: { x: 0, y: "bad", width: 10, height: 10 },
     });
 
     assert.ok(errors.some((error) => error.includes("schemaVersion must be 1")));
     assert.ok(errors.some((error) => error.includes("missing required field: name")));
     assert.ok(errors.some((error) => error.includes("missing or incomplete viewBox")));
     assert.ok(errors.some((error) => error.includes('rendering.svgChannel must be "auto" or "object"')));
-    assert.ok(errors.some((error) => error.includes("updateBubbleAnchorBox must include finite")));
   });
 
   it("treats sleepSequence.mode=direct as not requiring full sleep art", () => {

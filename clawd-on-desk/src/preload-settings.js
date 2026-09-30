@@ -100,7 +100,6 @@ contextBridge.exposeInMainWorld("settingsAPI", {
   listAgents: () => ipcRenderer.invoke("settings:list-agents"),
   detectAgentInstallations: () => ipcRenderer.invoke("settings:detect-agent-installations"),
   getAboutInfo: () => ipcRenderer.invoke("settings:get-about-info"),
-  checkForUpdates: () => ipcRenderer.invoke("settings:check-for-updates"),
   // Screen consent sync + Memory viewer — used by the Screen Click and
   // Memory tabs (settingsAPI surface, not petSettings).
   syncScreenConsent: (value) => ipcRenderer.invoke("settings:sync-screen-consent", value),

@@ -61,7 +61,7 @@ describe("prefs.getDefaults", () => {
     assert.strictEqual(d.savedPixelHeight, 0);
     assert.strictEqual(d.permissionBubblesEnabled, true);
     assert.strictEqual(d.notificationBubbleAutoCloseSeconds, 6);
-    assert.strictEqual(d.updateBubbleAutoCloseSeconds, 9);
+    assert.strictEqual("updateBubbleAutoCloseSeconds" in d, false);
     assert.deepStrictEqual(d.sessionAliases, {});
     assert.deepStrictEqual(d.tgApproval, {
       enabled: false,
@@ -208,7 +208,9 @@ describe("prefs.validate", () => {
     assert.strictEqual(v.hideBubbles, false);
     assert.strictEqual(v.permissionBubblesEnabled, true);
     assert.strictEqual(v.notificationBubbleAutoCloseSeconds, 6);
-    assert.strictEqual(v.updateBubbleAutoCloseSeconds, 9);
+    // Left over from an install that still had the update bubble: a key the
+    // schema no longer declares is pruned, not defaulted.
+    assert.strictEqual("updateBubbleAutoCloseSeconds" in v, false);
     assert.strictEqual(v.allowEdgePinning, false);
     assert.strictEqual(v.disableMiniMode, false);
     assert.strictEqual(v.savedPixelWidth, 0);
@@ -220,7 +222,6 @@ describe("prefs.validate", () => {
     assert.strictEqual(v.hideBubbles, true);
     assert.strictEqual(v.permissionBubblesEnabled, false);
     assert.strictEqual(v.notificationBubbleAutoCloseSeconds, 0);
-    assert.strictEqual(v.updateBubbleAutoCloseSeconds, 0);
   });
 
   it("backfills split bubble prefs from legacy hideBubbles=false", () => {
@@ -228,7 +229,6 @@ describe("prefs.validate", () => {
     assert.strictEqual(v.hideBubbles, false);
     assert.strictEqual(v.permissionBubblesEnabled, true);
     assert.strictEqual(v.notificationBubbleAutoCloseSeconds, 6);
-    assert.strictEqual(v.updateBubbleAutoCloseSeconds, 9);
   });
 
   it("preserves explicit split bubble prefs during legacy backfill", () => {
@@ -236,11 +236,9 @@ describe("prefs.validate", () => {
       hideBubbles: true,
       permissionBubblesEnabled: true,
       notificationBubbleAutoCloseSeconds: 12,
-      updateBubbleAutoCloseSeconds: 8,
     }));
     assert.strictEqual(v.permissionBubblesEnabled, true);
     assert.strictEqual(v.notificationBubbleAutoCloseSeconds, 12);
-    assert.strictEqual(v.updateBubbleAutoCloseSeconds, 8);
   });
 
   it("upgrades legacy default notification bubble duration during v3 migration", () => {

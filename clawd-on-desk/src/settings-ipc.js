@@ -278,7 +278,6 @@ function registerSettingsIpc(options = {}) {
     || (() => ({ percent: 100 }));
   const getAllAgents = requiredDependency(options.getAllAgents, "getAllAgents");
   const detectAgentInstallations = options.detectAgentInstallations || defaultDetectAgentInstallations;
-  const checkForUpdates = options.checkForUpdates || (() => {});
   const getHardwareBuddyStatus = options.getHardwareBuddyStatus || (() => null);
   const testHardwareBuddyApproval = options.testHardwareBuddyApproval || (async () => ({
     status: "error",
@@ -743,12 +742,6 @@ function registerSettingsIpc(options = {}) {
     } catch (err) {
       console.warn("Clawd: failed to read about hero SVG:", err && err.message);
     }
-    let pendingUpdateVersion = "";
-    let autoUpdateCheck = true;
-    try {
-      pendingUpdateVersion = String(settingsController.get("pendingUpdateVersion") || "");
-      autoUpdateCheck = settingsController.get("autoUpdateCheck") !== false;
-    } catch {}
     return {
       version: app.getVersion(),
       appName: productMetadata.appDisplayName,
@@ -758,18 +751,7 @@ function registerSettingsIpc(options = {}) {
       upstreamRepoUrl: productMetadata.upstreamRepoUrl,
       upstreamLabel: productMetadata.upstreamLabel,
       heroSvgContent,
-      pendingUpdateVersion,
-      autoUpdateCheck,
     };
-  });
-
-  handle("settings:check-for-updates", () => {
-    try {
-      checkForUpdates(true);
-      return { status: "ok" };
-    } catch (err) {
-      return { status: "error", message: (err && err.message) || String(err) };
-    }
   });
 
   handle("settings:engine-local-version", async () => {

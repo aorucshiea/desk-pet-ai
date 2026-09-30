@@ -283,10 +283,6 @@ function createPetWindowRuntime(options = {}) {
     return clipHitRectToMiniSeam(petGeometryMain.getHitRectScreen(bounds));
   }
 
-  function getUpdateBubbleAnchorRect(bounds) {
-    return petGeometryMain.getUpdateBubbleAnchorRect(bounds);
-  }
-
   function getSessionHudAnchorRect(bounds) {
     return petGeometryMain.getSessionHudAnchorRect(bounds);
   }
@@ -794,7 +790,6 @@ function createPetWindowRuntime(options = {}) {
     getObjRect,
     getAssetPointerPayload,
     getHitRectScreen,
-    getUpdateBubbleAnchorRect,
     getSessionHudAnchorRect,
     getPetWindowBounds,
     applyPetWindowBounds,

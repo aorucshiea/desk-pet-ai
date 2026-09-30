@@ -23,7 +23,6 @@ function createTopmostRuntime(options = {}) {
   const getWin = defaultGetter(options.getWin || null);
   const getHitWin = defaultGetter(options.getHitWin || null);
   const getPendingPermissions = options.getPendingPermissions || (() => []);
-  const getUpdateBubbleWindow = options.getUpdateBubbleWindow || (() => null);
   const getSessionHudWindow = options.getSessionHudWindow || (() => null);
   const getContextMenuOwner = options.getContextMenuOwner || (() => null);
   const getNearestWorkArea = options.getNearestWorkArea || (() => null);
@@ -83,7 +82,6 @@ function createTopmostRuntime(options = {}) {
     for (const perm of getPendingPermissions()) {
       apply(perm && perm.bubble);
     }
-    apply(getUpdateBubbleWindow());
     apply(getSessionHudWindow());
     apply(getContextMenuOwner());
   }
@@ -193,11 +191,6 @@ function createTopmostRuntime(options = {}) {
         if (isLiveWindow(bubble) && bubble.isVisible()) {
           reassertWindowAndTaskbar(bubble);
         }
-      }
-
-      const updateBubbleWin = getUpdateBubbleWindow();
-      if (isLiveWindow(updateBubbleWin) && updateBubbleWin.isVisible()) {
-        reassertWindowAndTaskbar(updateBubbleWin);
       }
 
       const sessionHudWin = getSessionHudWindow();

@@ -8,7 +8,6 @@ const MENU_AFFECTING_KEYS = new Set([
   "permissionBubblesEnabled",
   "notificationBubbleAutoCloseSeconds",
   "permissionBubbleAutoCloseSeconds",
-  "updateBubbleAutoCloseSeconds",
   "manageClaudeHooksAutomatically",
   "autoStartWithClaude",
   "openAtLogin",
@@ -64,8 +63,6 @@ function createSettingsEffectRouter(options = {}) {
   const clearKimiNotifyBubbles = options.clearKimiNotifyBubbles || noop;
   const refreshPassiveNotifyAutoClose = options.refreshPassiveNotifyAutoClose || noop;
   const refreshPermissionAutoCloseForPolicy = options.refreshPermissionAutoCloseForPolicy || noop;
-  const hideUpdateBubbleForPolicy = options.hideUpdateBubbleForPolicy || noop;
-  const refreshUpdateBubbleAutoClose = options.refreshUpdateBubbleAutoClose || noop;
   const repositionFloatingBubbles = options.repositionFloatingBubbles || noop;
   const applyTextScale = options.applyTextScale || noop;
   const syncSessionHudVisibility = options.syncSessionHudVisibility || noop;
@@ -150,21 +147,6 @@ function createSettingsEffectRouter(options = {}) {
         logWarn,
         "Clawd: refresh notification bubble timers failed:",
         refreshPassiveNotifyAutoClose
-      );
-    }
-    if (
-      ("updateBubbleAutoCloseSeconds" in changes && changes.updateBubbleAutoCloseSeconds === 0) ||
-      ("hideBubbles" in changes && changes.hideBubbles === true)
-    ) {
-      safeCall(logWarn, "Clawd: hide update bubble failed:", hideUpdateBubbleForPolicy);
-    } else if (
-      "updateBubbleAutoCloseSeconds" in changes &&
-      changes.updateBubbleAutoCloseSeconds > 0
-    ) {
-      safeCall(
-        logWarn,
-        "Clawd: refresh update bubble timer failed:",
-        refreshUpdateBubbleAutoClose
       );
     }
     // Permission autoclose: any change (including 0 = disable) needs to be

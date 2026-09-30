@@ -95,7 +95,6 @@ describe("updateRegistry pure-data validators", () => {
     for (const key of [
       "notificationBubbleAutoCloseSeconds",
       "permissionBubbleAutoCloseSeconds",
-      "updateBubbleAutoCloseSeconds",
     ]) {
       assert.strictEqual(updateRegistry[key](0, deps).status, "ok", `${key}(0)`);
       assert.strictEqual(updateRegistry[key](30, deps).status, "ok", `${key}(30)`);
@@ -562,7 +561,7 @@ describe("telegram approval commands", () => {
 });
 
 describe("bubble policy commands", () => {
-  it("setBubbleCategoryEnabled toggles notification and update defaults", async () => {
+  it("setBubbleCategoryEnabled toggles notification defaults", async () => {
     const snapshot = prefs.getDefaults();
     const offNotify = await commandRegistry.setBubbleCategoryEnabled(
       { category: "notification", enabled: false },
@@ -572,12 +571,21 @@ describe("bubble policy commands", () => {
     assert.strictEqual(offNotify.commit.notificationBubbleAutoCloseSeconds, 0);
     assert.strictEqual(offNotify.commit.hideBubbles, false);
 
-    const onUpdate = await commandRegistry.setBubbleCategoryEnabled(
-      { category: "update", enabled: true },
-      { snapshot: { ...snapshot, updateBubbleAutoCloseSeconds: 0 } }
+    const onNotify = await commandRegistry.setBubbleCategoryEnabled(
+      { category: "notification", enabled: true },
+      { snapshot: { ...snapshot, notificationBubbleAutoCloseSeconds: 0 } }
     );
-    assert.strictEqual(onUpdate.status, "ok");
-    assert.strictEqual(onUpdate.commit.updateBubbleAutoCloseSeconds, 9);
+    assert.strictEqual(onNotify.status, "ok");
+    assert.strictEqual(onNotify.commit.notificationBubbleAutoCloseSeconds, 6);
+  });
+
+  it("setBubbleCategoryEnabled rejects the retired update category", async () => {
+    const result = await commandRegistry.setBubbleCategoryEnabled(
+      { category: "update", enabled: true },
+      { snapshot: prefs.getDefaults() }
+    );
+    assert.strictEqual(result.status, "error");
+    assert.match(result.message, /must be one of: permission, notification/);
   });
 
   it("setBubbleCategoryEnabled toggles permission without auto-close", async () => {
@@ -585,7 +593,6 @@ describe("bubble policy commands", () => {
       ...prefs.getDefaults(),
       permissionBubblesEnabled: true,
       notificationBubbleAutoCloseSeconds: 0,
-      updateBubbleAutoCloseSeconds: 0,
     };
     const result = await commandRegistry.setBubbleCategoryEnabled(
       { category: "permission", enabled: false },
@@ -600,7 +607,6 @@ describe("bubble policy commands", () => {
     const snapshot = {
       ...prefs.getDefaults(),
       notificationBubbleAutoCloseSeconds: 12,
-      updateBubbleAutoCloseSeconds: 8,
     };
     const hidden = await commandRegistry.setAllBubblesHidden({ hidden: true }, { snapshot });
     assert.strictEqual(hidden.status, "ok");
@@ -622,7 +628,6 @@ describe("bubble policy commands", () => {
         hideBubbles: true,
         permissionBubblesEnabled: false,
         notificationBubbleAutoCloseSeconds: 0,
-        updateBubbleAutoCloseSeconds: 0,
       },
     });
     assert.strictEqual(shown.status, "ok");
@@ -630,7 +635,6 @@ describe("bubble policy commands", () => {
       hideBubbles: false,
       permissionBubblesEnabled: true,
       notificationBubbleAutoCloseSeconds: 6,
-      updateBubbleAutoCloseSeconds: 9,
     });
   });
 });

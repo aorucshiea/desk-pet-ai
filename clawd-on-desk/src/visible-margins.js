@@ -9,7 +9,7 @@ function getThemeMarginBox(theme) {
 
 function computeThemeAnchorRect(theme, bounds, options = {}) {
   if (!theme || !bounds) return null;
-  const box = options.box || theme.updateBubbleAnchorBox || getThemeMarginBox(theme);
+  const box = options.box || getThemeMarginBox(theme);
   if (!box) return null;
 
   const file = options.file

@@ -101,7 +101,6 @@ function createPermissionHarness({ logPath = null } = {}) {
     getNearestWorkArea: () => ({ x: 0, y: 0, width: 1920, height: 1080 }),
     getHitRectScreen: () => null,
     getHudReservedOffset: () => 0,
-    repositionUpdateBubble: () => {},
     focusTerminalForSession: () => {},
     guardAlwaysOnTop: () => {},
     reapplyMacVisibility: () => {},

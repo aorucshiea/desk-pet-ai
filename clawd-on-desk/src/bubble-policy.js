@@ -1,9 +1,8 @@
 "use strict";
 
-const BUBBLE_KINDS = Object.freeze(["permission", "notification", "update"]);
+const BUBBLE_KINDS = Object.freeze(["permission", "notification"]);
 const BUBBLE_KIND_SET = new Set(BUBBLE_KINDS);
 const NOTIFICATION_DEFAULT_SECONDS = 6;
-const UPDATE_DEFAULT_SECONDS = 9;
 // Permission default = 0 (off): permission requests block tool execution, so an
 // auto-dismiss is a defensive fallback for cases where the agent's HTTP socket
 // stays half-alive (proxy/EDR/etc.) and abortHandler never fires. Users opt in.
@@ -29,14 +28,10 @@ function isAllBubblesHidden(snapshot = {}) {
     snapshot.notificationBubbleAutoCloseSeconds,
     NOTIFICATION_DEFAULT_SECONDS
   );
-  const updateSeconds = normalizeAutoCloseSeconds(
-    snapshot.updateBubbleAutoCloseSeconds,
-    UPDATE_DEFAULT_SECONDS
-  );
   // permissionBubbleAutoCloseSeconds doesn't gate the "all hidden" check —
   // disabling permission bubbles is via permissionBubblesEnabled; autoclose
   // is an orthogonal dismissal policy on top of an already-enabled bubble.
-  return !permissionEnabled && notificationSeconds === 0 && updateSeconds === 0;
+  return !permissionEnabled && notificationSeconds === 0;
 }
 
 function getBubblePolicy(snapshot = {}, kind) {
@@ -59,20 +54,9 @@ function getBubblePolicy(snapshot = {}, kind) {
     return { enabled, autoCloseMs: seconds > 0 ? seconds * 1000 : 0 };
   }
 
-  if (kind === "notification") {
-    const seconds = normalizeAutoCloseSeconds(
-      snapshot.notificationBubbleAutoCloseSeconds,
-      NOTIFICATION_DEFAULT_SECONDS
-    );
-    return {
-      enabled: seconds > 0,
-      autoCloseMs: seconds > 0 ? seconds * 1000 : 0,
-    };
-  }
-
   const seconds = normalizeAutoCloseSeconds(
-    snapshot.updateBubbleAutoCloseSeconds,
-    UPDATE_DEFAULT_SECONDS
+    snapshot.notificationBubbleAutoCloseSeconds,
+    NOTIFICATION_DEFAULT_SECONDS
   );
   return {
     enabled: seconds > 0,
@@ -88,16 +72,11 @@ function buildAggregateHideCommit(hidden, snapshot = {}) {
     snapshot.notificationBubbleAutoCloseSeconds,
     NOTIFICATION_DEFAULT_SECONDS
   );
-  const updateSeconds = normalizeAutoCloseSeconds(
-    snapshot.updateBubbleAutoCloseSeconds,
-    UPDATE_DEFAULT_SECONDS
-  );
   const commit = { hideBubbles: false };
 
-  if (!permissionEnabled && notificationSeconds === 0 && updateSeconds === 0) {
+  if (!permissionEnabled && notificationSeconds === 0) {
     commit.permissionBubblesEnabled = true;
     commit.notificationBubbleAutoCloseSeconds = NOTIFICATION_DEFAULT_SECONDS;
-    commit.updateBubbleAutoCloseSeconds = UPDATE_DEFAULT_SECONDS;
   }
 
   return commit;
@@ -117,25 +96,15 @@ function buildCategoryEnabledCommit(snapshot = {}, category, enabled) {
       snapshot.notificationBubbleAutoCloseSeconds,
       NOTIFICATION_DEFAULT_SECONDS
     ),
-    updateBubbleAutoCloseSeconds: normalizeAutoCloseSeconds(
-      snapshot.updateBubbleAutoCloseSeconds,
-      UPDATE_DEFAULT_SECONDS
-    ),
   };
 
   if (category === "permission") {
     next.permissionBubblesEnabled = enabled;
-  } else if (category === "notification") {
+  } else {
     next.notificationBubbleAutoCloseSeconds = enabled
       ? (next.notificationBubbleAutoCloseSeconds > 0
           ? next.notificationBubbleAutoCloseSeconds
           : NOTIFICATION_DEFAULT_SECONDS)
-      : 0;
-  } else {
-    next.updateBubbleAutoCloseSeconds = enabled
-      ? (next.updateBubbleAutoCloseSeconds > 0
-          ? next.updateBubbleAutoCloseSeconds
-          : UPDATE_DEFAULT_SECONDS)
       : 0;
   }
 
@@ -146,7 +115,6 @@ function buildCategoryEnabledCommit(snapshot = {}, category, enabled) {
 module.exports = {
   BUBBLE_KINDS,
   NOTIFICATION_DEFAULT_SECONDS,
-  UPDATE_DEFAULT_SECONDS,
   PERMISSION_DEFAULT_SECONDS,
   MAX_AUTO_CLOSE_SECONDS,
   getBubblePolicy,

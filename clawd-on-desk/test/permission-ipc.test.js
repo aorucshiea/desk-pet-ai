@@ -5,7 +5,6 @@ const assert = require("node:assert");
 const Module = require("node:module");
 
 const PERMISSION_MODULE_PATH = require.resolve("../src/permission");
-const UPDATE_BUBBLE_MODULE_PATH = require.resolve("../src/update-bubble");
 
 class FakeIpcMain {
   constructor() {
@@ -77,33 +76,3 @@ test("permission IPC registers owned channels, delegates, and disposes", () => {
   assert.strictEqual(ipcMain.listeners.size, 0);
 });
 
-test("update bubble IPC registers owned channels, delegates, and disposes", () => {
-  const initUpdateBubble = loadModuleWithElectron(UPDATE_BUBBLE_MODULE_PATH, {
-    BrowserWindow: class {},
-  });
-  const ipcMain = new FakeIpcMain();
-  const calls = [];
-  const runtime = initUpdateBubble.registerUpdateBubbleIpc({
-    ipcMain,
-    updateBubble: {
-      handleUpdateBubbleHeight: (event, height) => calls.push(["height", event.sender, height]),
-      handleUpdateBubbleAction: (event, actionId) => calls.push(["action", event.sender, actionId]),
-    },
-  });
-
-  assert.deepStrictEqual([...ipcMain.listeners.keys()].sort(), [
-    "update-bubble-action",
-    "update-bubble-height",
-  ]);
-
-  ipcMain.send("update-bubble-height", 180);
-  ipcMain.send("update-bubble-action", "download");
-
-  assert.deepStrictEqual(calls, [
-    ["height", "sender-web-contents", 180],
-    ["action", "sender-web-contents", "download"],
-  ]);
-
-  runtime.dispose();
-  assert.strictEqual(ipcMain.listeners.size, 0);
-});

@@ -193,7 +193,6 @@ function createHarness(overrides = {}) {
     testHardwareBuddyApproval: overrides.testHardwareBuddyApproval,
     getQuickCommandPresets: overrides.getQuickCommandPresets,
     sendQuickCommand: overrides.sendQuickCommand,
-    checkForUpdates: (manual) => calls.push(["checkForUpdates", manual]),
     aboutHeroSvgPath: overrides.aboutHeroSvgPath || path.join(__dirname, "missing-about-hero.svg"),
     getLanWsServer: overrides.getLanWsServer || (() => null),
     now: overrides.now || (() => 12345),
@@ -629,7 +628,7 @@ test("settings IPC previews sound only when not muted or in DND", async () => {
   });
 });
 
-test("settings IPC serves agent/about/update/external and remove-theme dialog helpers", async () => {
+test("settings IPC serves agent/about/external and remove-theme dialog helpers", async () => {
   const root = makeTempDir();
   try {
     const heroSvgPath = path.join(root, "hero.svg");
@@ -672,15 +671,12 @@ test("settings IPC serves agent/about/update/external and remove-theme dialog he
       upstreamRepoUrl: "https://github.com/rullerzhou-afk/clawd-on-desk",
       upstreamLabel: "clawd-on-desk",
       heroSvgContent: "<svg id=\"hero\"></svg>",
-      pendingUpdateVersion: "",
-      autoUpdateCheck: true,
     });
     assert.deepStrictEqual(await ipcMain.invoke("settings:confirm-remove-theme", "user-theme"), {
       confirmed: true,
     });
     assert.deepStrictEqual(messageBoxParent, { id: "parent", sender: "sender-web-contents" });
     assert.strictEqual(messageBoxOptions.message, 'Delete theme "Theme user-theme"?');
-    assert.deepStrictEqual(await ipcMain.invoke("settings:check-for-updates"), { status: "ok" });
     assert.deepStrictEqual(await ipcMain.invoke("settings:open-external", "file:///tmp"), {
       status: "error",
       message: "Invalid URL",
@@ -689,7 +685,6 @@ test("settings IPC serves agent/about/update/external and remove-theme dialog he
       status: "ok",
     });
     assert.deepStrictEqual(calls, [
-      ["checkForUpdates", true],
       ["openExternal", "https://example.test"],
     ]);
   } finally {

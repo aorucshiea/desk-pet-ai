@@ -72,7 +72,6 @@ function makeCtx(overrides = {}) {
     permDebugLog: null,
     updateDebugLog: null,
     sessionDebugLog: null,
-    repositionUpdateBubble: () => {},
     win: null,
     bubbleFollowPet: false,
     petHidden: false,

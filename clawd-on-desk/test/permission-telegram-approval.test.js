@@ -61,7 +61,6 @@ function makeCtx(overrides = {}) {
     guardAlwaysOnTop: () => {},
     reapplyMacVisibility: () => {},
     permDebugLog: null,
-    repositionUpdateBubble: () => {},
     win: null,
     bubbleFollowPet: false,
     petHidden: false,

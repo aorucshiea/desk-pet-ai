@@ -442,10 +442,6 @@ function exitMiniMode() {
       const resolved = ctx.resolveDisplayState();
       ctx.applyState(resolved, ctx.getSvgOverride(resolved));
     }
-    // #329: a deferred update bubble may be waiting on mini exit.
-    if (typeof ctx.notifyUpdaterSilentExit === "function") {
-      try { ctx.notifyUpdaterSilentExit(); } catch {}
-    }
   });
 }
 

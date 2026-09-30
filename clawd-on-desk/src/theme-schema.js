@@ -150,23 +150,6 @@ function validateTheme(cfg) {
     }
   }
 
-  if (cfg.updateBubbleAnchorBox !== undefined) {
-    const box = cfg.updateBubbleAnchorBox;
-    if (
-      !isPlainObject(box)
-      || box.x == null
-      || box.y == null
-      || box.width == null
-      || box.height == null
-      || !Number.isFinite(box.x)
-      || !Number.isFinite(box.y)
-      || !Number.isFinite(box.width)
-      || !Number.isFinite(box.height)
-    ) {
-      errors.push("updateBubbleAnchorBox must include finite x, y, width, height");
-    }
-  }
-
   if (cfg.rendering !== undefined) {
     if (!isPlainObject(cfg.rendering)) {
       errors.push("rendering must be an object when present");
@@ -689,11 +672,8 @@ function mergeDefaults(raw, themeId, isBuiltin) {
   // idleAnimations
   theme.idleAnimations = raw.idleAnimations || [];
 
-  // updater-specific visual bindings
+  // Visual states the pet shows while an update is in flight.
   theme.updateVisuals = isPlainObject(raw.updateVisuals) ? { ...raw.updateVisuals } : {};
-  theme.updateBubbleAnchorBox = isPlainObject(raw.updateBubbleAnchorBox)
-    ? { ...raw.updateBubbleAnchorBox }
-    : null;
 
   // Filename sanitization: basename all file references to prevent path traversal.
   const bn = basenameOnly;

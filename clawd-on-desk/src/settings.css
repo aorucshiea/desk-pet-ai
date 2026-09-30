@@ -3335,19 +3335,6 @@ html, body {
   cursor: pointer;
 }
 .about-license-value a:hover { text-decoration: underline; }
-.about-check-update-btn {
-  background: var(--accent);
-  color: #ffffff;
-  border: none;
-  border-radius: 6px;
-  padding: 6px 14px;
-  font-size: 12px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: background 0.15s ease;
-}
-.about-check-update-btn:hover { background: var(--accent-hover); }
-.about-check-update-btn:disabled { opacity: 0.6; cursor: default; }
 .about-contributors-list {
   display: flex;
   flex-wrap: wrap;

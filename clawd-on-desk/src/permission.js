@@ -501,12 +501,6 @@ function syncPermissionShortcuts() {
   });
 }
 
-function repositionDependentBubbles() {
-  if (typeof ctx.repositionUpdateBubble === "function") {
-    try { ctx.repositionUpdateBubble(); } catch {}
-  }
-}
-
 function hotkeyResolve(behavior, message) {
   const targets = getActionablePermissions();
   if (!targets.length) return;
@@ -665,7 +659,6 @@ function showPermissionBubble(permEntry) {
 
   repositionBubbles();
   bub.showInactive();
-  repositionDependentBubbles();
   keepOutOfTaskbar(bub);
   // macOS: defer full visibility restoration to avoid activating Clawd
   if (isMac) deferMacFloatingVisibility(ctx, bub);
@@ -979,7 +972,6 @@ function dismissPermissionForTerminal(perm) {
     perm.hideTimer = setTimeout(() => { if (!bub.isDestroyed()) bub.destroy(); }, 250);
   }
   repositionBubbles();
-  repositionDependentBubbles();
   syncPermissionShortcuts();
   ctx.focusTerminalForSession(perm.sessionId, { fallbackEntry: buildPermissionFocusEntry(perm) });
 }
@@ -1118,7 +1110,6 @@ function applyPermissionSuggestion(perm, index, options = {}) {
 
   // Reposition remaining bubbles to fill the gap
   repositionBubbles();
-  repositionDependentBubbles();
   syncPermissionShortcuts();
 
   // opencode: decisions go back via the plugin's reverse bridge (Bun.serve
@@ -1444,7 +1435,6 @@ function handleBubbleHeight(event, height) {
   if (perm && typeof height === "number" && height > 0) {
     perm.measuredHeight = Math.ceil(height);
     repositionBubbles();
-    repositionDependentBubbles();
   }
 }
 
@@ -1649,7 +1639,6 @@ function dismissPassiveNotify(permEntry, reason = "unknown") {
     setTimeout(() => { if (!bub.isDestroyed()) bub.destroy(); }, 250);
   }
   repositionBubbles();
-  repositionDependentBubbles();
   syncPermissionShortcuts();
 }
 
@@ -1747,7 +1736,6 @@ function dismissPermissionsByAgent(agentId, options = {}) {
     dismissInteractivePermissionWithoutDecision(perm, reason);
   }
   repositionBubbles();
-  repositionDependentBubbles();
   syncPermissionShortcuts();
   permLog(`dismissPermissionsByAgent(${agentId}${subagentOnly ? ", subagent-only" : ""}): cleared ${toDismiss.length}`);
   return toDismiss.length;
@@ -1776,7 +1764,6 @@ function dismissPermissionsForDnd() {
     dismissInteractivePermissionWithoutDecision(perm, "dnd-enabled");
   }
   repositionBubbles();
-  repositionDependentBubbles();
   syncPermissionShortcuts();
   permLog(`dismissPermissionsForDnd(): cleared ${toDismiss.length}`);
   return toDismiss.length;

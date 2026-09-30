@@ -32,7 +32,6 @@ const {
 } = require("./hardware-buddy-settings");
 const {
   NOTIFICATION_DEFAULT_SECONDS,
-  UPDATE_DEFAULT_SECONDS,
   PERMISSION_DEFAULT_SECONDS,
   MAX_AUTO_CLOSE_SECONDS,
 } = require("./bubble-policy");
@@ -148,11 +147,6 @@ const SCHEMA = {
   permissionBubbleAutoCloseSeconds: {
     type: "number",
     default: PERMISSION_DEFAULT_SECONDS,
-    validate: (v) => Number.isInteger(v) && v >= 0 && v <= MAX_AUTO_CLOSE_SECONDS,
-  },
-  updateBubbleAutoCloseSeconds: {
-    type: "number",
-    default: UPDATE_DEFAULT_SECONDS,
     validate: (v) => Number.isInteger(v) && v >= 0 && v <= MAX_AUTO_CLOSE_SECONDS,
   },
   soundMuted: { type: "boolean", default: false },
@@ -309,23 +303,6 @@ const SCHEMA = {
     defaultFactory: () => ({ ...DEFAULT_HARDWARE_BUDDY_SETTINGS }),
     normalize: normalizeHardwareBuddySettings,
   },
-  // Background update-check toggle. When true, the scheduler in updater.js
-  // runs a quiet GitHub discovery on a 12-hour cycle (packaged builds only).
-  // Default on per #329.
-  autoUpdateCheck: { type: "boolean", default: true },
-  // Last version the scheduler discovered that is newer than the running
-  // app. Empty string = none pending. Surfaced in the tray label and the
-  // About version-row hint. Cleared on install or by
-  // reconcilePendingOnStartup() when app.getVersion() catches up.
-  pendingUpdateVersion: { type: "string", default: "" },
-  // Versions the user explicitly dismissed (clicked Later on the scheduler
-  // bubble after actually seeing it). Object map of `{ "v0.9.0": true }`
-  // because prefs.js does not support `type: "array"` (see isValidValue).
-  dismissedUpdateVersions: {
-    type: "object",
-    defaultFactory: () => ({}),
-    normalize: normalizeDismissedUpdateVersions,
-  },
   // Skills system (Phase 1: skill discovery + injection, Phase 2: MCP,
   // Phase 3: self-evolution).
   skills: {
@@ -480,9 +457,6 @@ function migrate(raw) {
     if (out.notificationBubbleAutoCloseSeconds === undefined) {
       out.notificationBubbleAutoCloseSeconds = out.hideBubbles ? 0 : NOTIFICATION_DEFAULT_SECONDS;
     }
-    if (out.updateBubbleAutoCloseSeconds === undefined) {
-      out.updateBubbleAutoCloseSeconds = out.hideBubbles ? 0 : UPDATE_DEFAULT_SECONDS;
-    }
   }
   // v1 -> v2 historical backfill for the short-lived Pi permission subgate.
   // v4 below resets it off again because Pi is state-only.
@@ -531,10 +505,9 @@ function migrate(raw) {
     delete out.sessionHudAutoHide;
     out.version = 5;
   }
-  // v5 → v6: introduce autoUpdateCheck / pendingUpdateVersion /
-  // dismissedUpdateVersions for the #329 scheduler. No data conversion
-  // needed — new keys fill in from schema defaults via validate(); the
-  // version bump just records that the schema grew.
+  // v5 → v6: historical bump — it introduced the #329 update-scheduler prefs,
+  // which were retired with the updater itself. The bump stays because
+  // renumbering versions would make existing on-disk prefs ambiguous.
   if (out.version < 6) {
     out.version = 6;
   }
@@ -614,15 +587,6 @@ const AGENT_FLAGS = [
   "nativeNotificationSoundEnabled",
 ];
 const CODEX_PERMISSION_MODES = ["native", "intercept"];
-
-function normalizeDismissedUpdateVersions(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
-  const out = {};
-  for (const key of Object.keys(value)) {
-    if (typeof key === "string" && key && value[key] === true) out[key] = true;
-  }
-  return out;
-}
 
 function normalizeDismissedAgentHintMap(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
