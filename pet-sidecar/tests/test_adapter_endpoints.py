@@ -44,6 +44,9 @@ def app_with_stub_llama(adapter_dir, model_path):
 
     async def fake_stream_chat(**kwargs):
         captured["lora_kwarg"] = kwargs.get("lora", "MISSING")
+        # Keep the whole call so injection regressions can assert on the
+        # text that actually reaches the model (not just the lora kwarg).
+        captured["chat_kwargs"] = dict(kwargs)
         # Yield one content tuple so the gateway's stream consumer drains.
         yield ("content", "ok")
 
@@ -161,6 +164,34 @@ def test_load_adapter_activates_known_path(app_with_stub_llama, adapter_dir):
         r2 = client.get("/api/health")
         assert r2.json()["adapter"] == str(Path(target).resolve())
         assert r2.json()["persona"] == "neko"
+
+
+def test_chat_injection_reaches_the_model_when_plugins_are_present(app_with_stub_llama):
+    """The subconscious injection must actually reach the model.
+
+    Live, this block was swallowed by a bare `except Exception` for a
+    week (34 occurrences, zero trace): `_organ` raised NameError because
+    it lived in build_app's closure while this code runs at module scope,
+    and the model silently lost its body-capability / episodic /
+    continuity context on every single turn. Tests stayed green.
+
+    This pins the end-to-end shape: with the plugin kernel present, the
+    request handed to the model must contain the injected block.
+    """
+    import json
+
+    app, captured, _instance = app_with_stub_llama
+    with TestClient(app) as client:
+        r = client.post("/api/chat", json={
+            "messages": [{"role": "user", "content": "你在吗"}],
+        })
+        assert r.status_code == 200, r.text[:400]
+
+    blob = json.dumps(captured.get("chat_kwargs", {}), ensure_ascii=False, default=str)
+    assert "身体与进化" in blob, (
+        "plugin kernel is present but the injection block never reached the "
+        "model — this is exactly the live silent-swallow shape"
+    )
 
 
 def test_load_adapter_null_unloads(app_with_stub_llama, adapter_dir):
