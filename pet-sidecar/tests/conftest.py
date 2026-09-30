@@ -12,7 +12,21 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+import pytest
 from fastapi import testclient as _tc
+
+
+@pytest.fixture(autouse=True)
+def _isolate_memory_root(tmp_path, monkeypatch):
+    """Pin every test to its own memory root.
+
+    Since a19eb4c the dev fallback IS the live root, and several test
+    files call build_app() without PET_MEMORY_DIR — so a bare
+    `pytest tests/` used to write the user's real memories
+    (mood.json / events.json) and run the plugin watcher over their live
+    plugins directory. That is user data being mutated by a test run.
+    """
+    monkeypatch.setenv("PET_MEMORY_DIR", str(tmp_path / "memories"))
 
 
 def _gateway_token() -> str:
