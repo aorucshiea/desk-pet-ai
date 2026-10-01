@@ -448,10 +448,12 @@
   function renderAddDetail(d, skills, providers) {
     d.appendChild(el("div", { className: "prov-detail-title" },
       el("span", { className: "prov-detail-name" }, t("provAddTitle"))));
-    d.appendChild(el("p", { className: "prov-detail-desc" }, t("provAddHint")));
+    d.appendChild(el("p", { className: "prov-detail-desc" },
+      t(_sourceMode === "local" ? "provAddHint" : "provAddHintCloud")));
 
-    // Preset cards — the recommended path for local models: LM Studio /
-    // Ollama already handle engine binaries; the pet just talks to them.
+    // Local presets — LM Studio / Ollama. LOCAL MODE ONLY: showing them
+    // inside the cloud half was exactly the "why is lmstudio here" bug.
+    if (_sourceMode === "local") {
     const grid = el("div", { className: "prov-preset-grid" });
     const mkPreset = (name, desc, cfg) => {
       const card = el("button", { type: "button", className: "prov-preset-card" });
@@ -485,6 +487,7 @@
       contextWindow: null,
     }));
     d.appendChild(grid);
+    } // end of local-only presets
 
     // Cloud provider presets — shown in cloud mode only. 国产优先,
     // then global aggregators. One click creates the provider with the
