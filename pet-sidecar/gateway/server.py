@@ -1910,7 +1910,7 @@ def build_app(
         """Manual engine start from the settings page. Uses whatever model
         the client is configured with; fails loudly when none is set (the
         user must pick a model first)."""
-        if server.alive():
+        if server.alive:
             return {"ok": True, "already": True}
         try:
             await server.start()
@@ -1920,7 +1920,7 @@ def build_app(
 
     @app.post("/api/engine/stop")
     async def engine_stop():
-        was = server.alive()
+        was = server.alive
         await server.stop()
         return {"ok": True, "was_running": was}
 
@@ -1930,7 +1930,7 @@ def build_app(
         Settings page can show reality instead of guessing."""
         return {
             "ok": True,
-            "running": server.alive(),
+            "running": server.alive,
             "params": {
                 "load_mode": server.load_mode,
                 "cache_type_k": server.cache_type_k,
@@ -1949,7 +1949,7 @@ def build_app(
     @app.post("/api/engine/benchmark")
     async def engine_benchmark(payload: dict = None):
         """One-shot speed test: returns llama.cpp's own tokens/sec."""
-        if not server.alive():
+        if not server.alive:
             return JSONResponse(
                 {"ok": False, "error": "引擎未运行，先点「启动引擎」再测速"},
                 status_code=409,
