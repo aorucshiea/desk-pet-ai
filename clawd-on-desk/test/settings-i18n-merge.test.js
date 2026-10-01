@@ -48,4 +48,21 @@ describe("settings i18n product-table merge", () => {
       assert.notStrictEqual(STRINGS.zh[key], STRINGS.en[key], `zh.${key} equals the English value`);
     }
   });
+
+  it("no user-facing string advertises the deleted Dashboard window", () => {
+    // The Dashboard was removed end to end, but 通用 → 文字大小 kept saying
+    // it scaled "气泡、会话 HUD、Dashboard 和设置页" in all five languages —
+    // copy that points at a page which no longer exists is a bug report
+    // waiting to happen, so the whole table is policed, not just that row.
+    const offenders = [];
+    for (const [lang, block] of Object.entries(STRINGS)) {
+      for (const [key, value] of Object.entries(block)) {
+        if (typeof value !== "string") continue;
+        if (/dashboard|ダッシュボード|대시보드/i.test(value)) {
+          offenders.push(`${lang}.${key}: ${value.slice(0, 70)}`);
+        }
+      }
+    }
+    assert.deepEqual(offenders, [], "stale Dashboard copy:\n  " + offenders.join("\n  "));
+  });
 });
