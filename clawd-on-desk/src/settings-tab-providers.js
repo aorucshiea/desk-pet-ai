@@ -342,6 +342,199 @@
     }, { accent: true });
   }
 
+  // ── CherryStudio-style model discovery ────────────────────────────────
+  // One factory for every form that has a model field. Replaces the
+  // native <datalist>, which silently filters candidates by the input's
+  // current text — a placeholder like "local-model" matches none of the
+  // discovered ids and the dropdown reads as dead. The custom menu lists
+  // everything the endpoint serves; clicking the input reopens it.
+  function mountModelDiscovery(d, { modelInp, urlInp, getKey }) {
+    const menu = el("div", { className: "prov-model-menu" });
+    menu.hidden = true;
+    d.appendChild(menu);
+
+    modelInp.addEventListener("click", () => {
+      if (menu.childElementCount > 0) menu.hidden = !menu.hidden;
+    });
+    const onDocClick = (ev) => {
+      if (!menu.isConnected) { document.removeEventListener("click", onDocClick); return; }
+      if (!menu.hidden && !menu.contains(ev.target) && ev.target !== modelInp) menu.hidden = true;
+    };
+    document.addEventListener("click", onDocClick);
+
+    return async () => {
+      try {
+        const res = await window.settingsAPI.discoverModels({
+          baseUrl: urlInp.value.trim(),
+          apiKey: (getKey ? getKey() : "").trim(),
+        });
+        if (res && res.ok && Array.isArray(res.models) && res.models.length) {
+          menu.innerHTML = "";
+          for (const m of res.models) {
+            const item = el("button", { type: "button", className: "prov-model-item" }, m);
+            item.addEventListener("click", () => {
+              modelInp.value = m;
+              menu.hidden = true;
+            });
+            menu.appendChild(item);
+          }
+          menu.hidden = false;
+          toast(String(t("provFetchOk")).replace("{n}", String(res.models.length)));
+        } else {
+          toast((res && res.error) || t("provFetchFail"), true);
+        }
+      } catch (err) {
+        toast(String(err), true);
+      }
+    };
+  }
+
+  // ── Built-in engine: which .gguf, loaded from where ────────────────────
+  //
+  // The switcher and the scanned-folders manager used to sit on the Brain
+  // page under its 模型 heading. They are local-source settings — the Brain
+  // page only reports which brain is live — so they live here, above the
+  // engine that reads them.
+  function formatModelSize(bytes) {
+    if (!Number.isFinite(bytes) || bytes <= 0) return "";
+    if (bytes >= 1024 * 1024 * 1024) return (bytes / 1073741824).toFixed(2) + " GB";
+    return (bytes / 1048576).toFixed(0) + " MB";
+  }
+
+  function localModelBlock() {
+    const box = el("div", { className: "prov-local-model" });
+
+    const title = el("div", { className: "prov-local-model-title" }, t("petRowCurrentModel"));
+    box.appendChild(title);
+
+    const select = el("select", { className: "prov-input prov-model-select" });
+    select.appendChild(el("option", { value: "" }, t("petModelPathUnset")));
+    select.disabled = true;
+    box.appendChild(select);
+
+    const fill = async () => {
+      if (!window.petSettings
+        || typeof window.petSettings.listLocalModels !== "function") return;
+      let ret = null;
+      try { ret = await window.petSettings.listLocalModels(); } catch { return; }
+      const models = (ret && ret.models) || [];
+      // A repaint can land after the pane was replaced by a re-render.
+      if (!select.isConnected) return;
+      select.innerHTML = "";
+      if (models.length === 0) {
+        select.appendChild(el("option", { value: "" }, t("petModelPathUnset")));
+        select.disabled = true;
+        return;
+      }
+      for (const m of models) {
+        if (!m || !m.path) continue;
+        const size = formatModelSize(m.sizeBytes);
+        const opt = el("option", { value: m.path },
+          `${m.label || m.path}${size ? " · " + size : ""}`);
+        if (m.current) opt.selected = true;
+        select.appendChild(opt);
+      }
+      select.disabled = false;
+    };
+
+    select.addEventListener("change", async () => {
+      const path = select.value;
+      if (!path) return;
+      select.disabled = true;
+      try {
+        const ret = await window.petSettings.useModelDir(path);
+        if (ret && ret.reloadError) toast(t("petReloadError") + ret.reloadError, true);
+        else if (ret && !ret.ok) toast(t("petReloadError") + (ret.error || ""), true);
+      } catch (err) {
+        toast(t("petReloadError") + ((err && err.message) || err), true);
+      } finally {
+        select.disabled = false;
+        void fill();
+      }
+    });
+    void fill();
+
+    const foldersEl = el("div", { className: "pet-model-folders-list" });
+    const paintFolders = (folders) => {
+      foldersEl.innerHTML = "";
+      if (!folders || folders.length === 0) {
+        foldersEl.appendChild(el("div", { className: "pet-model-folder-empty" },
+          t("petModelsFolderEmpty")));
+        return;
+      }
+      for (const f of folders) {
+        const row = el("div", { className: "pet-model-folder-item" });
+        row.appendChild(el("span", { className: "pet-model-folder-path", title: f }, f));
+        const rm = el("button", {
+          type: "button",
+          className: "soft-btn pet-model-folder-remove",
+          onClick: async () => {
+            try {
+              await window.petSettings.removeModelFolder(f);
+              const cur = await window.petSettings.listModelFolders();
+              paintFolders((cur && cur.folders) || []);
+            } catch {}
+          },
+        }, t("petModelsFolderRemove"));
+        row.appendChild(rm);
+        foldersEl.appendChild(row);
+      }
+    };
+
+    const refreshFolders = async () => {
+      try {
+        const ret = await window.petSettings.listModelFolders();
+        paintFolders((ret && ret.folders) || []);
+      } catch { paintFolders([]); }
+    };
+
+    const addFolder = async () => {
+      try {
+        const ret = await window.petSettings.addModelFolder();
+        if (!ret || ret.canceled) return;
+        if (!ret.ok) { toast(t("petModelsFolderAddFailed") + (ret.error || ""), true); return; }
+        paintFolders(ret.folders || []);
+      } catch {}
+    };
+    const addFile = async () => {
+      try {
+        const ret = await window.petSettings.addModelFile();
+        if (!ret || ret.canceled) return;
+        if (!ret.ok) { toast(t("petModelsFolderAddFailed") + (ret.error || ""), true); return; }
+        paintFolders(ret.folders || []);
+        if (ret.reloadError) toast(t("petReloadError") + ret.reloadError, true);
+        void fill();
+      } catch {}
+    };
+
+    const actions = el("div", { className: "prov-actions" });
+    // Browse registers the picked file's folder in the scan list AND
+    // hot-loads that .gguf (mmproj sibling auto-detected).
+    actions.appendChild(softBtn(t("petChangeModel"), async () => {
+      let ret = null;
+      try {
+        ret = await window.petSettings.pickModelDir();
+      } catch (err) {
+        toast(t("petReloadError") + ((err && err.message) || err), true);
+      }
+      if (ret && ret.ok) {
+        if (ret.reloadError) toast(t("petReloadError") + ret.reloadError, true);
+        renderAll();
+        return;
+      }
+      if (ret && !ret.canceled && ret.error) toast(ret.error, true);
+    }, { accent: true }));
+    actions.appendChild(softBtn("+ " + t("petModelsFolderAdd"), addFolder));
+    actions.appendChild(softBtn("+ " + t("petModelsFileAdd"), addFile));
+    box.appendChild(actions);
+
+    box.appendChild(el("div", { className: "prov-local-model-title prov-local-folders-title" },
+      t("petModelsFolderLabel")));
+    box.appendChild(foldersEl);
+    if (typeof window.petSettings?.listModelFolders === "function") void refreshFolders();
+    return box;
+  }
+
   function renderLocalDetail(d, skills) {
     d.appendChild(el("div", { className: "prov-detail-title" },
       tile(tileFor("local")),
@@ -377,10 +570,17 @@
     if (use) actions.appendChild(use);
     if (actions.childElementCount > 0) d.appendChild(actions);
 
+    // Choosing WHICH file the built-in engine loads, and which folders it
+    // may load from, happens right here — the Brain page only reports the
+    // result, it is not the place to change it.
+    if (window.petSettings) d.appendChild(localModelBlock());
+
     // The llama.cpp engine lives here rather than on the Brain page: it is
-    // part of "run the model on this machine". The card itself is owned by
-    // the Brain tab module (its health poll feeds it) and adopted here.
-    if (false && core && core.enginePanel && typeof core.enginePanel.mount === "function") {
+    // part of "run the model on this machine". The cards themselves are
+    // owned by the Brain tab module (its health poll feeds them) and
+    // adopted here — 推理引擎 then 高级设置, in that order.
+    if (window.petSettings && core && core.enginePanel
+      && typeof core.enginePanel.mount === "function") {
       const engineHost = el("div", { className: "prov-engine-host" });
       d.appendChild(engineHost);
       core.enginePanel.mount(engineHost);
@@ -401,37 +601,12 @@
     const modelInp = textInput(p.model, { placeholder: id === "ollama" ? "llama3.2" : "local-model" });
     d.appendChild(fieldRow(t("provFieldUrl"), urlInp));
     d.appendChild(fieldRow(t("provFieldModel"), modelInp));
-        // CherryStudio-style discovery: enumerate what this endpoint serves
-        // instead of making the user hand-copy a model id.
-        const modelDl = el("datalist", { id: "prov-model-dl" });
-        modelInp.setAttribute("list", "prov-model-dl");
-        d.appendChild(modelDl);
-        d.appendChild(softBtn(t("provFetchModels"), async () => {
-          const btn = d.querySelector(".prov-fetch-btn");
-          if (btn) btn.disabled = true;
-          try {
-            // Local servers ship a dummy key (LM Studio / Ollama ignore
-            // it); there is deliberately no key field on this form.
-            const res = await window.settingsAPI.discoverModels({
-              baseUrl: urlInp.value.trim(),
-              apiKey: (p.apiKey || "").trim(),
-            });
-            if (res && res.ok && Array.isArray(res.models) && res.models.length) {
-              modelDl.innerHTML = "";
-              for (const m of res.models) {
-                const o = document.createElement("option");
-                o.value = m;
-                modelDl.appendChild(o);
-              }
-              toast(String(t("provFetchOk")).replace("{n}", String(res.models.length)));
-            } else {
-              toast((res && res.error) || t("provFetchFail"));
-            }
-          } catch (err) {
-            toast(String(err));
-          }
-          if (btn) btn.disabled = false;
-        })).classList.add("prov-fetch-btn");
+    const fetchServerModels = mountModelDiscovery(d, {
+      modelInp,
+      urlInp,
+      getKey: () => (p.apiKey || "").trim(),
+    });
+    d.appendChild(softBtn(t("provFetchModels"), () => fetchServerModels()));
 
     const actions = el("div", { className: "prov-actions" });
     const use = useButton(skills.defaultProvider || "local", id);
@@ -470,36 +645,12 @@
     d.appendChild(fieldRow(t("provFieldKey"), keyInp));
     d.appendChild(fieldRow(t("provFieldUrl"), urlInp));
     d.appendChild(fieldRow(t("provFieldModel"), modelInp));
-        // Same discovery affordance as the add form: the preset cards ship
-        // with an empty model now, so the edit form MUST be able to list
-        // what the endpoint actually serves.
-        const modelDl = el("datalist", { id: "prov-model-dl-edit" });
-        modelInp.setAttribute("list", "prov-model-dl-edit");
-        d.appendChild(modelDl);
-        d.appendChild(softBtn(t("provFetchModels"), async () => {
-          const btn = d.querySelector(".prov-fetch-btn-edit");
-          if (btn) btn.disabled = true;
-          try {
-            const res = await window.settingsAPI.discoverModels({
-              baseUrl: urlInp.value.trim(),
-              apiKey: keyInp.value.trim(),
-            });
-            if (res && res.ok && Array.isArray(res.models) && res.models.length) {
-              modelDl.innerHTML = "";
-              for (const m of res.models) {
-                const o = document.createElement("option");
-                o.value = m;
-                modelDl.appendChild(o);
-              }
-              toast(String(t("provFetchOk")).replace("{n}", String(res.models.length)));
-            } else {
-              toast((res && res.error) || t("provFetchFail"));
-            }
-          } catch (err) {
-            toast(String(err));
-          }
-          if (btn) btn.disabled = false;
-        })).classList.add("prov-fetch-btn-edit");
+    const fetchEditModels = mountModelDiscovery(d, {
+      modelInp,
+      urlInp,
+      getKey: () => keyInp.value.trim(),
+    });
+    d.appendChild(softBtn(t("provFetchModels"), () => fetchEditModels()));
     d.appendChild(fieldRow(t("provFieldContext"), ctxInp));
 
     const thinkRow = el("div", { className: "prov-field" });

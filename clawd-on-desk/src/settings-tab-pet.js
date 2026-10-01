@@ -49,19 +49,13 @@
   // Survive re-renders within the same Settings session so the user
   // doesn't have to re-expand a disclosure every time they revisit the tab.
   let advancedExpanded = false;
-  let foldersExpanded = false;
 
-  // The product surface treats DeskPet5 0.9B as the canonical bundled
-  // model. Showing the actual gguf filename as the page title would create
-  // noise once users sideload variants — the picker and path row expose it.
-  const PATH_TRUNCATE_MAX = 56;
 
   const HEALTH_INTERVAL_MS_SLOW = 60_000;
   const HEALTH_INTERVAL_MS_FAST = 5_000;
   const HEALTH_FAST_ATTEMPTS = 6;
   const NAVIGATOR_PLATFORM = typeof navigator !== "undefined" ? (navigator.platform || "") : "";
   const IS_WINDOWS = /Win/i.test(NAVIGATOR_PLATFORM);
-  const IS_MAC = NAVIGATOR_PLATFORM.startsWith("Mac");
 
   function t(key) {
     return helpers.t(key);
@@ -246,20 +240,24 @@
 
   function deviceLabel(device) {
     if (device === "vulkan") return t("petBackendVulkan");
+    if (device === "cuda") return t("petBackendCuda");
     if (device === "metal") return t("petBackendMetal");
     return t("petBackendCpu");
   }
 
-  function modelPathOpenLabel() {
-    const key = IS_WINDOWS
-      ? "petOpenModelPathWindows"
-      : IS_MAC
-        ? "petOpenModelPathMac"
-        : "petOpenModelPathGeneric";
-    const label = t(key);
-    if (label && label !== key) return label;
-    const generic = t("petOpenModelPathGeneric");
-    return generic && generic !== "petOpenModelPathGeneric" ? generic : t("petOpenModelPath");
+  // Which brain answers the pet when the built-in engine is not the
+  // source: the settings snapshot carries the active provider id. The card
+  // is about the brain, not about a local .gguf, so a cloud / external
+  // server has to be nameable here too.
+  function activeBrainSource() {
+    const skills = (core && core.state && core.state.snapshot
+      && core.state.snapshot.skills) || {};
+    const id = skills.defaultProvider || "local";
+    if (id === "local") return { name: "", detail: "" };
+    const p = (skills.modelProviders || []).find((x) => x && x.provider === id) || {};
+    const name = id === "lmstudio" ? "LM Studio" : id === "ollama" ? "Ollama" : id;
+    const where = p.model || (p.baseUrl ? String(p.baseUrl).replace(/^https?:\/\//, "") : "");
+    return { name, detail: [name, where].filter(Boolean).join(" · ") };
   }
 
   // True when the user's focus (e.g. an open <select>) lives inside the
@@ -362,11 +360,10 @@
 
   // ── Model section ─────────────────────────────────────────────────────
   //
-  // A hero card answers "which brain is my pet running" at a glance: big
-  // model name + live status dot, the full path, meta chips (size /
-  // backend) and the actions right underneath. Switching lives in its own
-  // card that only appears when there is something to switch to; the
-  // scanned-folders manager stays collapsed behind a disclosure.
+  // A read-only hero card: "which brain is my pet running" at a glance —
+  // model name, live status, where it comes from, and size / backend
+  // chips. Everything that changes the brain (pick a model, scan folders,
+  // run the engine) lives in 模型来源 → 本地模型.
   function renderModelSection(box, ctx) {
     box.innerHTML = "";
     const snap = ctx.healthSnapshot || {};
@@ -375,7 +372,11 @@
 
     box.appendChild(sectionTitle(t("petSectionModel")));
 
-    // ── Hero card: the current model ──────────────────────────────────
+    // ── Hero card: which brain is running ─────────────────────────────
+    // Read-only on purpose. Picking a model, opening its folder and
+    // managing scan roots live in 模型来源 → 本地模型, next to the engine
+    // that runs them; this card only answers "which brain is my pet on".
+    const src = activeBrainSource();
     const hero = el("div", { className: "section-rows pet-model-hero" });
 
     const heroMain = el("div", { className: "pet-model-hero-main" });
@@ -386,7 +387,8 @@
     const heroText = el("div", { className: "pet-model-hero-text" });
     const nameRow = el("div", { className: "pet-model-hero-name-row" });
     const heroName = el("span", { className: "pet-model-hero-name" },
-      hasPath ? pickLabelFromPath(modelDir) : t("petModelPathUnset"));
+      hasPath ? pickLabelFromPath(modelDir)
+        : (src.name || t("petModelPathUnset")));
     nameRow.appendChild(heroName);
     // Live status beside the name. deriveStatus tones (ready/starting/
     // idle/offline) map onto the hero badge's ok/warn/muted/bad palette.
@@ -401,17 +403,18 @@
 
     const heroPath = el("div", {
       className: "pet-model-hero-path" + (hasPath ? "" : " is-unset"),
-      title: hasPath ? modelDir : "",
-    }, hasPath ? modelDir : t("petModelPathUnset"));
+      title: hasPath ? modelDir : src.detail,
+    }, hasPath ? modelDir : (src.detail || t("petModelPathUnset")));
     heroText.appendChild(heroPath);
     heroMain.appendChild(heroText);
     hero.appendChild(heroMain);
 
-    // Meta chips (size / backend) — filled asynchronously; both reads are
-    // cheap and cached by their IPC handlers. The isConnected guard keeps
-    // a late response from touching a health-tick-replaced card.
+    // Meta chips (source / size / backend) — filled asynchronously; both
+    // reads are cheap and cached by their IPC handlers. The isConnected
+    // guard keeps a late response from touching a health-tick-replaced card.
     const chips = el("div", { className: "pet-model-hero-chips" });
     hero.appendChild(chips);
+    if (src.name) chips.appendChild(metaChip(src.name));
     if (hasPath && typeof window.petSettings.listLocalModels === "function") {
       window.petSettings.listLocalModels().then((ret) => {
         const cur = ((ret && ret.models) || []).find((m) => m && m.current);
@@ -426,174 +429,17 @@
       }).catch(() => {});
     }
 
-    // Actions row.
-    const heroActions = el("div", { className: "pet-model-hero-actions" });
-    const openBtn = softBtn(modelPathOpenLabel(), async () => {
-      const ret = await window.petSettings.openModelDir();
-      if (ret && !ret.ok) notifyError(ret.error || t("petOpenModelDirFailed"));
-    });
-    openBtn.disabled = !hasPath;
-    heroActions.appendChild(openBtn);
-
-    // Browse: the IPC handler registers the picked file's folder in the
-    // scan list AND hot-loads that .gguf (mmproj-* sibling auto-detected).
-    // Primary action while nothing is loaded; the switcher covers the
-    // "switch to a known model" case.
-    const browseLabel = t("petChangeModel");
-    const browseBtn = softBtn(browseLabel, async () => {
-      if (browseBtn.disabled) return;
-      browseBtn.disabled = true;
-      browseBtn.classList.add("is-busy");
-      browseBtn.textContent = t("petChangeModelBusy");
-      let ret = null;
-      try {
-        ret = await window.petSettings.pickModelDir();
-      } catch (err) {
-        notifyError(t("petReloadError") + (err && err.message || err));
-      }
-      // refreshAll() rebuilds the model section from scratch (replacing
-      // these buttons), so restoring the busy state explicitly is only
-      // necessary on the canceled / error paths.
-      if (ret && ret.ok) {
-        if (ret.reloadError) notifyError(t("petReloadError") + ret.reloadError);
-        void ctx.refreshAll();
-        return;
-      }
-      if (ret && !ret.canceled && ret.error) notifyError(ret.error);
-      browseBtn.classList.remove("is-busy");
-      browseBtn.textContent = browseLabel;
-      browseBtn.disabled = false;
-    }, { accent: !hasPath });
-    heroActions.appendChild(browseBtn);
-    hero.appendChild(heroActions);
-
     box.appendChild(hero);
-
-
-    // ── Row 2: scanned folders (collapsed disclosure) ─────────────────
-    const trigger = el("button", {
-      type: "button",
-      className: "pet-advanced-trigger pet-folders-trigger" + (foldersExpanded ? " open" : ""),
-      "aria-expanded": foldersExpanded ? "true" : "false",
-    });
-    const chev = el("span", { className: "pet-advanced-chevron", "aria-hidden": "true" });
-    chev.innerHTML = SVG_CHEVRON;
-    trigger.appendChild(chev);
-    trigger.appendChild(el("span", { className: "section-title pet-advanced-title" }, t("petModelsFolderLabel")));
-    trigger.appendChild(el("span", { className: "row-desc pet-folders-trigger-desc" }, t("petFoldersDesc")));
-
-    const foldersSection = helpers.buildSection("", []);
-    foldersSection.classList.add("pet-folders-body");
-    const foldersRows = foldersSection.querySelector(".section-rows");
-
-    const foldersListEl = el("div", { className: "pet-model-folders-list" });
-    foldersRows.appendChild(foldersListEl);
-
-    const actionsRow = el("div", { className: "pet-folders-actions" });
-    const addFolderBtn = softBtn("+ " + t("petModelsFolderAdd"), async () => {
-      addFolderBtn.disabled = true;
-      try {
-        const ret = await window.petSettings.addModelFolder();
-        if (!ret || ret.canceled) return;
-        if (!ret.ok) {
-          notifyError(t("petModelsFolderAddFailed") + (ret.error || ""));
-          return;
-        }
-        renderFoldersList(ret.folders || []);
-      } finally {
-        addFolderBtn.disabled = false;
-      }
-    });
-    actionsRow.appendChild(addFolderBtn);
-
-    const addFileBtn = softBtn("+ " + t("petModelsFileAdd"), async () => {
-      addFileBtn.disabled = true;
-      try {
-        const ret = await window.petSettings.addModelFile();
-        if (!ret || ret.canceled) return;
-        if (!ret.ok) {
-          notifyError(t("petModelsFolderAddFailed") + (ret.error || ""));
-          return;
-        }
-        renderFoldersList(ret.folders || []);
-        if (ret.reloadError) {
-          notifyError(t("petReloadError") + ret.reloadError);
-        }
-      } finally {
-        addFileBtn.disabled = false;
-      }
-    });
-    actionsRow.appendChild(addFileBtn);
-    foldersRows.appendChild(actionsRow);
-
-    // Render + populate folder list. Defined inline so it can refresh
-    // when the user adds/removes folders without a full tab re-render.
-    const renderFolderRow = (folder) => {
-      const row = el("div", { className: "pet-model-folder-item" });
-      const path = el("span", { className: "pet-model-folder-path", title: folder }, folder);
-      row.appendChild(path);
-      const rm = softBtn(t("petModelsFolderRemove"), async () => {
-        try {
-          await window.petSettings.removeModelFolder(folder);
-          const cur = await window.petSettings.listModelFolders();
-          renderFoldersList(cur.folders || []);
-        } catch {}
-      });
-      rm.classList.add("pet-model-folder-remove");
-      row.appendChild(rm);
-      return row;
-    };
-    const renderFoldersList = (folders) => {
-      foldersListEl.innerHTML = "";
-      if (!folders || folders.length === 0) {
-        foldersListEl.appendChild(el("div", {
-          className: "pet-model-folder-empty",
-        }, t("petModelsFolderEmpty")));
-        return;
-      }
-      for (const f of folders) foldersListEl.appendChild(renderFolderRow(f));
-    };
-    if (window.petSettings && typeof window.petSettings.listModelFolders === "function") {
-      window.petSettings.listModelFolders().then((ret) => {
-        renderFoldersList((ret && ret.folders) || []);
-      }).catch(() => renderFoldersList([]));
-    } else {
-      renderFoldersList([]);
-    }
-
-    function applyFoldersExpanded() {
-      // The async model-list callback may fire after a health-tick rebuild
-      // replaced this DOM — toggling detached nodes is a no-op, not a crash.
-      if (!trigger.isConnected) return;
-      trigger.classList.toggle("open", foldersExpanded);
-      trigger.setAttribute("aria-expanded", foldersExpanded ? "true" : "false");
-      foldersSection.style.display = foldersExpanded ? "" : "none";
-    }
-
-    box.appendChild(trigger);
-    box.appendChild(foldersSection);
-    applyFoldersExpanded();
-    trigger.addEventListener("click", () => {
-      foldersExpanded = !foldersExpanded;
-      applyFoldersExpanded();
-    });
 
     // The model list still earns its keep: while the engine is stopped the
     // health payload carries no model at all, and the hero then claimed
     // 未选择模型 even though a model IS configured. Fill it from the same
-    // source the old picker read. An empty install opens the folder
-    // manager instead.
+    // source the model picker reads.
     if (typeof window.petSettings.listLocalModels === "function") {
       window.petSettings.listLocalModels().then((ret) => {
-        const models = (ret && ret.models) || [];
-        if (models.length === 0) {
-          foldersExpanded = true;
-          applyFoldersExpanded();
-          return;
-        }
-        if (hasPath || !heroName.isConnected) return;
-        const cur = models.find((m) => m && m.current);
+        const cur = ((ret && ret.models) || []).find((m) => m && m.current);
         if (!cur || !cur.path) return;
+        if (hasPath || src.name || !heroName.isConnected) return;
         heroName.textContent = cur.label || pickLabelFromPath(cur.path);
         heroPath.textContent = cur.path;
         heroPath.title = cur.path;
@@ -964,7 +810,16 @@
       let devices = null;
       try { devices = await window.petSettings.listDevices(); } catch {}
       const available = Array.isArray(devices && devices.available) ? devices.available : ["cpu"];
-      if (available.includes("cpu") || available.includes("vulkan")) {
+      const reasons = (devices && devices.reasons) || {};
+      // The engine decides what is selectable — the list below is only the
+      // display order. Hardcoding ["cpu","vulkan"] here is what made CUDA
+      // unpickable even when the sidecar reported it.
+      const pickable = ["cpu", "cuda", "vulkan", "metal"].filter((d) => available.includes(d));
+      // A backend the install ships but the engine cannot address stays
+      // visible and greyed, carrying the engine's own reason. "只能选 CPU"
+      // has to explain itself, or it reads as a broken control.
+      const blocked = ["cuda", "vulkan"].filter((d) => !available.includes(d) && reasons[d]);
+      if (pickable.length > 0) {
         const current = (devices && devices.current) || "cpu";
         const row = el("div", { className: "row" });
         const text = el("div", { className: "row-text" });
@@ -972,8 +827,16 @@
         text.appendChild(el("span", { className: "row-desc" }, t("petRowBackendDesc")));
         row.appendChild(text);
         const segmented = el("div", { className: "segmented pet-backend-segmented" });
-        for (const device of ["cpu", "vulkan"]) {
-          if (!available.includes(device)) continue;
+        for (const device of blocked) {
+          const btn = el("button", {
+            type: "button",
+            className: "is-unavailable",
+            disabled: true,
+            title: String(reasons[device] || ""),
+          }, deviceLabel(device));
+          segmented.appendChild(btn);
+        }
+        for (const device of pickable) {
           const btn = el("button", {
             type: "button",
             className: current === device ? "active" : "",
@@ -1001,7 +864,8 @@
               }
             },
           }, deviceLabel(device));
-          if (device === "vulkan") btn.setAttribute("title", t("petBackendVulkanExperimental"));
+          const hint = device === "vulkan" ? t("petBackendVulkanExperimental") : reasons[device];
+          if (hint && hint !== device) btn.setAttribute("title", String(hint));
           segmented.appendChild(btn);
         }
         const ctl = el("div", { className: "row-control" });
@@ -1357,13 +1221,17 @@
 
   // ── Refresh + polling ─────────────────────────────────────────────────
 
+  // The engine + advanced cards are adopted by the 模型来源 page, so every
+  // paint of them has to check the box is still in a document: a detached
+  // box means the providers tab re-rendered without us and rebuilding here
+  // would leak a fresh card into an orphan node.
   async function refreshAll(ctx) {
     if (!window.petSettings || !ctx) return;
     await probeHealth(ctx);
     syncStatusPill(ctx);
     renderModelSection(ctx.modelBox, ctx);
-    await renderEngineSection(ctx.engineBox, ctx);
-    renderAdvancedSection(ctx.advancedBox, ctx);
+    if (ctx.engineBox.isConnected) await renderEngineSection(ctx.engineBox, ctx);
+    if (ctx.advancedBox.isConnected) renderAdvancedSection(ctx.advancedBox, ctx);
   }
 
   function nextHealthDelay(ctx) {
@@ -1380,7 +1248,7 @@
     }
     const tick = async () => {
       healthTimer = null;
-      if (!mounted || document.hidden || core.state.activeTab !== "pet") return;
+      if (!mounted || document.hidden || !petOrProvidersActive()) return;
       const wasHealthy = ctx.everHealthy;
       await probeHealth(ctx);
       syncStatusPill(ctx);
@@ -1389,7 +1257,9 @@
       // (an open <select> would snap shut) and never touch Advanced
       // (would lose focus / expanded state).
       if (!boxInteractionBusy(ctx.modelBox)) renderModelSection(ctx.modelBox, ctx);
-      if (!boxInteractionBusy(ctx.engineBox)) await renderEngineSection(ctx.engineBox, ctx);
+      if (ctx.engineBox.isConnected && !boxInteractionBusy(ctx.engineBox)) {
+        await renderEngineSection(ctx.engineBox, ctx);
+      }
       if (!ctx.everHealthy && ctx.fastAttemptsLeft > 0) ctx.fastAttemptsLeft -= 1;
       if (!wasHealthy && ctx.everHealthy) ctx.fastAttemptsLeft = 0;
       healthTimer = setTimeout(tick, nextHealthDelay(ctx));
@@ -1401,11 +1271,15 @@
     ctx.fastAttemptsLeft = HEALTH_FAST_ATTEMPTS;
   }
 
-  async function render(parent) {
-    cleanupTimers();
-    parent.innerHTML = "";
+  // The page state outlives a single render: the engine and advanced cards
+  // are adopted by the 模型来源 page (they belong to "run the model on this
+  // machine"), so their health poll and cached reads must survive tab
+  // switches — and survive this page re-rendering underneath them.
+  let pageCtx = null;
 
-    const ctx = {
+  function ensureCtx() {
+    if (pageCtx) return pageCtx;
+    pageCtx = {
       headerBox: el("div", {}),
       modelBox: el("div", { className: "pet-section-box" }),
       engineBox: el("div", { className: "pet-section-box" }),
@@ -1421,12 +1295,46 @@
       },
       refreshAll: null,
     };
-    ctx.refreshAll = () => {
-      armFastProbes(ctx);
-      const p = refreshAll(ctx);
-      startHealthPolling(ctx);
+    pageCtx.refreshAll = () => {
+      armFastProbes(pageCtx);
+      const p = refreshAll(pageCtx);
+      startHealthPolling(pageCtx);
       return p;
     };
+    return pageCtx;
+  }
+
+  // The engine card is on 模型来源 and the brain card is here, so the poll
+  // has to stay alive while either page is on screen.
+  function petOrProvidersActive() {
+    const tab = core && core.state ? core.state.activeTab : null;
+    return tab === "pet" || tab === "providers";
+  }
+
+  // Called by the 模型来源 tab: adopts the engine + advanced cards into
+  // `host` and keeps them fed by the same health poll the Brain page uses.
+  function mountEnginePanel(host) {
+    if (!host || !window.petSettings) return;
+    const ctx = ensureCtx();
+    mounted = true;
+    host.innerHTML = "";
+    host.appendChild(ctx.engineBox);
+    host.appendChild(ctx.advancedBox);
+    armFastProbes(ctx);
+    void (async () => {
+      await probeHealth(ctx);
+      syncStatusPill(ctx);
+      await renderEngineSection(ctx.engineBox, ctx);
+      renderAdvancedSection(ctx.advancedBox, ctx);
+    })();
+    startHealthPolling(ctx);
+  }
+
+  async function render(parent) {
+    cleanupTimers();
+    parent.innerHTML = "";
+
+    const ctx = ensureCtx();
 
     // Build the header eagerly so the page never flashes empty before
     // /api/health resolves — the pill starts in the "starting" yellow
@@ -1441,12 +1349,10 @@
 
     parent.appendChild(ctx.headerBox);
     parent.appendChild(ctx.modelBox);
-    parent.appendChild(ctx.engineBox);
-    parent.appendChild(ctx.advancedBox);
 
     mounted = true;
     visibilityHandler = () => {
-      if (document.hidden || core.state.activeTab !== "pet") {
+      if (document.hidden || !petOrProvidersActive()) {
         if (healthTimer) {
           clearTimeout(healthTimer);
           healthTimer = null;
@@ -1474,6 +1380,8 @@
     core.tabs.pet = {
       render: (parent) => { void render(parent); },
     };
+    // 模型来源 adopts the engine + advanced cards through this handle.
+    core.enginePanel = { mount: mountEnginePanel };
   }
 
   root.ClawdSettingsTabDeskPet = { init };

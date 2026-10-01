@@ -13,11 +13,10 @@ const SRC_DIR = path.join(__dirname, "..", "src");
 // ghosted). Root contributor: window.alert() in settings renderer code —
 // in Electron, alert() blocks the main process until dismissed.
 //
-// 2026-09 redesign: the model page was restructured into ONE picker row
-// (current model + path + actions), a collapsed scanned-folders
-// disclosure, a switch-driven engine runtime row, and the engine install
-// location moved into Advanced. These tests lock that shape so a future
-// edit doesn't quietly re-stack the wall of rows.
+// 2026-10 restructure (机长: "这个模块目的是让用户知道大脑是哪个"):
+// the 大脑 page's 模型 card became read-only. Picking a model, opening its
+// folder and managing scan roots moved to 模型来源 → 本地模型, together with
+// the 推理引擎 card and 高级设置. These tests lock that split.
 
 test("settings-tab-pet.js never calls window.alert (blocks the main process)", () => {
   const code = fs.readFileSync(path.join(SRC_DIR, "settings-tab-pet.js"), "utf8");
@@ -26,43 +25,85 @@ test("settings-tab-pet.js never calls window.alert (blocks the main process)", (
   assert.match(code, /ops\.showToast\(/, "notifyError must route through ops.showToast");
 });
 
-test("model section is a hero card plus a lazy model switcher", () => {
+test("模型 card reports the brain and offers no actions", () => {
   const code = fs.readFileSync(path.join(SRC_DIR, "settings-tab-pet.js"), "utf8");
-  // The read-only info row is gone (the engine section's own info row
-  // is a different construct and must remain).
-  assert.doesNotMatch(code, /const infoRow = el\(/);
-  // The hero card carries the canonical "current model" display: name,
-  // live status badge, full path (ellipsis + title tooltip) and actions.
   assert.match(code, /className: "section-rows pet-model-hero"/);
   assert.match(code, /pet-model-hero-status tone-\$/);
   assert.match(code, /pickLabelFromPath\(modelDir\)/);
-  assert.match(code, /t\("petChangeModel"\)/);
-  // The standalone path row is gone; the hero shows the full path.
-  assert.doesNotMatch(code, /className: "row pet-path-row"/);
+  // Full path with CSS ellipsis + restoring tooltip, never char truncation.
   assert.match(code, /pet-model-hero-path/);
-  // The duplicate-description picker label key is no longer used here.
-  assert.doesNotMatch(code, /t\("petModelPickerLabel"\)/);
-  // The duplicate picker is gone: the hero's 更换 button already opens the
-  // model picker, so a second list of the same files below it only invited
-  // "why are there two places to switch models?".
+  assert.doesNotMatch(code, /className: "row pet-path-row"/);
   assert.doesNotMatch(code, /pet-model-switch-row/);
-  assert.doesNotMatch(code, /insertBefore\(switchSection/);
-  assert.doesNotMatch(code, /t\("petRowSwitchModel"\)/);
-  // The model scan still earns its keep: while the engine is stopped the
-  // health payload carries no model at all, so the hero is filled from the
-  // configured model instead of falsely reading 未选择模型. An empty
-  // install still opens the folder manager.
+  assert.doesNotMatch(code, /pet-model-hero-actions/);
+  // The two buttons that used to sit under the hero are gone for good:
+  // "在文件夹中显示" opened a folder, "更换…" picked a model — neither
+  // answers "which brain is this".
+  assert.doesNotMatch(code, /window\.petSettings\.openModelDir/);
+  assert.doesNotMatch(code, /window\.petSettings\.pickModelDir/);
+  assert.doesNotMatch(code, /t\("petChangeModel"\)/);
+  assert.doesNotMatch(code, /modelPathOpenLabel/);
+  // While the engine is stopped the health payload carries no model at all,
+  // so the hero is filled from the configured model instead of falsely
+  // reading 未选择模型.
   assert.match(code, /heroName\.textContent = cur\.label/);
-  assert.match(code, /models\.length === 0/);
 });
 
-test("scanned folders live behind a collapsed disclosure", () => {
+test("模型 card names a non-local brain too — it is not a local-only panel", () => {
   const code = fs.readFileSync(path.join(SRC_DIR, "settings-tab-pet.js"), "utf8");
-  assert.match(code, /let foldersExpanded = false;/);
-  assert.match(code, /pet-folders-trigger/);
-  assert.match(code, /pet-folders-body/);
-  // Empty model list surfaces the folder manager automatically.
-  assert.match(code, /foldersExpanded = true;/);
+  // Reads the live provider out of the shared settings snapshot.
+  assert.match(code, /function activeBrainSource\(/);
+  assert.match(code, /skills\.defaultProvider/);
+  assert.match(code, /modelProviders/);
+  // Used by the hero (name line, detail line and the source chip), and the
+  // local-model fill must not overwrite a cloud brain.
+  assert.match(code, /const src = activeBrainSource\(\)/);
+  assert.match(code, /src\.name \|\| t\("petModelPathUnset"\)/);
+  assert.match(code, /if \(hasPath \|\| src\.name \|\| !heroName\.isConnected\) return;/);
+});
+
+test("model choice and scan folders live in 模型来源 → 本地模型", () => {
+  const pet = fs.readFileSync(path.join(SRC_DIR, "settings-tab-pet.js"), "utf8");
+  const providers = fs.readFileSync(path.join(SRC_DIR, "settings-tab-providers.js"), "utf8");
+
+  // The Brain page no longer hosts the folder manager.
+  assert.doesNotMatch(pet, /pet-folders-trigger/);
+  assert.doesNotMatch(pet, /let foldersExpanded/);
+
+  // The local source pane does: switcher, browse, folder list + add/remove.
+  assert.match(providers, /function localModelBlock\(/);
+  assert.match(providers, /d\.appendChild\(localModelBlock\(\)\)/);
+  assert.match(providers, /window\.petSettings\.useModelDir\(/);
+  assert.match(providers, /window\.petSettings\.pickModelDir\(/);
+  assert.match(providers, /window\.petSettings\.listLocalModels\(/);
+  assert.match(providers, /window\.petSettings\.listModelFolders\(/);
+  assert.match(providers, /window\.petSettings\.removeModelFolder\(/);
+  assert.match(providers, /window\.petSettings\.addModelFolder\(/);
+  assert.match(providers, /window\.petSettings\.addModelFile\(/);
+});
+
+test("推理引擎 + 高级设置 are adopted by 模型来源, not painted on 大脑", () => {
+  const pet = fs.readFileSync(path.join(SRC_DIR, "settings-tab-pet.js"), "utf8");
+  const providers = fs.readFileSync(path.join(SRC_DIR, "settings-tab-providers.js"), "utf8");
+
+  // The Brain page appends only its header and the model card.
+  assert.doesNotMatch(pet, /parent\.appendChild\(ctx\.engineBox\)/);
+  assert.doesNotMatch(pet, /parent\.appendChild\(ctx\.advancedBox\)/);
+
+  // The cards are owned by the Brain module (its health poll feeds them) and
+  // handed to the providers page through core.enginePanel.
+  assert.match(pet, /core\.enginePanel = \{ mount: mountEnginePanel \}/);
+  assert.match(pet, /function mountEnginePanel\(host\)/);
+  assert.match(pet, /host\.appendChild\(ctx\.engineBox\)/);
+  assert.match(pet, /host\.appendChild\(ctx\.advancedBox\)/);
+  assert.match(providers, /core\.enginePanel\.mount\(engineHost\)/);
+  // A dead `if (false && …)` switch would silently drop the whole card.
+  assert.doesNotMatch(providers, /if \(false &&/);
+
+  // Page state must outlive one render, and the poll must survive on either
+  // page, or the moved cards freeze the moment the user leaves 大脑.
+  assert.match(pet, /let pageCtx = null;/);
+  assert.match(pet, /function ensureCtx\(\)/);
+  assert.match(pet, /tab === "pet" \|\| tab === "providers"/);
 });
 
 test("engine runtime is a switch and version actions stay on one row", () => {
@@ -83,6 +124,8 @@ test("engine install location is debug info and lives in Advanced", () => {
   assert.equal(occurrences, 1, "petRowEngineLocation must appear exactly once (in the Advanced section)");
   const advanced = code.slice(code.indexOf("function renderAdvancedSection"));
   assert.match(advanced, /t\("petRowEngineLocation"\)/);
+  assert.match(advanced, /t\("petActionRestartSidecar"\)/);
+  assert.match(advanced, /t\("petActionOpenLogs"\)/);
 });
 
 test("health tick never rebuilds a card the user is interacting with", () => {
@@ -90,14 +133,17 @@ test("health tick never rebuilds a card the user is interacting with", () => {
   // An open <select> would snap shut if the tick rebuilt its card.
   assert.match(code, /function boxInteractionBusy\(/);
   assert.match(code, /if \(!boxInteractionBusy\(ctx\.modelBox\)\) renderModelSection/);
-  assert.match(code, /if \(!boxInteractionBusy\(ctx\.engineBox\)\) await renderEngineSection/);
+  assert.match(code, /!boxInteractionBusy\(ctx\.engineBox\)/);
+  // The engine + advanced cards live on another page: painting a detached
+  // box would leak an orphan card and lose the mounted one's state.
+  assert.match(code, /ctx\.engineBox\.isConnected/);
+  assert.match(code, /ctx\.advancedBox\.isConnected/);
 });
 
 test("pet-chat.js loadModel allows long CPU model reloads", () => {
   const code = fs.readFileSync(path.join(SRC_DIR, "pet-chat.js"), "utf8");
   // /api/load-model restarts llama-server and waits for readiness; on a
   // CPU box under load this can exceed 90s, and a client-side timeout
-  // turns into a reloadError → user-visible failure while the gateway
-  // actually succeeds.
+  // turns into a user-visible failure while the gateway actually succeeds.
   assert.match(code, /\/api\/load-model`, body, 300000\)/);
 });
