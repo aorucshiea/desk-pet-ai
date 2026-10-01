@@ -3558,6 +3558,46 @@ if (!gotTheLock) {
     } else {
       createWindow();
     }
+    // 桌面刚体物理（前瞻 02，P0：重力地板）。默认开启；PET_PHYSICS=0 紧急关闭。
+    // 世界取数=world-geometry（任务栏/工作区轮询），运动学=world-physics
+    // （y 轴贴地/掉落/被顶起）。拖拽/隐藏/mini 模式经 guards 挂起；
+    // 外部写入（用户拖拽）经位置偏离检测让位 500ms。
+    let worldRuntime = null;
+    try {
+      if (process.env.PET_PHYSICS !== "0") {
+        const createWorldGeometry = require("./world-geometry");
+        const createWorldPhysics = require("./world-physics");
+        const worldGeometry = createWorldGeometry({ screen, isWin });
+        const worldPhysics = createWorldPhysics({
+          getBounds: () => (win && !win.isDestroyed() ? win.getBounds() : null),
+          setPosition: (x, y) => {
+            if (win && !win.isDestroyed()) petWindowRuntime.applyPetWindowPosition(x, y);
+          },
+          getFloorY: () => worldGeometry.getFloorY(),
+          guards: [
+            () => petWindowRuntime.isDragLocked(),
+            () => petWindowRuntime.isPetHidden(),
+            () => _mini.getMiniMode(),
+            () => _mini.getMiniTransitioning(),
+          ],
+        });
+        worldGeometry.start((y) => {
+          try {
+            require("fs").appendFileSync(require("path").join(app.getPath("userData"), "world-probe.log"),
+              `[world] floor -> ${y}\n`);
+          } catch (_) {}
+        });
+        worldPhysics.start();
+        worldRuntime = { geometry: worldGeometry, physics: worldPhysics };
+        // TEMP-PROBE (remove after P0 verification): file-level, survives console redirection
+        try {
+          require("fs").appendFileSync(require("path").join(app.getPath("userData"), "world-probe.log"),
+            `[world] started floor=${worldGeometry.getFloorY()} bounds=${JSON.stringify(win && win.getBounds())}\n`);
+        } catch (_) {}
+      }
+    } catch (err) {
+      console.warn("Clawd: world physics failed to start, continuing without it:", err && err.message);
+    }
     // macOS: bridge the OS app-hidden state (⌘H / Dock right-click → 隐藏) to the
     // pet. Pet windows are setCanHide:NO, so the OS marks the app hidden but the
     // windows refuse to vanish, and an inactive-app Dock Hide fires no
