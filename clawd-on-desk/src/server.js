@@ -45,6 +45,10 @@ const {
   buildToolInputFingerprint,
   findPendingPermissionForStateEvent,
 } = require("./server-permission-utils");
+const {
+  authorizeRequest,
+  loadOrCreateToken,
+} = require("./server-auth");
 
 module.exports = function initServer(ctx) {
 
@@ -58,6 +62,22 @@ const writeRuntimeConfigFn = ctx.writeRuntimeConfig || writeRuntimeConfig;
 const CLAUDE_HOOK_GUARD_NOTICE_TTL_MS = 30 * 60 * 1000;
 
 let httpServer = null;
+// Shared secret for the hook server, created on first boot and read by the
+// hook client from ~/.clawd/server-token (see hooks/server-config.js).
+let serverToken = "";
+let lastRejectionLogAt = 0;
+
+function rejectUnauthorizedRequest(res, reason, req) {
+  // One line per 10s, so a page that retries every second cannot fill the
+  // log — but a real attack (or a broken hook) stays visible.
+  const now = nowFn();
+  if (!lastRejectionLogAt || now - lastRejectionLogAt > 10000) {
+    lastRejectionLogAt = now;
+    console.warn(`Clawd state server rejected ${req.method} ${req.url}: ${reason}`);
+  }
+  res.writeHead(401, { "Content-Type": "application/json" });
+  res.end(JSON.stringify({ error: "unauthorized", reason }));
+}
 let activeServerPort = null;
 let lastClaudeHookGuardNotice = null;
 const codexOfficialTurns = new Map();
@@ -243,7 +263,24 @@ function stopClaudeSettingsWatcher() {
 }
 
 function startHttpServer() {
+  const loadTokenFn = ctx.loadServerToken || loadOrCreateToken;
+  serverToken = loadTokenFn();
+  if (!serverToken) {
+    // Fail closed, but say so: without a persisted secret every hook request
+    // is rejected below, which silently kills permission bubbles.
+    console.error("Clawd state server could not create ~/.clawd/server-token — "
+      + "state sync and permission bubbles will be rejected. Check that the home "
+      + "directory is writable.");
+  }
   httpServer = createHttpServer((req, res) => {
+    // Everything on this socket is agent-state or a permission decision, so
+    // nothing is served before the request proves it is a local, authorized
+    // caller (audit V-2).
+    const verdict = authorizeRequest({ headers: req.headers, token: serverToken });
+    if (!verdict.ok) {
+      rejectUnauthorizedRequest(res, verdict.reason, req);
+      return;
+    }
     if (req.method === "GET" && req.url === "/state") {
       sendStateHealthResponse(res, { getHookServerPort });
     } else if (req.method === "POST" && req.url === "/state") {

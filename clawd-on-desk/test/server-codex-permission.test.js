@@ -6,6 +6,10 @@ const { describe, it } = require("node:test");
 
 const initServer = require("../src/server");
 
+// The state server now refuses anything that cannot present this
+// secret (audit V-2), so every fake request in this file carries it.
+const TEST_TOKEN = "test-server-token";
+
 function makeFakeHttp() {
   let capturedHandler = null;
   function createHttpServer(handler) {
@@ -20,6 +24,7 @@ function makeFakeHttp() {
 
 function makeReq(body) {
   const req = new EventEmitter();
+  req.headers = { host: "127.0.0.1:23333", "x-clawd-token": TEST_TOKEN };
   req.method = "POST";
   req.url = "/permission";
   setImmediate(() => {
@@ -69,6 +74,8 @@ function startServer(overrides = {}) {
   const updates = [];
   const shown = [];
   const ctx = {
+    loadServerToken: () => TEST_TOKEN,
+
     createHttpServer: http.createHttpServer,
     setImmediate: () => {},
     getPortCandidates: () => [23333],

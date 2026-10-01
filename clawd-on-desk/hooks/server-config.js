@@ -5,14 +5,51 @@ const path = require("path");
 
 const CLAWD_SERVER_ID = "clawd-on-desk";
 const CLAWD_SERVER_HEADER = "x-clawd-server";
+// Shared secret between the hook client and the state/permission server.
+// A webpage cannot read this file, which is what closes the CSRF path
+// (audit V-2): browsers send cross-origin POSTs to localhost freely.
+const CLAWD_TOKEN_HEADER = "x-clawd-token";
 const DEFAULT_SERVER_PORT = 23333;
 const SERVER_PORT_COUNT = 5;
 const SERVER_PORTS = Array.from({ length: SERVER_PORT_COUNT }, (_, i) => DEFAULT_SERVER_PORT + i);
 const STATE_PATH = "/state";
 const PERMISSION_PATH = "/permission";
 const RUNTIME_CONFIG_PATH = path.join(os.homedir(), ".clawd", "runtime.json");
+const SERVER_TOKEN_PATH = path.join(os.homedir(), ".clawd", "server-token");
 const DEFAULT_HOOK_HTTP_TIMEOUT_MS = 100;
 const REMOTE_HOOK_HTTP_TIMEOUT_MS = 5000;
+
+function readServerToken(filePath = SERVER_TOKEN_PATH) {
+  try {
+    return String(fs.readFileSync(filePath, "utf8") || "").trim();
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Persist the server's shared token on first use. Owner-only on POSIX; a
+ * no-op failure leaves the token empty, which makes the server reject
+ * everything — the safe direction.
+ */
+function writeServerTokenIfMissing(token, filePath = SERVER_TOKEN_PATH) {
+  const existing = readServerToken(filePath);
+  if (existing) return existing;
+  try {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, `${String(token || "").trim()}\n`, { encoding: "utf8", mode: 0o600 });
+  } catch {
+    return "";
+  }
+  return String(token || "").trim();
+}
+
+function withAuthHeader(headers, filePath = SERVER_TOKEN_PATH) {
+  const token = readServerToken(filePath);
+  const out = { ...(headers || {}) };
+  if (token) out[CLAWD_TOKEN_HEADER] = token;
+  return out;
+}
 
 function normalizePort(value) {
   const port = Number(value);
@@ -181,7 +218,13 @@ function getPermissionProbeTimeoutMs(options = {}) {
 function probePort(port, timeoutMs, callback, options = {}) {
   const httpGet = options.httpGet || http.get;
   const req = httpGet(
-    { hostname: "127.0.0.1", port, path: STATE_PATH, timeout: timeoutMs },
+    {
+      hostname: "127.0.0.1",
+      port,
+      path: STATE_PATH,
+      timeout: timeoutMs,
+      headers: withAuthHeader(null, options.tokenPath),
+    },
     (res) => {
       let body = "";
       res.setEncoding("utf8");
@@ -207,10 +250,10 @@ function postStateToPort(port, payload, timeoutMs, callback, options = {}) {
       port,
       path: STATE_PATH,
       method: "POST",
-      headers: {
+      headers: withAuthHeader({
         "Content-Type": "application/json",
         "Content-Length": Buffer.byteLength(payload),
-      },
+      }, options.tokenPath),
       timeout: timeoutMs,
     },
     (res) => {
@@ -327,10 +370,10 @@ function postPermissionToPort(port, payload, timeoutMs, callback, options = {}) 
       port,
       path: PERMISSION_PATH,
       method: "POST",
-      headers: {
+      headers: withAuthHeader({
         "Content-Type": "application/json",
         "Content-Length": Buffer.byteLength(payload),
-      },
+      }, options.tokenPath),
       timeout: timeoutMs,
     },
     (res) => {
@@ -830,12 +873,14 @@ async function resolveNodeBinAsync(options = {}) {
 module.exports = {
   CLAWD_SERVER_HEADER,
   CLAWD_SERVER_ID,
+  CLAWD_TOKEN_HEADER,
   DEFAULT_HOOK_HTTP_TIMEOUT_MS,
   DEFAULT_SERVER_PORT,
   PERMISSION_PATH,
   REMOTE_HOOK_HTTP_TIMEOUT_MS,
   RUNTIME_CONFIG_PATH,
   SERVER_PORTS,
+  SERVER_TOKEN_PATH,
   STATE_PATH,
   buildPermissionUrl,
   clearRuntimeConfig,
@@ -849,6 +894,7 @@ module.exports = {
   probePort,
   readHostPrefix,
   readRuntimePort,
+  readServerToken,
   resolveNodeBin,
   resolveNodeBinAsync,
   resolveWindowsNodeBinSync,
@@ -856,5 +902,7 @@ module.exports = {
   validateWindowsNodeCandidate,
   splitPortCandidates,
   postStateToPort,
+  withAuthHeader,
   writeRuntimeConfig,
+  writeServerTokenIfMissing,
 };

@@ -8,6 +8,9 @@ const assert = require("node:assert");
 const { EventEmitter } = require("node:events");
 
 const initServer = require("../src/server");
+// The state server now refuses anything that cannot present this
+// secret (audit V-2), so every fake request in this file carries it.
+const TEST_TOKEN = "test-server-token";
 
 function makeFakeHttp() {
   let capturedHandler = null;
@@ -23,6 +26,7 @@ function makeFakeHttp() {
 
 function makeReq(method, url, body) {
   const req = new EventEmitter();
+  req.headers = { host: "127.0.0.1:23333", "x-clawd-token": TEST_TOKEN };
   req.method = method;
   req.url = url;
   // Emit data/end asynchronously — mirrors real http.IncomingMessage behavior
@@ -57,6 +61,7 @@ function makeCtx(overrides = {}) {
   const setStateCalls = [];
 
   const ctx = {
+    loadServerToken: () => TEST_TOKEN,
     // Required HTTP/server deps — injected to avoid real file/network I/O.
     createHttpServer: null, // caller fills in
     setImmediate: () => {}, // no-op: don't fire sync routines during /state tests
