@@ -46,7 +46,6 @@ function createHarness(options = {}) {
     destroyTray: () => calls.push(["destroyTray"]),
     applyDockVisibility: () => calls.push(["applyDockVisibility"]),
     sendToRenderer: (...args) => calls.push(["sendToRenderer", ...args]),
-    sendDashboardI18n: () => calls.push(["sendDashboardI18n"]),
     sendSessionHudI18n: () => calls.push(["sendSessionHudI18n"]),
     emitSessionSnapshot: (...args) => calls.push(["emitSessionSnapshot", ...args]),
     cleanStaleSessions: () => calls.push(["cleanStaleSessions"]),
@@ -171,7 +170,6 @@ describe("settings-effect-router", () => {
     emit({ lang: "zh", sessionAliases: { "local|claude|1": "work" } });
     assert.deepStrictEqual(calls, [
       ["updateMirrors", { lang: "zh", sessionAliases: { "local|claude|1": "work" } }],
-      ["sendDashboardI18n"],
       ["sendSessionHudI18n"],
       ["emitSessionSnapshot", { force: true }],
       ["rebuildAllMenus"],

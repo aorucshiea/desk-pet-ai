@@ -124,21 +124,9 @@ document.addEventListener("pointerup", (e) => {
   if (wasDrag) return;
 
   // macOS Ctrl-click is the system right-click gesture. Let the OS / our
-  // contextmenu handler deal with it; do NOT treat it as the Dashboard
-  // shortcut, and do NOT fall through to handleClick (would otherwise
-  // leak into the click accumulator).
-  if (isMac && e.ctrlKey && !e.metaKey) {
-    resetClickAccumulator();
-    return;
-  }
-
-  // Dashboard shortcut: Cmd-click on mac, Ctrl-click elsewhere.
-  const isDashboardShortcut = isMac ? e.metaKey : (e.ctrlKey && !e.metaKey);
-  if (isDashboardShortcut) {
-    resetClickAccumulator();
-    window.hitAPI.showDashboard();
-    return;
-  }
+  // contextmenu handler deal with it; do NOT fall through to handleClick
+  // (would otherwise leak into the click accumulator).
+  if (isMac && e.ctrlKey && !e.metaKey) return;
 
   handleClick(e.clientX);
 });
@@ -156,12 +144,6 @@ let firstClickDir = null;
 
 function _getReaction(name) {
   return _reactions[name] || null;
-}
-
-function resetClickAccumulator() {
-  if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; }
-  clickCount = 0;
-  firstClickDir = null;
 }
 
 // Fresh-read at reaction timer fire time, NOT closured at click time —

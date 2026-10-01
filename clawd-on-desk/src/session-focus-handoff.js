@@ -8,7 +8,7 @@ function focusCodexThreadTarget({
   shell,
   focusEntry,
   sessionId,
-  requestSource = "dashboard",
+  requestSource = "session",
   url,
   focusLog = () => {},
   focusTerminalSession = () => false,

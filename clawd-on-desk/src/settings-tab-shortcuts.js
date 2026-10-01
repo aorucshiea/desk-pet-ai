@@ -140,10 +140,6 @@
     rows.push(buildFixedKeyRow("shortcutLabelBubbleToggleOption", "Space"));
     rows.push(buildFixedKeyRow("shortcutLabelBubbleSubmit", "Enter"));
     rows.push(buildFixedKeyRow("shortcutLabelPetReveal", "Click pet"));
-    rows.push(buildFixedKeyRow(
-      "shortcutLabelOpenDashboard",
-      i18n.IS_MAC ? "⌘ + Click pet" : "Ctrl + Click pet"
-    ));
     parent.appendChild(helpers.buildSection("", rows));
   }
 

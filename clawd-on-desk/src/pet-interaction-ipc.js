@@ -49,7 +49,6 @@ function registerPetInteractionIpc(options = {}) {
     "getFocusableLocalHudSessionIds"
   );
   const focusLog = requiredDependency(options.focusLog, "focusLog");
-  const showDashboard = requiredDependency(options.showDashboard, "showDashboard");
   const focusSession = requiredDependency(options.focusSession, "focusSession");
   const revealSessionHud = requiredDependency(options.revealSessionHud, "revealSessionHud");
   const setLowPowerIdlePaused = requiredDependency(
@@ -219,8 +218,8 @@ function registerPetInteractionIpc(options = {}) {
     const focusableIds = getFocusableLocalHudSessionIds();
     focusLog(`focus request source=pet-body sid=- focusableCount=${focusableIds.length}`);
     if (focusableIds.length > 1) {
-      focusLog(`focus result branch=none reason=multi-session-open-dashboard count=${focusableIds.length}`);
-      showDashboard();
+      focusLog(`focus result branch=none reason=multi-session-reveal-hud count=${focusableIds.length}`);
+      revealSessionHud();
       return;
     }
     if (focusableIds.length === 1) {

@@ -353,7 +353,7 @@ describe("menu taskbar recovery", () => {
   });
 });
 
-describe("menu dashboard action", () => {
+describe("menu chat label", () => {
   it("labels the chat menu item with a translated string, not the raw key", () => {
     const fakeElectron = {
       app: { quit: () => {}, setActivationPolicy: () => {}, dock: { show: () => {}, hide: () => {} } },

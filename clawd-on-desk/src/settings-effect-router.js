@@ -51,7 +51,6 @@ function createSettingsEffectRouter(options = {}) {
   const destroyTray = options.destroyTray || noop;
   const applyDockVisibility = options.applyDockVisibility || noop;
   const sendToRenderer = options.sendToRenderer || noop;
-  const sendDashboardI18n = options.sendDashboardI18n || noop;
   const sendSessionHudI18n = options.sendSessionHudI18n || noop;
   const sendDeskPetChatI18n = options.sendDeskPetChatI18n || noop;
   const sendDeskPetOnboardingI18n = options.sendDeskPetOnboardingI18n || noop;
@@ -101,7 +100,6 @@ function createSettingsEffectRouter(options = {}) {
       safeCall(logWarn, "Clawd: reconcilePowerSaveBlocker failed:", reconcilePowerSaveBlocker);
     }
     if ("lang" in changes) {
-      safeCall(logWarn, "Clawd: dashboard lang broadcast failed:", sendDashboardI18n);
       safeCall(logWarn, "Clawd: session HUD lang broadcast failed:", sendSessionHudI18n);
       safeCall(logWarn, "Clawd: DeskPet chat lang broadcast failed:", sendDeskPetChatI18n);
       safeCall(logWarn, "Clawd: DeskPet onboarding lang broadcast failed:", sendDeskPetOnboardingI18n);

@@ -7,12 +7,8 @@ function requiredDependency(value, name) {
 
 function registerSessionIpc(options = {}) {
   const ipcMain = requiredDependency(options.ipcMain, "ipcMain");
-  const getSessionSnapshot = requiredDependency(options.getSessionSnapshot, "getSessionSnapshot");
   const getI18n = requiredDependency(options.getI18n, "getI18n");
   const focusSession = requiredDependency(options.focusSession, "focusSession");
-  const hideSession = requiredDependency(options.hideSession, "hideSession");
-  const setSessionAlias = requiredDependency(options.setSessionAlias, "setSessionAlias");
-  const showDashboard = requiredDependency(options.showDashboard, "showDashboard");
   const setSessionHudPinned = requiredDependency(options.setSessionHudPinned, "setSessionHudPinned");
   const ackSessionCompletion = requiredDependency(options.ackSessionCompletion, "ackSessionCompletion");
   const disposers = [];
@@ -27,26 +23,14 @@ function registerSessionIpc(options = {}) {
     disposers.push(() => ipcMain.removeListener(channel, listener));
   }
 
-  handle("dashboard:get-snapshot", () => getSessionSnapshot());
-  handle("dashboard:get-i18n", () => getI18n());
-  on("dashboard:focus-session", (_event, sessionId) =>
-    focusSession(sessionId, { requestSource: "dashboard" })
-  );
-  handle("dashboard:hide-session", (_event, sessionId) => hideSession(sessionId));
-  handle("dashboard:set-session-alias", (_event, payload) => setSessionAlias(payload));
-
   handle("session-hud:get-i18n", () => getI18n());
   on("session-hud:focus-session", (_event, sessionId) =>
     focusSession(sessionId, { requestSource: "hud" })
   );
-  on("session-hud:open-dashboard", () => showDashboard({ source: "hud" }));
   on("session-hud:set-pinned", (_event, value) => setSessionHudPinned(!!value));
 
-  on("settings:open-dashboard", () => showDashboard({ source: "settings" }));
-  on("show-dashboard", () => showDashboard());
-
-  // Both HUD and Dashboard call into this — invoke/handle (not send) so the
-  // click handlers can re-enable the Mark-read button if the ack failed.
+  // The HUD is the only caller now, but it acks via invoke so the click
+  // handler can re-enable the Mark-read button if the ack failed.
   handle("session:ack-completion", (_event, sessionId) => {
     if (typeof sessionId !== "string" || !sessionId) {
       return { status: "error", message: "session:ack-completion requires a sessionId string" };

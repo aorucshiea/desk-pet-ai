@@ -19,7 +19,7 @@ describe("session focus handoff", () => {
       },
       focusEntry: { id: "codex:thread", agentId: "codex" },
       sessionId: "codex:thread",
-      requestSource: "dashboard",
+      requestSource: "session",
       url: "codex://threads/thread",
       focusLog: (line) => logs.push(line),
     });

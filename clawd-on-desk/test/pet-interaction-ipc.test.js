@@ -80,7 +80,6 @@ function createHarness(overrides = {}) {
     getDisableMiniMode: () => state.disableMiniMode,
     getFocusableLocalHudSessionIds: () => state.focusableIds,
     focusLog: (message) => calls.push(["focusLog", message]),
-    showDashboard: () => calls.push(["showDashboard"]),
     focusSession: (sessionId, options) => calls.push(["focusSession", sessionId, options]),
     setLowPowerIdlePaused: (value) => calls.push(["setLowPowerIdlePaused", value]),
     revealSessionHud: () => calls.push(["revealSessionHud"]),
@@ -337,8 +336,8 @@ test("pet interaction IPC preserves pet-body focus behavior", () => {
     ["focusLog", "focus request source=pet-body sid=- focusableCount=1"],
     ["focusSession", "single", { requestSource: "pet-body" }],
     ["focusLog", "focus request source=pet-body sid=- focusableCount=2"],
-    ["focusLog", "focus result branch=none reason=multi-session-open-dashboard count=2"],
-    ["showDashboard"],
+    ["focusLog", "focus result branch=none reason=multi-session-reveal-hud count=2"],
+    ["revealSessionHud"],
   ]);
 });
 

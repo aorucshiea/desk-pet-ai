@@ -402,7 +402,7 @@ let storedLang = _settingsController.get("lang");
 let lang = resolveEffectiveLang(storedLang, () => app.getLocale());
 const translate = createTranslator(() => lang);
 
-function getDashboardI18nPayload() {
+function getSessionI18nPayload() {
   const dict = i18n[lang] || i18n.en;
   return { lang, translations: { ...dict } };
 }
@@ -855,13 +855,6 @@ function applyTextScaleNow() {
   } catch (err) {
     console.warn("Clawd: settings window text scale failed:", err && err.message);
   }
-  try {
-    if (_dashboard && typeof _dashboard.applyTextScaleToWindow === "function") {
-      _dashboard.applyTextScaleToWindow();
-    }
-  } catch (err) {
-    console.warn("Clawd: dashboard text scale failed:", err && err.message);
-  }
   repositionAnchoredFloatingSurfaces();
 }
 
@@ -1251,7 +1244,7 @@ const _permCtx = {
   isAgentPermissionsEnabled: (agentId) =>
     _isAgentPermissionsEnabled({ agents: _settingsController.get("agents") }, agentId),
   focusTerminalForSession: (sessionId, options = {}) => {
-    focusDashboardSession(sessionId, {
+    focusSession(sessionId, {
       requestSource: options.requestSource || "permission-bubble",
       fallbackEntry: options.fallbackEntry || getPendingPermissionFocusEntry(sessionId),
     });
@@ -1326,10 +1319,6 @@ function syncSessionHudVisibilityAndBubbles() {
 }
 
 // ── State machine — delegated to src/state.js ──
-let showDashboard = () => {};
-let broadcastDashboardSessionSnapshot = () => {};
-let sendDashboardI18n = () => {};
-
 const _stateCtx = {
   get theme() { return getActiveTheme(); },
   get win() { return win; },
@@ -1378,7 +1367,6 @@ const _stateCtx = {
   debugLog: (msg) => sessionLog(msg),
   broadcastSessionSnapshot: (snapshot) => {
     reconcilePowerSaveBlocker();
-    broadcastDashboardSessionSnapshot(snapshot);
     broadcastSessionHudSnapshot(snapshot);
     repositionFloatingBubbles();
     if (hardwareBuddyAdapter) hardwareBuddyAdapter.notifyStateChanged();
@@ -1540,9 +1528,9 @@ function focusTerminalSession(session, sessionId, requestSource) {
   });
 }
 
-function focusDashboardSession(sessionId, options = {}) {
+function focusSession(sessionId, options = {}) {
   if (!sessionId) return false;
-  const requestSource = options.requestSource || "dashboard";
+  const requestSource = options.requestSource || "session";
   const id = String(sessionId);
   const session = sessions.get(id);
   const fallbackEntry = options.fallbackEntry && typeof options.fallbackEntry === "object"
@@ -1579,33 +1567,6 @@ function focusDashboardSession(sessionId, options = {}) {
   }
   return false;
 }
-
-function hideDashboardSession(sessionId) {
-  if (!_state || typeof _state.dismissSession !== "function") {
-    return { status: "error", message: "session state is not ready" };
-  }
-  const removed = _state.dismissSession(String(sessionId || ""));
-  return removed
-    ? { status: "ok" }
-    : { status: "not-found" };
-}
-
-const _dashboard = require("./dashboard")({
-  get lang() { return lang; },
-  t: (key) => translate(key),
-  getSessionSnapshot: () => _state.buildSessionSnapshot(),
-  getI18n: () => getDashboardI18nPayload(),
-  getPetWindowBounds,
-  getNearestWorkArea,
-  getSettingsWindow: () => settingsWindowRuntime.getWindow(),
-  getTextScale: () => effectiveTextScaleForKey(
-    getWindowDisplayKey(_dashboard ? _dashboard.getWindow() : null) || getPetDisplayKey()
-  ),
-  iconPath: settingsWindowRuntime.getIconPath(),
-});
-showDashboard = _dashboard.showDashboard;
-broadcastDashboardSessionSnapshot = _dashboard.broadcastSessionSnapshot;
-sendDashboardI18n = _dashboard.sendI18n;
 
 _petChat = require("./pet-chat")({
   getPetWindowBounds,
@@ -1660,7 +1621,7 @@ const _sessionHud = require("./session-hud")({
   getMiniMode: () => _mini.getMiniMode(),
   getMiniTransitioning: () => _mini.getMiniTransitioning(),
   getSessionSnapshot: () => _state.buildSessionSnapshot(),
-  getI18n: () => getDashboardI18nPayload(),
+  getI18n: () => getSessionI18nPayload(),
   getPetWindowBounds,
   getHitRectScreen,
   getSessionHudAnchorRect,
@@ -2205,7 +2166,7 @@ async function initTelegramMigrationController() {
       ? _state.buildSessionSnapshot()
       : { sessions: [] },
     getPendingPermissions: () => pendingPermissions,
-    focusSession: (sessionId, options) => focusDashboardSession(sessionId, options),
+    focusSession,
     deliveryAdapter: createWindowsPasteOnlyDeliveryAdapter({
       clipboard,
       restoreClipboardOnSuccess: true,
@@ -2928,7 +2889,6 @@ const settingsEffectRouter = createSettingsEffectRouter({
   destroyTray,
   applyDockVisibility,
   sendToRenderer,
-  sendDashboardI18n: () => sendDashboardI18n(),
   sendSessionHudI18n: () => sendSessionHudI18n(),
   sendDeskPetChatI18n: () => {
     try {
@@ -3127,13 +3087,9 @@ registerSettingsIpc({
 
 registerSessionIpc({
   ipcMain,
-  getSessionSnapshot: () => _state.buildSessionSnapshot(),
-  getI18n: () => getDashboardI18nPayload(),
-  focusSession: (sessionId, options) => focusDashboardSession(sessionId, options),
-  hideSession: (sessionId) => hideDashboardSession(sessionId),
+  getI18n: () => getSessionI18nPayload(),
+  focusSession,
   ackSessionCompletion: (sessionId) => _state.ackSessionCompletion(sessionId),
-  setSessionAlias: (payload) => _settingsController.applyCommand("setSessionAlias", payload),
-  showDashboard: (options) => showDashboard(options),
   setSessionHudPinned: (value) => {
     const result = _settingsController.applyUpdate("sessionHudPinned", !!value);
     if (result && typeof result.then === "function") {
@@ -3269,8 +3225,7 @@ function createWindow() {
     exitMiniMode: () => exitMiniMode(),
     getFocusableLocalHudSessionIds: () => getFocusableLocalHudSessionIds(),
     focusLog: (message) => focusLog(message),
-    showDashboard: () => showDashboard(),
-    focusSession: (sessionId, options) => focusDashboardSession(sessionId, options),
+    focusSession,
     revealSessionHud: () => {
       if (_sessionHud && typeof _sessionHud.revealFromPet === "function") {
         _sessionHud.revealFromPet();

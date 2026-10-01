@@ -531,7 +531,6 @@ function loadGeneralTabForTest({
       update: () => Promise.resolve({ status: "ok" }),
       command: () => Promise.resolve({ status: "ok" }),
       getPreviewSoundUrl: () => Promise.resolve(null),
-      openDashboard: () => {},
       ...settingsAPI,
     },
     ClawdSettingsSizeSlider: {
@@ -2360,11 +2359,9 @@ describe("settings renderer browser environment", () => {
     // settings pages that cannot scroll to the bottom. Every occurrence must
     // divide by --clawd-text-zoom or use the zoom-aware 100% chain instead.
     const css = fs.readFileSync(SETTINGS_CSS, "utf8");
-    const dashboardHtml = fs.readFileSync(path.join(SRC_DIR, "dashboard.html"), "utf8");
     const mainSource = fs.readFileSync(MAIN_PROCESS, "utf8");
     const bare = css.match(/\d+(?:\.\d+)?v[hw]\b(?!\s*\/\s*var\(--clawd-text-zoom)/g) || [];
     assert.deepStrictEqual(bare, [], "settings.css has uncompensated viewport units");
-    assert.doesNotMatch(dashboardHtml, /\d+(?:\.\d+)?v[hw]\b/, "dashboard.html must not use viewport units");
     assert.match(mainSource, /height:calc\(100vh \/ \$\{resumeScale\}\)/);
   });
 

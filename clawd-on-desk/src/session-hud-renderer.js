@@ -332,10 +332,6 @@ function createFoldedRow(count) {
 
   row.appendChild(left);
 
-  row.addEventListener("click", () => {
-    window.sessionHudAPI.openDashboard();
-  });
-
   return row;
 }
 

@@ -61,7 +61,6 @@ function createHarness({ isMac = false, sendState = {} } = {}) {
         showContextMenu: () => apiCalls.push(["showContextMenu"]),
         focusTerminal: () => apiCalls.push(["focusTerminal"]),
         exitMiniMode: () => apiCalls.push(["exitMiniMode"]),
-        showDashboard: () => apiCalls.push(["showDashboard"]),
         revealSessionHud: () => apiCalls.push(["revealSessionHud"]),
         startDragReaction: (direction) => apiCalls.push(["startDragReaction", direction]),
         endDragReaction: () => apiCalls.push(["endDragReaction"]),
@@ -131,27 +130,24 @@ describe("hit-renderer input layer", () => {
     assert.ok(!names.includes("focusTerminal"), "must not call focusTerminal");
   });
 
-  it("Ctrl+click on non-mac opens Dashboard, does NOT call reveal", () => {
+  it("Ctrl+click on non-mac is now a plain click (reveals HUD)", () => {
     const h = createHarness({ isMac: false });
     h.pointerup({ ctrlKey: true });
     const names = h.apiCalls.map((c) => c[0]);
-    assert.ok(names.includes("showDashboard"), "should open Dashboard");
-    assert.ok(!names.includes("revealSessionHud"), "must not reveal HUD on Ctrl+click");
+    assert.ok(names.includes("revealSessionHud"), "Ctrl+click should fall through to a normal click");
   });
 
-  it("Cmd+click on mac opens Dashboard", () => {
+  it("Cmd+click on mac is now a plain click (reveals HUD)", () => {
     const h = createHarness({ isMac: true });
     h.pointerup({ metaKey: true });
     const names = h.apiCalls.map((c) => c[0]);
-    assert.ok(names.includes("showDashboard"));
-    assert.ok(!names.includes("revealSessionHud"));
+    assert.ok(names.includes("revealSessionHud"));
   });
 
-  it("Ctrl+click on mac does NOT open Dashboard and does NOT reveal (system right-click)", () => {
+  it("Ctrl+click on mac stays out of the click accumulator (system right-click)", () => {
     const h = createHarness({ isMac: true });
     h.pointerup({ ctrlKey: true });
     const names = h.apiCalls.map((c) => c[0]);
-    assert.ok(!names.includes("showDashboard"), "mac Ctrl+click must not trigger Dashboard");
     assert.ok(!names.includes("revealSessionHud"), "mac Ctrl+click must not reveal HUD");
   });
 
@@ -164,13 +160,12 @@ describe("hit-renderer input layer", () => {
     assert.ok(!names.includes("revealSessionHud"), "miniMode plain click should not reveal HUD");
   });
 
-  it("miniMode + Ctrl+click goes to Dashboard, does NOT exit mini (preserves pre-v5 behavior)", () => {
+  it("miniMode + Ctrl+click exits mini like a plain click", () => {
     const h = createHarness({ isMac: false });
     h.apiHandlers.stateSync({ miniMode: true });
     h.pointerup({ ctrlKey: true });
     const names = h.apiCalls.map((c) => c[0]);
-    assert.ok(names.includes("showDashboard"), "Ctrl+click in mini should still open Dashboard");
-    assert.ok(!names.includes("exitMiniMode"), "Ctrl+click in mini must NOT exit mini");
+    assert.ok(names.includes("exitMiniMode"), "Ctrl+click in mini should now behave as a click");
   });
 
   it("does not trigger reveal in working state but still reveals HUD on click (gating is for reactions only)", () => {
@@ -192,19 +187,6 @@ describe("hit-renderer input layer", () => {
     h.fireTimer((t) => t.ms === 400);
     const names = h.apiCalls.map((c) => c[0]);
     assert.ok(!names.includes("playClickReaction"), "DND must gate reaction playback");
-  });
-
-  it("Ctrl+click resets click accumulator (no stale double-click)", () => {
-    const h = createHarness({ isMac: false });
-    h.pointerup({});            // plain click 1 — accumulates
-    h.pointerup({ ctrlKey: true }); // Ctrl+click should reset
-    h.pointerup({});            // plain click 2 — must be a fresh first click
-    // Fire the reset timer (single-click path schedules 400ms reset)
-    h.fireTimer((t) => t.ms === 400);
-    const names = h.apiCalls.map((c) => c[0]);
-    // No double-click reaction should fire from "1 + reset + 1"
-    assert.ok(!names.includes("playClickReaction"),
-      "Ctrl+click between plain clicks should not produce a double-click reaction");
   });
 
   it("cancel-reaction clears reactionTimer + accumulator", () => {
