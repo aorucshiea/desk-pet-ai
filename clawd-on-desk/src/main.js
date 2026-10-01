@@ -3,6 +3,23 @@ const { app, BrowserWindow, screen, ipcMain, globalShortcut, nativeTheme, dialog
 // renderer: renderer windows reload/die routinely, and each death
 // used to be read as "owner gone" -> sidecar os._exit(1) -> 网关离线.
 ipcMain.on("pet-main-pid", (e) => { e.returnValue = process.pid; });
+  ipcMain.handle("settings:discover-models", async (_e, payload) => {
+    // Renderer pages cannot read the gateway token; the main process
+    // can. Proxy the discovery call so CORS never enters the picture.
+    const fs = require("fs"), path = require("path"), os = require("os");
+    let token = "";
+    try { token = fs.readFileSync(path.join(os.homedir(), ".pet", "gateway-token"), "utf8").trim(); } catch {}
+    try {
+      const r = await fetch("http://127.0.0.1:18765/api/providers/discover-models", {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-pet-token": token },
+        body: JSON.stringify(payload || {}),
+      });
+      return await r.json();
+    } catch (err) {
+      return { ok: false, error: String(err) };
+    }
+  });
 process.on("uncaughtException", (err) => {
   let p, f;
   try { p = require("path"); f = require("fs"); } catch { return; }

@@ -371,6 +371,35 @@
     const modelInp = textInput(p.model, { placeholder: id === "ollama" ? "llama3.2" : "local-model" });
     d.appendChild(fieldRow(t("provFieldUrl"), urlInp));
     d.appendChild(fieldRow(t("provFieldModel"), modelInp));
+        // CherryStudio-style discovery: enumerate what this endpoint serves
+        // instead of making the user hand-copy a model id.
+        const modelDl = el("datalist", { id: "prov-model-dl" });
+        modelInp.setAttribute("list", "prov-model-dl");
+        d.appendChild(modelDl);
+        d.appendChild(softBtn(t("provFetchModels"), async () => {
+          const btn = d.querySelector(".prov-fetch-btn");
+          if (btn) btn.disabled = true;
+          try {
+            const res = await window.settingsAPI.discoverModels({
+              baseUrl: urlInp.value.trim(),
+              apiKey: keyInp.value.trim(),
+            });
+            if (res && res.ok && Array.isArray(res.models) && res.models.length) {
+              modelDl.innerHTML = "";
+              for (const m of res.models) {
+                const o = document.createElement("option");
+                o.value = m;
+                modelDl.appendChild(o);
+              }
+              toast(String(t("provFetchOk")).replace("{n}", String(res.models.length)));
+            } else {
+              toast((res && res.error) || t("provFetchFail"));
+            }
+          } catch (err) {
+            toast(String(err));
+          }
+          if (btn) btn.disabled = false;
+        })).classList.add("prov-fetch-btn");
 
     const actions = el("div", { className: "prov-actions" });
     const use = useButton(skills.defaultProvider || "local", id);

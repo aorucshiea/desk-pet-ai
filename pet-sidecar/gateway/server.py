@@ -1937,6 +1937,38 @@ def build_app(
         await server.stop()
         return {"ok": True, "was_running": was}
 
+    @app.post("/api/providers/discover-models")
+    async def providers_discover_models(payload: dict):
+        """CherryStudio-style: given a baseUrl + key, enumerate the models
+        that endpoint actually serves, so nobody hand-copies model ids.
+
+        Proxied through the sidecar (not fetched from the renderer) to
+        dodge CORS - cloud APIs do not send CORS headers to app:// pages.
+        Speaks the OpenAI-compatible /models shape, which LM Studio,
+        Ollama (with the compat route), and nearly every aggregator also
+        implement."""
+        base = str((payload or {}).get("baseUrl") or "").strip().rstrip("/")
+        key = str((payload or {}).get("apiKey") or "").strip()
+        if not base:
+            return JSONResponse({"ok": False, "error": "baseUrl is required"}, status_code=400)
+        url = f"{base}/models"
+        headers = {"Authorization": f"Bearer {key}"} if key else {}
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.get(url, headers=headers)
+                resp.raise_for_status()
+                data = resp.json()
+        except Exception as exc:
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=502)
+        items = data.get("data") if isinstance(data, dict) else data
+        ids: list[str] = []
+        for it in items or []:
+            mid = it.get("id") if isinstance(it, dict) else it
+            if mid:
+                ids.append(str(mid))
+        ids.sort()
+        return {"ok": True, "models": ids, "base": base}
+
     @app.get("/api/engine/params")
     async def engine_params():
         """Current runtime knobs + the exact argv they produce, so the

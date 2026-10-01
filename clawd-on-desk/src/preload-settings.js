@@ -70,6 +70,7 @@ ipcRenderer.on("settings:text-scale-context-changed", () => {
 
 contextBridge.exposeInMainWorld("settingsAPI", {
   getSnapshot: () => ipcRenderer.invoke("settings:get-snapshot"),
+  discoverModels: (payload) => ipcRenderer.invoke("settings:discover-models", payload),
   getShortcutFailures: () => ipcRenderer.invoke("settings:getShortcutFailures"),
   getAnimationOverridesData: () => ipcRenderer.invoke("settings:get-animation-overrides-data"),
   openThemeAssetsDir: () => ipcRenderer.invoke("settings:open-theme-assets-dir"),
