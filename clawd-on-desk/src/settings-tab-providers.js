@@ -211,6 +211,18 @@
     item.appendChild(text);
     if (inUse) item.appendChild(el("span", { className: "prov-tag" }, t("provInUse")));
     else item.appendChild(el("span", { className: "prov-dot" + (p ? "" : " idle") }));
+    if (onRemove) {
+      const del = el("span", {
+        className: "prov-del",
+        title: t("provRemove"),
+        onClick: (ev) => {
+          ev.stopPropagation();
+          if (inUse) { toast(t("provDelBlocked")); return; }
+          onRemove();
+        },
+      }, "\u2715");
+      item.appendChild(del);
+    }
     return item;
   }
 
@@ -257,6 +269,11 @@
           selected: selectedSource === p.provider,
           inUse: defaultProvider === p.provider,
           onSelect: () => select(p.provider),
+          onRemove: async () => {
+            await saveProviders(providers.filter((x) => x.provider !== p.provider));
+            if (selectedSource === p.provider) selectedSource = defaultProvider === p.provider ? "local" : selectedSource;
+            renderAll();
+          },
         }));
       }
       listEl.appendChild(softBtn("+ " + t("provAddProvider"), () => {
@@ -278,8 +295,19 @@
         selected: selectedSource === p.provider,
         inUse: defaultProvider === p.provider,
         onSelect: () => select(p.provider),
+        onRemove: async () => {
+          await saveProviders(providers.filter((x) => x.provider !== p.provider));
+          renderAll();
+        },
       }));
     }
+    // The add button belongs to THIS group (the built-in engine cannot be
+    // "added"), so it sits here — not stranded below the engine entry.
+    listEl.appendChild(softBtn("+ " + t("provAddProvider"), () => {
+      selectedSource = "__add__";
+      renderAll();
+    }, { accent: selectedSource === "__add__" })).classList.add("prov-add-btn");
+
     // 2. the engine that ships with the pet — LAST, by request
     listEl.appendChild(subGroupTitle(t("provGroupBuiltin")));
     listEl.appendChild(sourceItem({
@@ -288,12 +316,6 @@
       inUse: defaultProvider === "local",
       onSelect: () => select("local"),
     }));
-    // 3. the way IN: without this button the local half had no way to add
-    // LM Studio / Ollama at all ("无法选别的了").
-    listEl.appendChild(softBtn("+ " + t("provAddProvider"), () => {
-      selectedSource = "__add__";
-      renderAll();
-    }, { accent: selectedSource === "__add__" })).classList.add("prov-add-btn");
   }
 
   // ── Right pane: detail for the selected source ─────────────────────────

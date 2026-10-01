@@ -4728,3 +4728,7 @@ html, body {
 .prov-mode-switch { display: inline-flex; gap: 4px; margin-top: 10px; padding: 3px; border-radius: 10px; background: var(--input-bg, rgba(127,127,127,0.12)); }
 .prov-mode-btn { appearance: none; border: 0; padding: 6px 14px; border-radius: 8px; font-size: 13px; cursor: pointer; background: transparent; color: var(--text-secondary); }
 .prov-mode-btn.is-active { background: var(--panel-bg, #fff); color: var(--text-primary); font-weight: 600; box-shadow: 0 1px 2px rgba(0,0,0,0.08); }
+/* ── Providers: inline delete on list items ── */
+.prov-item .prov-del { opacity: 0; transition: opacity .12s; margin-left: 8px; padding: 2px 8px; border-radius: 6px; color: var(--text-secondary); cursor: pointer; font-size: 12px; }
+.prov-item:hover .prov-del { opacity: 1; }
+.prov-item .prov-del:hover { background: rgba(220,60,60,0.25); color: #ff6b6b; }
