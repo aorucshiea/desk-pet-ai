@@ -340,8 +340,7 @@ class SidecarUpdater:
                 if archive.suffix == ".zip":
                     _safe_zip_extract(archive, extract_dir)
                 else:
-                    with tarfile.open(archive, "r:gz") as tf:
-                        tf.extractall(extract_dir, filter="data")
+                    _safe_tar_extract(archive, extract_dir)
                 server_bin = _find_llama_server(extract_dir)
                 if server_bin is None:
                     yield {"phase": "error", "message": "发布包中找不到 llama-server"}
@@ -542,4 +541,40 @@ def _safe_zip_extract(archive: Path, dest: Path) -> None:
                 continue
             target.parent.mkdir(parents=True, exist_ok=True)
             with zf.open(member) as src, target.open("wb") as dst:
+                shutil.copyfileobj(src, dst)
+
+
+def _safe_tar_extract(archive: Path, dest: Path) -> None:
+    """Extract a tar.gz with the same traversal guard as the zip path.
+
+    `extractall(filter="data")` is the right call where it exists, but the
+    keyword only landed in 3.12 (backports did not reach the 3.10.6 this repo
+    ships in .venv), so on those interpreters it raises TypeError and every
+    tar-based engine update died mid-swap. The fallback enforces the same
+    rules by hand: no absolute paths, no `..` escapes, no links.
+    """
+    with tarfile.open(archive, "r:gz") as tf:
+        try:
+            tf.extractall(dest, filter="data")
+            return
+        except TypeError:
+            pass
+        dest_resolved = dest.resolve()
+        for member in tf.getmembers():
+            name = member.name.replace("\\", "/")
+            target = (dest / name).resolve()
+            if not target.is_relative_to(dest_resolved):
+                raise RuntimeError(f"tar entry escapes extract dir: {name}")
+            if member.issym() or member.islnk():
+                raise RuntimeError(f"tar entry is a link: {name}")
+            if member.isdir():
+                target.mkdir(parents=True, exist_ok=True)
+                continue
+            if not member.isfile():
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            src = tf.extractfile(member)
+            if src is None:
+                continue
+            with src, target.open("wb") as dst:
                 shutil.copyfileobj(src, dst)

@@ -322,3 +322,72 @@ class TestApplyFromDir:
             start_callback=lambda: events.append("start"),
         ))
         assert events == ["stop", "start"]
+
+
+class TestSafeTarExtract:
+    """The tar path used `extractall(filter="data")` unconditionally, but the
+    keyword only exists on 3.12+ (and the 3.10.6 shipped in .venv raises
+    TypeError), so tar-based engine updates died mid-swap. The fallback must
+    extract normally AND keep the traversal guard."""
+
+    @staticmethod
+    def _make_tar(tmp_path: Path, members) -> Path:
+        import tarfile
+
+        archive = tmp_path / "engine.tar.gz"
+        with tarfile.open(archive, "w:gz") as tf:
+            for name, payload in members:
+                if payload is None:  # symlink marker
+                    info = tarfile.TarInfo(name)
+                    info.type = tarfile.SYMTYPE
+                    info.linkname = "/etc/passwd"
+                    tf.addfile(info)
+                    continue
+                data = payload.encode("utf-8")
+                info = tarfile.TarInfo(name)
+                info.size = len(data)
+                tf.addfile(info, io.BytesIO(data))
+        return archive
+
+    def test_extracts_a_plain_release_layout(self, tmp_path):
+        from gateway.sidecar_updater import _safe_tar_extract
+
+        dest = tmp_path / "out"
+        dest.mkdir()
+        archive = self._make_tar(tmp_path, [
+            ("llama-server", "#!/bin/sh\necho hi\n"),
+            ("backends/vulkan/README", "vulkan build\n"),
+        ])
+
+        _safe_tar_extract(archive, dest)
+
+        assert (dest / "llama-server").read_text(encoding="utf-8").startswith("#!")
+        assert (dest / "backends" / "vulkan" / "README").is_file()
+
+    def test_rejects_a_member_that_escapes_the_extract_dir(self, tmp_path):
+        from gateway.sidecar_updater import _safe_tar_extract
+
+        dest = tmp_path / "out"
+        dest.mkdir()
+        archive = self._make_tar(tmp_path, [
+            ("llama-server", "ok\n"),
+            ("../escaped.txt", "pwned\n"),
+        ])
+
+        with pytest.raises(RuntimeError, match="escapes extract dir"):
+            _safe_tar_extract(archive, dest)
+        assert not (tmp_path / "escaped.txt").exists()
+
+    def test_rejects_symlink_members(self, tmp_path):
+        from gateway.sidecar_updater import _safe_tar_extract
+
+        dest = tmp_path / "out"
+        dest.mkdir()
+        archive = self._make_tar(tmp_path, [
+            ("llama-server", "ok\n"),
+            ("link-to-passwd", None),
+        ])
+
+        with pytest.raises(RuntimeError, match="is a link"):
+            _safe_tar_extract(archive, dest)
+        assert not (dest / "link-to-passwd").exists()
