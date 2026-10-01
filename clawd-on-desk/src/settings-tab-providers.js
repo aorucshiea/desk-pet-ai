@@ -571,7 +571,9 @@
     if (!selectedSource) selectedSource = skills.defaultProvider || "local";
     // A stale selection (provider removed on disk) falls back in renderDetail.
 
-    renderStateRow(parent, skills, providers);
+    // renderStateRow (the "现在用它说话" card) was removed on purpose:
+    // "which model is in use" is the Brain page's job, and saying it here
+    // too meant two pages asserting the same fact - they WILL drift apart.
 
     const pane = el("div", { className: "prov-pane" });
     const list = el("div", { className: "prov-list" });
