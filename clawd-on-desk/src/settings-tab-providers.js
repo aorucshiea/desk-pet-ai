@@ -486,6 +486,37 @@
     }));
     d.appendChild(grid);
 
+    // Cloud provider presets — shown in cloud mode only. 国产优先,
+    // then global aggregators. One click creates the provider with the
+    // baseUrl and a sensible default model; the user only adds a key.
+    if (_sourceMode !== "local") {
+      d.appendChild(el("div", { className: "section-title prov-manual-title" }, t("provCloudPresets")));
+      const cgrid = el("div", { className: "prov-preset-grid" });
+      const CLOUD = [
+        ["deepseek", "DeepSeek", "https://api.deepseek.com/v1", "deepseek-chat", "deepseek-chat / deepseek-reasoner"],
+        ["kimi", "Kimi", "https://api.moonshot.cn/v1", "moonshot-v1-8k", "moonshot-v1 系列"],
+        ["zhipu", "智谱GLM", "https://open.bigmodel.cn/api/paas/v4", "glm-4-plus", "glm-4 系列"],
+        ["qwen", "通义千问", "https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen-max", "qwen-max / plus / turbo"],
+        ["minimax", "MiniMax", "https://api.minimax.chat/v1", "abab6.5s-chat", "abab 系列"],
+        ["siliconflow", "硅基流动", "https://api.siliconflow.cn/v1", "deepseek-ai/DeepSeek-V3", "聚合多家开源模型"],
+        ["volces", "火山方舟", "https://ark.cn-beijing.volces.com/api/v3", "doubao-pro-32k", "豆包系列"],
+        ["hunyuan", "腾讯混元", "https://api.hunyuan.cloud.tencent.com/v1", "hunyuan-turbos-latest", "hunyuan 系列"],
+        ["wenxin", "百度文心", "https://qianfan.baidubce.com/v2", "ernie-4.0-turbo-8k", "ernie 系列"],
+        ["openai", "OpenAI", "https://api.openai.com/v1", "gpt-4o", "gpt-4o / o 系列"],
+        ["anthropic", "Anthropic", "https://api.anthropic.com/v1", "claude-sonnet-4-20250514", "claude 系列"],
+        ["gemini", "Gemini", "https://generativelanguage.googleapis.com/v1beta", "gemini-2.0-flash", "gemini 系列"],
+        ["groq", "Groq", "https://api.groq.com/openai/v1", "llama-3.3-70b-versatile", "超快推理"],
+        ["openrouter", "OpenRouter", "https://openrouter.ai/api/v1", "openai/gpt-4o", "聚合全球模型"],
+      ];
+      for (const [pid, name, url, model, desc] of CLOUD) {
+        cgrid.appendChild(mkPreset(name, desc, {
+          provider: pid, apiKey: "", baseUrl: url, model,
+          thinking: false, reasoningEffort: null, contextWindow: null,
+        }));
+      }
+      d.appendChild(cgrid);
+    }
+
     // Manual OpenAI-compatible form.
     d.appendChild(el("div", { className: "section-title prov-manual-title" }, t("provManualTitle")));
     const idInp = textInput("", { placeholder: "e.g. deepseek" });
