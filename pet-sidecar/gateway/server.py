@@ -3170,13 +3170,25 @@ async def _stream_chat_provider(
                             {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{screenshot_b64}"}},
                         ],
                     })
-            else:
-                tool_content = summary
+            elif provider.supports_function_calling:
                 messages.append({
                     "role": "tool",
-                    "content": tool_content,
+                    "content": summary,
                     "tool_call_id": tc_id or f"call_{tn}",
                     "name": tn,
+                })
+            else:
+                # Local / non-function-calling models: llama-server does
+                # not understand role:"tool" here. The result never lands
+                # in the prompt, the follow-up generation comes back
+                # empty, `tool_occurred` stays false and the turn dies
+                # after exactly one iteration — the model appears to
+                # "call a tool and stop", which reads as the pet having
+                # no autonomy at all. Feed it back as a user turn with an
+                # explicit marker instead.
+                messages.append({
+                    "role": "user",
+                    "content": f"[{tn} 结果]\n{summary}",
                 })
 
             # Brief notification to client
