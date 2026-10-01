@@ -3198,12 +3198,15 @@ module.exports = function initDeskPetChat(ctx) {
         const push = (path) => {
           if (!path) return;
           if (seen.has(path)) return;
-          seen.add(path);
           let size = 0;
           try {
             const st = fs.statSync(path);
-            if (st.isFile()) size = st.size;
-          } catch {}
+            if (!st.isFile()) return; // a directory is not a model
+            size = st.size;
+          } catch {
+            return; // unreadable / gone: listing a model that cannot load
+          }
+          seen.add(path);
           out.push({
             path,
             label: path.split(/[\\/]/).pop() || path,

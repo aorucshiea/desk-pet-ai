@@ -246,8 +246,7 @@ describe("模型来源 → 本地模型: model choice, folders, engine host", ()
     assert.equal(countClass(root, "pet-model-folder-item"), 1, "list shrank to the survivor");
   });
 
-  test("no petSettings bridge: the pane still renders, minus the local block", async () => {
-    const { root, mounted } = makeContext({ petSettings: false });
+  test("no petSettings bridge: the pane still renders, minus the local block", async () => {    const { root, mounted } = makeContext({ petSettings: false });
     await openLocalPane(root);
     assert.equal(countClass(root, "prov-local-model"), 0,
       "the local-model block needs the bridge; without it nothing is painted");
@@ -260,5 +259,21 @@ describe("模型来源 → 本地模型: model choice, folders, engine host", ()
     await openLocalPane(root);
     assert.ok(textOf(root).includes("provLocalName"), "detail rendered past the engine host");
     assert.equal(countClass(root, "prov-local-model"), 1, "the model switcher still mounts");
+  });
+
+  test("the switcher cannot be offered a directory as a model", () => {
+    // Live bug: the picker listed a row called "models" — the bundled
+    // fallback MODEL *directory* was pushed into the list unconditionally,
+    // and choosing it failed with "请选择 .gguf 模型".
+    const src = fs.readFileSync(
+      path.join(__dirname, "..", "src", "pet-chat.js"), "utf8");
+    const handler = src.slice(
+      src.indexOf('"pet-settings:list-local-models"'),
+      src.indexOf('"pet-settings:list-local-models"') + 3000);
+    assert.ok(handler.length > 100, "handler found");
+    assert.match(handler, /if \(!st\.isFile\(\)\) return;/,
+      "push() must drop anything that is not a regular file");
+    assert.doesNotMatch(handler, /if \(st\.isFile\(\)\) size = st\.size;/,
+      "the old shape recorded a size only for files but listed everything");
   });
 });
