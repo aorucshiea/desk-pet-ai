@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import hmac
 import json
 import os
 import platform
@@ -918,7 +919,12 @@ def build_app(
         # had a chance to read the token file.
         if request.url.path == "/api/health":
             return await call_next(request)
-        if request.headers.get("x-pet-token") != _gateway_token:
+        # Constant-time compare: the token is the only gate on every
+        # non-health endpoint, so it must not leak its length/prefix by
+        # timing (audit V-6).
+        provided = (request.headers.get("x-pet-token") or "").encode("utf-8")
+        expected = _gateway_token.encode("utf-8")
+        if not hmac.compare_digest(provided, expected):
             return JSONResponse({"error": "unauthorized"}, status_code=401)
         return await call_next(request)
 
