@@ -236,10 +236,11 @@
       renderAll();
     };
 
-    // Which half is the user looking at? Default follows whatever is
-    // actually in use, so the page opens on the relevant side.
-    const isLocalId = (id) => id === "local" || id === "lmstudio" || id === "ollama";
-    const mode = _sourceMode || (isLocalId(defaultProvider) ? "local" : "cloud");
+    // Which half is the user looking at? ONE source of truth (matching
+    // the segmented control above): user choice, else cloud. Deriving it
+    // from the active provider made the button say "cloud" while the
+    // body rendered local — visibly contradictory.
+    const mode = _sourceMode || "cloud";
 
     const localServers = providers.filter((p) => p && (p.provider === "lmstudio" || p.provider === "ollama"));
     const custom = providers.filter((p) => p && p.provider !== "lmstudio" && p.provider !== "ollama");
@@ -581,7 +582,7 @@
       return;
     }
     if (selectedSource === "local") {
-      if (_sourceMode === "cloud") {
+      if ((_sourceMode || "cloud") === "cloud") {
         // Cloud mode talks ONLY about cloud. The built-in engine has its
         // own home under Local models - and per the captain, even
         // MENTIONING it here is wrong. So: a neutral cloud hint, nothing
