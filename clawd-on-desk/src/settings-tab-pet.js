@@ -718,7 +718,13 @@
       }
       gateRows.appendChild(gateRow);
       box.appendChild(gateCard);
-      return;
+      // NOTE: no early return here any more.
+      //
+      // The advanced engine parameters used to be rendered only when the
+      // engine was already enabled — so the moment a user switched it off
+      // (or came back to configure it), the knobs they wanted literally
+      // vanished from the page. Parameters are now always visible; the
+      // card above says whether they are in effect yet.
     }
 
     box.appendChild(sectionTitle(t("petSectionEngine")));
