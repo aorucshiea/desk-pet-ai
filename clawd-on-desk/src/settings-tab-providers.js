@@ -21,6 +21,7 @@
   // Which source the right pane shows. Session-only; falls back to the
   // active provider on every mount so the page opens on "where am I".
   let selectedSource = null;
+  let _sourceMode = null; // "cloud" | "local" - which half of the page
 
   function t(key) { return helpers.t(key); }
 
@@ -145,6 +146,18 @@
     textCol.appendChild(el("p", { className: "subtitle" }, t("provSubtitle")));
     wrap.appendChild(textCol);
     parent.appendChild(wrap);
+
+    // ── 云模型 / 本地模型: the one question this page answers first ──
+    const seg = el("div", { className: "prov-mode-switch" });
+    const activeMode = _sourceMode || "cloud";
+    for (const opt of ["cloud", "local"]) {
+      seg.appendChild(el("button", {
+        type: "button",
+        className: "prov-mode-btn" + (activeMode === opt ? " is-active" : ""),
+        onClick: () => { _sourceMode = opt; renderAll(); },
+      }, t(opt === "cloud" ? "provModeCloud" : "provModeLocal")));
+    }
+    wrap.appendChild(seg);
   }
 
   // ── What is in use right now — the first thing a user must see ──
@@ -223,28 +236,38 @@
       renderAll();
     };
 
-    // ── 服务商 (remote APIs) ────────────────────────────────────────────
-    const custom = providers.filter((p) => p && p.provider !== "lmstudio" && p.provider !== "ollama");
-    listEl.appendChild(groupTitle(t("provGroupCustom"), true));
-    for (const p of custom) {
-      listEl.appendChild(sourceItem({
-        id: p.provider, p,
-        selected: selectedSource === p.provider,
-        inUse: defaultProvider === p.provider,
-        onSelect: () => select(p.provider),
-      }));
-    }
-    listEl.appendChild(softBtn("+ " + t("provAddProvider"), () => {
-      selectedSource = "__add__";
-      renderAll();
-    }, { accent: selectedSource === "__add__" })).classList.add("prov-add-btn");
+    // Which half is the user looking at? Default follows whatever is
+    // actually in use, so the page opens on the relevant side.
+    const isLocalId = (id) => id === "local" || id === "lmstudio" || id === "ollama";
+    const mode = _sourceMode || (isLocalId(defaultProvider) ? "local" : "cloud");
 
-    // ── 本地 (the model runs on this machine) ───────────────────────────
-    listEl.appendChild(groupTitle(t("provGroupLocal")));
-
-    // 本地推理引擎 API: something the user runs themselves (LM Studio/Ollama)
     const localServers = providers.filter((p) => p && (p.provider === "lmstudio" || p.provider === "ollama"));
-    listEl.appendChild(subGroupTitle(t("provGroupLocalServers")));
+    const custom = providers.filter((p) => p && p.provider !== "lmstudio" && p.provider !== "ollama");
+
+    if (mode === "cloud") {
+      // ── 云模型：anything served from someone else's machine ──────────
+      listEl.appendChild(groupTitle(t("provGroupCustom"), true));
+      if (!custom.length) {
+        listEl.appendChild(el("div", { className: "prov-subgroup-empty" }, t("provNoCloud")));
+      }
+      for (const p of custom) {
+        listEl.appendChild(sourceItem({
+          id: p.provider, p,
+          selected: selectedSource === p.provider,
+          inUse: defaultProvider === p.provider,
+          onSelect: () => select(p.provider),
+        }));
+      }
+      listEl.appendChild(softBtn("+ " + t("provAddProvider"), () => {
+        selectedSource = "__add__";
+        renderAll();
+      }, { accent: selectedSource === "__add__" })).classList.add("prov-add-btn");
+      return;
+    }
+
+    // ── 本地模型：runs on this machine ────────────────────────────────
+    // 1. a local inference API you run yourself (LM Studio / Ollama)
+    listEl.appendChild(groupTitle(t("provGroupLocalServers"), true));
     if (!localServers.length) {
       listEl.appendChild(el("div", { className: "prov-subgroup-empty" }, t("provNoLocalApi")));
     }
@@ -256,8 +279,7 @@
         onSelect: () => select(p.provider),
       }));
     }
-
-    // 桌宠内置推理引擎: shipped with the pet, engine hot-updatable
+    // 2. the engine that ships with the pet — LAST, by request
     listEl.appendChild(subGroupTitle(t("provGroupBuiltin")));
     listEl.appendChild(sourceItem({
       id: "local", p: null,
