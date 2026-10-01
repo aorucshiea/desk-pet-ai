@@ -355,6 +355,15 @@
     const use = useButton(skills.defaultProvider || "local", "local");
     if (use) actions.appendChild(use);
     if (actions.childElementCount > 0) d.appendChild(actions);
+
+    // The llama.cpp engine lives here rather than on the Brain page: it is
+    // part of "run the model on this machine". The card itself is owned by
+    // the Brain tab module (its health poll feeds it) and adopted here.
+    if (core && core.enginePanel && typeof core.enginePanel.mount === "function") {
+      const engineHost = el("div", { className: "prov-engine-host" });
+      d.appendChild(engineHost);
+      core.enginePanel.mount(engineHost);
+    }
   }
 
   function renderServerDetail(d, skills, providers, p) {
@@ -438,6 +447,36 @@
     d.appendChild(fieldRow(t("provFieldKey"), keyInp));
     d.appendChild(fieldRow(t("provFieldUrl"), urlInp));
     d.appendChild(fieldRow(t("provFieldModel"), modelInp));
+        // Same discovery affordance as the add form: the preset cards ship
+        // with an empty model now, so the edit form MUST be able to list
+        // what the endpoint actually serves.
+        const modelDl = el("datalist", { id: "prov-model-dl-edit" });
+        modelInp.setAttribute("list", "prov-model-dl-edit");
+        d.appendChild(modelDl);
+        d.appendChild(softBtn(t("provFetchModels"), async () => {
+          const btn = d.querySelector(".prov-fetch-btn-edit");
+          if (btn) btn.disabled = true;
+          try {
+            const res = await window.settingsAPI.discoverModels({
+              baseUrl: urlInp.value.trim(),
+              apiKey: keyInp.value.trim(),
+            });
+            if (res && res.ok && Array.isArray(res.models) && res.models.length) {
+              modelDl.innerHTML = "";
+              for (const m of res.models) {
+                const o = document.createElement("option");
+                o.value = m;
+                modelDl.appendChild(o);
+              }
+              toast(String(t("provFetchOk")).replace("{n}", String(res.models.length)));
+            } else {
+              toast((res && res.error) || t("provFetchFail"));
+            }
+          } catch (err) {
+            toast(String(err));
+          }
+          if (btn) btn.disabled = false;
+        })).classList.add("prov-fetch-btn-edit");
     d.appendChild(fieldRow(t("provFieldContext"), ctxInp));
 
     const thinkRow = el("div", { className: "prov-field" });
@@ -494,7 +533,7 @@
     const mkPreset = (name, desc, cfg) => {
       const card = el("button", { type: "button", className: "prov-preset-card" });
       card.appendChild(el("span", { className: "prov-preset-name" }, tile(tileFor(cfg.provider)), name));
-      card.appendChild(el("span", { className: "prov-preset-desc" }, desc));
+      if (desc) card.appendChild(el("span", { className: "prov-preset-desc" }, desc));
       card.addEventListener("click", async () => {
         const next = providers.filter((x) => x.provider !== cfg.provider);
         next.push(cfg);
@@ -536,25 +575,30 @@
     if (_sourceMode !== "local") {
       d.appendChild(el("div", { className: "section-title prov-manual-title" }, t("provCloudPresets")));
       const cgrid = el("div", { className: "prov-preset-grid" });
+      // NO hardcoded default models and NO model-list marketing copy on
+      // the cards: I invented them from stale memory and the captain
+      // rightly called it out (2026). The baseUrl is the only stable
+      // fact; the real model ids come from 获取模型列表 after the key
+      // is in.
       const CLOUD = [
-        ["deepseek", "DeepSeek", "https://api.deepseek.com/v1", "deepseek-chat", "deepseek-chat / deepseek-reasoner"],
-        ["kimi", "Kimi", "https://api.moonshot.cn/v1", "moonshot-v1-8k", "moonshot-v1 系列"],
-        ["zhipu", "智谱GLM", "https://open.bigmodel.cn/api/paas/v4", "glm-4-plus", "glm-4 系列"],
-        ["qwen", "通义千问", "https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen-max", "qwen-max / plus / turbo"],
-        ["minimax", "MiniMax", "https://api.minimax.chat/v1", "abab6.5s-chat", "abab 系列"],
-        ["siliconflow", "硅基流动", "https://api.siliconflow.cn/v1", "deepseek-ai/DeepSeek-V3", "聚合多家开源模型"],
-        ["volces", "火山方舟", "https://ark.cn-beijing.volces.com/api/v3", "doubao-pro-32k", "豆包系列"],
-        ["hunyuan", "腾讯混元", "https://api.hunyuan.cloud.tencent.com/v1", "hunyuan-turbos-latest", "hunyuan 系列"],
-        ["wenxin", "百度文心", "https://qianfan.baidubce.com/v2", "ernie-4.0-turbo-8k", "ernie 系列"],
-        ["openai", "OpenAI", "https://api.openai.com/v1", "gpt-4o", "gpt-4o / o 系列"],
-        ["anthropic", "Anthropic", "https://api.anthropic.com/v1", "claude-sonnet-4-20250514", "claude 系列"],
-        ["gemini", "Gemini", "https://generativelanguage.googleapis.com/v1beta", "gemini-2.0-flash", "gemini 系列"],
-        ["groq", "Groq", "https://api.groq.com/openai/v1", "llama-3.3-70b-versatile", "超快推理"],
-        ["openrouter", "OpenRouter", "https://openrouter.ai/api/v1", "openai/gpt-4o", "聚合全球模型"],
+        ["deepseek", "DeepSeek", "https://api.deepseek.com/v1"],
+        ["kimi", "Kimi", "https://api.moonshot.cn/v1"],
+        ["zhipu", "智谱GLM", "https://open.bigmodel.cn/api/paas/v4"],
+        ["qwen", "通义千问", "https://dashscope.aliyuncs.com/compatible-mode/v1"],
+        ["minimax", "MiniMax", "https://api.minimax.chat/v1"],
+        ["siliconflow", "硅基流动", "https://api.siliconflow.cn/v1"],
+        ["volces", "火山方舟", "https://ark.cn-beijing.volces.com/api/v3"],
+        ["hunyuan", "腾讯混元", "https://api.hunyuan.cloud.tencent.com/v1"],
+        ["wenxin", "百度文心", "https://qianfan.baidubce.com/v2"],
+        ["openai", "OpenAI", "https://api.openai.com/v1"],
+        ["anthropic", "Anthropic", "https://api.anthropic.com/v1"],
+        ["gemini", "Gemini", "https://generativelanguage.googleapis.com/v1beta"],
+        ["groq", "Groq", "https://api.groq.com/openai/v1"],
+        ["openrouter", "OpenRouter", "https://openrouter.ai/api/v1"],
       ];
-      for (const [pid, name, url, model, desc] of CLOUD) {
-        cgrid.appendChild(mkPreset(name, desc, {
-          provider: pid, apiKey: "", baseUrl: url, model,
+      for (const [pid, name, url] of CLOUD) {
+        cgrid.appendChild(mkPreset(name, "", {
+          provider: pid, apiKey: "", baseUrl: url, model: "",
           thinking: false, reasoningEffort: null, contextWindow: null,
         }));
       }
