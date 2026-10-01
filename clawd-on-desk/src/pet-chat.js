@@ -686,7 +686,9 @@ class Sidecar {
       // the watchdog notices our pid is gone and tears down the
       // sidecar + llama-server within ~2s, so :18765 / :18766 don't
       // stay held by an orphan.
-      PET_PARENT_PID: String(process.pid),
+      // Track the MAIN process: renderer windows reload routinely, and
+      // the sidecar watchdog must not read that as "owner gone".
+      PET_PARENT_PID: String((() => { try { return require("electron").ipcRenderer.sendSync("pet-main-pid"); } catch { return process.pid; } })()),
       // Phase 2: provider API keys from prefs (any OpenAI-compatible provider)
       ...this._providerKeysToEnv(),
       // Boot-time screen consent: "always" → sidecar starts with full

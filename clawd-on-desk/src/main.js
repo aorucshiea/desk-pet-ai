@@ -1,4 +1,8 @@
 const { app, BrowserWindow, screen, ipcMain, globalShortcut, nativeTheme, dialog, shell, nativeImage, powerSaveBlocker, clipboard } = require("electron");
+// The sidecar parent-watchdog must track the MAIN process, not a
+// renderer: renderer windows reload/die routinely, and each death
+// used to be read as "owner gone" -> sidecar os._exit(1) -> 网关离线.
+ipcMain.on("pet-main-pid", (e) => { e.returnValue = process.pid; });
 process.on("uncaughtException", (err) => {
   let p, f;
   try { p = require("path"); f = require("fs"); } catch { return; }
