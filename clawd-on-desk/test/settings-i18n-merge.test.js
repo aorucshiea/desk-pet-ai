@@ -65,4 +65,40 @@ describe("settings i18n product-table merge", () => {
     }
     assert.deepEqual(offenders, [], "stale Dashboard copy:\n  " + offenders.join("\n  "));
   });
+
+  it("Skills and MCP pages translate every label instead of shipping English", () => {
+    // Both pages used to paint their headings, empty states and the
+    // "Saved to ~/.pet/mcp.json" hint as raw English strings, so a zh user
+    // got an untranslated island in the middle of a translated page.
+    const fs = require("node:fs");
+    const path = require("node:path");
+    const pages = {
+      "settings-tab-skills.js": ["skillsSubtitle", "skillsEnableTitle",
+        "skillsAvailableTitle", "skillsDisabled", "skillsEmpty"],
+      "settings-tab-mcp.js": ["mcpSubtitle", "mcpConnectedTitle", "mcpEmpty",
+        "mcpToolsTitle", "mcpAddServer", "mcpSavedHint",
+        // These two hid in template literals, so a plain quote scan misses
+        // them: "🔧 Built-in Tools" and "7 tools".
+        "mcpBuiltinTools", "mcpToolCount"],
+    };
+    for (const [file, keys] of Object.entries(pages)) {
+      const src = fs.readFileSync(path.join(__dirname, "..", "src", file), "utf8");
+      for (const key of keys) {
+        assert.ok(src.includes(`t("${key}")`), `${file} no longer routes ${key} through t()`);
+        for (const lang of ["en", "zh", "zh-TW", "ko", "ja"]) {
+          const value = STRINGS[lang] && STRINGS[lang][key];
+          assert.ok(typeof value === "string" && value.length > 0,
+            `${lang}.${key} is missing from the merged table`);
+        }
+        // The CJK locales must carry a real translation, not the English one.
+        for (const lang of ["zh", "ko", "ja"]) {
+          assert.notStrictEqual(STRINGS[lang][key], STRINGS.en[key],
+            `${lang}.${key} is still the English sentence`);
+        }
+      }
+      // Nothing may creep back in as a bare English label.
+      const bare = src.match(/\}, "[A-Z][a-z]+ [^"]{4,}"/g) || [];
+      assert.deepEqual(bare, [], `${file} paints untranslated English labels: ${bare.join(" | ")}`);
+    }
+  });
 });

@@ -37,7 +37,7 @@
   function renderHeader(parent) {
     parent.appendChild(el("div", { style: { padding: "0 0 16px 0", borderBottom: "1px solid var(--border)" } },
       el("h2", { style: { margin: "0 0 4px 0", fontSize: "18px", fontWeight: "600" } }, t("sidebarSkills")),
-      el("p", { style: { margin: "0", fontSize: "13px", color: "var(--text-secondary)" } }, "Discover and manage reusable skills for the pet."),
+      el("p", { style: { margin: "0", fontSize: "13px", color: "var(--text-secondary)" } }, t("skillsSubtitle")),
     ));
   }
 
@@ -47,7 +47,7 @@
     });
     const enabled = !!(core.state.snapshot && core.state.snapshot.skills && core.state.snapshot.skills.enabled);
     const row = el("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center" } });
-    row.appendChild(el("span", { style: { fontSize: "14px", fontWeight: "500" } }, "Enable Skills System"));
+    row.appendChild(el("span", { style: { fontSize: "14px", fontWeight: "500" } }, t("skillsEnableTitle")));
     const toggleWrap = el("label", { className: "toggle-switch" });
     const cb = el("input", {
       type: "checkbox", className: "toggle-input",
@@ -73,16 +73,16 @@
     const card = el("div", {
       style: { background: "var(--panel-bg)", borderRadius: "8px", padding: "16px", marginTop: "12px", border: "1px solid var(--border)", },
     });
-    const title = el("h3", { style: { margin: "0 0 12px 0", fontSize: "15px", fontWeight: "600" } }, "Available Skills");
+    const title = el("h3", { style: { margin: "0 0 12px 0", fontSize: "15px", fontWeight: "600" } }, t("skillsAvailableTitle"));
     card.appendChild(title);
 
     const enabled = !!(core.state.snapshot && core.state.snapshot.skills && core.state.snapshot.skills.enabled);
     if (!enabled) {
-      card.appendChild(el("p", { style: { color: "var(--text-secondary)", fontSize: "13px" } }, "Skills system is disabled."));
+      card.appendChild(el("p", { style: { color: "var(--text-secondary)", fontSize: "13px" } }, t("skillsDisabled")));
     } else if (skillsError) {
       card.appendChild(el("p", { style: { color: "#ff4d4f", fontSize: "13px" } }, "Error: " + skillsError));
     } else if (skillsList.length === 0) {
-      card.appendChild(el("p", { style: { color: "var(--text-secondary)", fontSize: "13px" } }, "No skills found. Ensure sidecar is running and skill directories configured."));
+      card.appendChild(el("p", { style: { color: "var(--text-secondary)", fontSize: "13px" } }, t("skillsEmpty")));
     } else {
       const grid = el("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: "8px" } });
       for (const sk of skillsList) {

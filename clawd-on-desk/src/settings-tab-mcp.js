@@ -33,7 +33,7 @@
   function renderHeader(parent) {
     parent.appendChild(el("div", { style: { padding: "0 0 16px 0", borderBottom: "1px solid var(--border)" } },
       el("h2", { style: { margin: "0 0 4px 0", fontSize: "18px", fontWeight: "600" } }, t("sidebarMcp")),
-      el("p", { style: { margin: "0", fontSize: "13px", color: "var(--text-secondary)" } }, "Connect MCP servers for tool calling. Claude Code .mcp.json compatible."),
+      el("p", { style: { margin: "0", fontSize: "13px", color: "var(--text-secondary)" } }, t("mcpSubtitle")),
     ));
   }
 
@@ -43,10 +43,10 @@
     });
     const names = Object.keys(serversData);
 
-    card.appendChild(el("h3", { style: { margin: "0 0 12px 0", fontSize: "15px", fontWeight: "600" } }, "Connected Servers"));
+    card.appendChild(el("h3", { style: { margin: "0 0 12px 0", fontSize: "15px", fontWeight: "600" } }, t("mcpConnectedTitle")));
 
     if (names.length === 0) {
-      card.appendChild(el("p", { style: { color: "var(--text-secondary)", fontSize: "13px", fontStyle: "italic" } }, "No MCP servers configured."));
+      card.appendChild(el("p", { style: { color: "var(--text-secondary)", fontSize: "13px", fontStyle: "italic" } }, t("mcpEmpty")));
     } else {
       for (const name of names) {
         const cfg = serversData[name] || {};
@@ -74,7 +74,7 @@
 
     // ── Available Tools ──
     if (toolsList.length > 0) {
-      card.appendChild(el("h3", { style: { margin: "20px 0 12px 0", fontSize: "15px", fontWeight: "600" } }, "Available Tools"));
+      card.appendChild(el("h3", { style: { margin: "20px 0 12px 0", fontSize: "15px", fontWeight: "600" } }, t("mcpToolsTitle")));
 
       // Group by server_name, builtin first
       const groups = {};
@@ -99,8 +99,9 @@
         const header = el("div", {
           style: { padding: "8px 12px", background: isBuiltin ? "var(--accent)" : "var(--bg)", color: isBuiltin ? "#fff" : "var(--text-primary)", fontSize: "12px", fontWeight: "600", display: "flex", justifyContent: "space-between", alignItems: "center" },
         });
-        header.appendChild(el("span", {}, isBuiltin ? "🔧 Built-in Tools" : `📡 ${sn}`));
-        header.appendChild(el("span", { style: { fontSize: "11px", opacity: "0.8" } }, `${tools.length} tool${tools.length > 1 ? "s" : ""}`));
+        header.appendChild(el("span", {}, isBuiltin ? `🔧 ${t("mcpBuiltinTools")}` : `📡 ${sn}`));
+        header.appendChild(el("span", { style: { fontSize: "11px", opacity: "0.8" } },
+          t("mcpToolCount").replace("{n}", tools.length)));
         section.appendChild(header);
 
         for (const tool of tools) {
@@ -139,7 +140,7 @@
 
     // Add form
     const form = el("div", { style: { marginTop: "12px", padding: "12px", border: "1px solid var(--border)", borderRadius: "6px", background: "var(--bg)", color: "var(--text-primary)" } });
-    form.appendChild(el("h4", { style: { margin: "0 0 8px 0", fontSize: "13px", fontWeight: "600" } }, "Add Server"));
+    form.appendChild(el("h4", { style: { margin: "0 0 8px 0", fontSize: "13px", fontWeight: "600" } }, t("mcpAddServer")));
     const types = [
       { key: "name", label: "Name", placeholder: "my-server" },
       { key: "command", label: "Cmd", placeholder: "npx" },
@@ -157,11 +158,11 @@
       if (!name || !(inputs.command.value || "").trim()) return;
       serversData[name] = { type: "stdio", command: inputs.command.value.trim(), args: (inputs.args.value || "").split(/\s+/).filter(Boolean) };
       await save(); inputs.name.value = inputs.command.value = inputs.args.value = ""; refreshCard();
-    } }, "Add Server");
+    } }, t("mcpAddServer"));
     form.appendChild(addBtn);
     card.appendChild(form);
 
-    card.appendChild(el("p", { style: { color: "var(--text-secondary)", fontSize: "11px", marginTop: "10px" } }, "Saved to ~/.pet/mcp.json. Needs sidecar restart to apply."));
+    card.appendChild(el("p", { style: { color: "var(--text-secondary)", fontSize: "11px", marginTop: "10px" } }, t("mcpSavedHint")));
     return card;
   }
 
