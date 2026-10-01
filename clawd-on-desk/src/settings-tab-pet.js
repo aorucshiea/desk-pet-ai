@@ -4,9 +4,8 @@
 //
 // Page layout (top → bottom):
 //   • Page header: title + subtitle on the left, sidecar status pill on the right
-//   • 模型 / Model               — ONE picker row: current model dropdown (with
-//                                  size + ✓), the model path as the row
-//                                  description, and Load / Browse actions
+//   • 模型 / Model               — hero card: the model in use (name, path,
+//                                  size, backend) with 在文件夹中显示 / 更换
 //                                — collapsed "scanned folders" disclosure
 //                                  (auto-expands when no model is found)
 //   • 推理引擎 / Engine           — runtime switch (start/stop llama-server),
@@ -14,6 +13,10 @@
 //                                  from folder + inline progress + slow-network
 //                                  link, backend segmented control (Windows)
 //   • 高级 / Advanced (collapsed) — install location, restart Sidecar, open logs
+//
+// The redundant model dropdown is gone: the hero's 更换 button already opens
+// the picker, and a second list of the same files below it only asked
+// "why are there two places to switch models?".
 //
 // 2026-09 redesign: the old page stacked ~11 flat rows and 8 buttons; the
 // path row duplicated the picker, the folder manager was always expanded,
@@ -132,10 +135,19 @@
   // "starting" labels into a single yellow "starting" pill: at the page
   // level the user only cares whether things are healthy, warming up, or
   // broken. The full debug breakdown lives in the logs.
-  function deriveStatus(sidecarReady, llamaReady, probing) {
+  function deriveStatus(sidecarReady, llamaReady, probing, engineRunning) {
     if (sidecarReady && llamaReady) return { tone: "ready", label: t("petStatusRunning") };
-    if (sidecarReady || probing) return { tone: "starting", label: t("petStatusStarting") };
-    return { tone: "offline", label: t("petStatusError") };
+    if (!sidecarReady) {
+      return probing
+        ? { tone: "starting", label: t("petStatusStarting") }
+        : { tone: "offline", label: t("petStatusError") };
+    }
+    // The sidecar answers even when nobody wants a local model. Claiming
+    // "启动中" in that case never resolves — an engine the user switched
+    // off is idle, not slow. Only say "starting" when a process is really
+    // coming up, or we are still probing for the first health answer.
+    if (engineRunning || probing) return { tone: "starting", label: t("petStatusStarting") };
+    return { tone: "idle", label: t("petStatusIdle") };
   }
 
   function statusPill(tone, label) {
@@ -273,8 +285,8 @@
 
   function syncStatusPill(ctx) {
     if (!ctx.statusPillSlot) return;
-    const { sidecarReady, llamaReady, probing } = ctx.healthSnapshot;
-    const { tone, label } = deriveStatus(sidecarReady, llamaReady, probing);
+    const { sidecarReady, llamaReady, probing, engineRunning } = ctx.healthSnapshot;
+    const { tone, label } = deriveStatus(sidecarReady, llamaReady, probing, engineRunning);
     ctx.statusPillSlot.innerHTML = "";
     ctx.statusPillSlot.appendChild(statusPill(tone, label));
   }
@@ -290,6 +302,17 @@
     if (sidecarReady) ctx.everHealthy = true;
     const probing = !sidecarReady && !ctx.everHealthy && ctx.fastAttemptsLeft > 0;
 
+    // Whether a llama-server process actually exists. The health payload
+    // answers "is the gateway up", which is a different question — without
+    // this the pill could never leave 启动中.
+    let engineRunning = false;
+    if (sidecarReady && typeof window.petSettings.engineParams === "function") {
+      try {
+        const ep = await window.petSettings.engineParams();
+        engineRunning = !!(ep && ep.running);
+      } catch {}
+    }
+
     const modelNameNow = h.model_name
       || (h.model_dir ? h.model_dir.split(/[/\\]/).pop() : null);
     if (modelNameNow) {
@@ -298,7 +321,7 @@
     }
 
     ctx.healthSnapshot = {
-      st, h, sidecarReady, llamaReady, probing,
+      st, h, sidecarReady, llamaReady, probing, engineRunning,
       modelName: modelNameNow
         || ((probing || sidecarReady) ? ctx.lastModelName : null),
       modelDir: h.model_dir || ctx.lastModelDir,
@@ -362,22 +385,25 @@
 
     const heroText = el("div", { className: "pet-model-hero-text" });
     const nameRow = el("div", { className: "pet-model-hero-name-row" });
-    nameRow.appendChild(el("span", { className: "pet-model-hero-name" },
-      hasPath ? pickLabelFromPath(modelDir) : t("petModelPathUnset")));
+    const heroName = el("span", { className: "pet-model-hero-name" },
+      hasPath ? pickLabelFromPath(modelDir) : t("petModelPathUnset"));
+    nameRow.appendChild(heroName);
     // Live status beside the name. deriveStatus tones (ready/starting/
-    // offline) map onto the hero badge's ok/warn/bad palette.
-    const heroStatus = deriveStatus(snap.sidecarReady, snap.llamaReady, snap.probing);
+    // idle/offline) map onto the hero badge's ok/warn/muted/bad palette.
+    const heroStatus = deriveStatus(snap.sidecarReady, snap.llamaReady, snap.probing, snap.engineRunning);
     const heroTone = heroStatus.tone === "ready" ? "ok"
-      : heroStatus.tone === "starting" ? "warn" : "bad";
+      : heroStatus.tone === "starting" ? "warn"
+        : heroStatus.tone === "idle" ? "muted" : "bad";
     nameRow.appendChild(el("span", {
       className: `pet-model-hero-status tone-${heroTone}`,
     }, heroStatus.label));
     heroText.appendChild(nameRow);
 
-    heroText.appendChild(el("div", {
+    const heroPath = el("div", {
       className: "pet-model-hero-path" + (hasPath ? "" : " is-unset"),
       title: hasPath ? modelDir : "",
-    }, hasPath ? modelDir : t("petModelPathUnset")));
+    }, hasPath ? modelDir : t("petModelPathUnset"));
+    heroText.appendChild(heroPath);
     heroMain.appendChild(heroText);
     hero.appendChild(heroMain);
 
@@ -443,46 +469,6 @@
 
     box.appendChild(hero);
 
-    // ── Switcher card ────────────────────────────────────────────────
-    // Built here but NOT appended: the async model list decides whether it
-    // earns a place (≥ 2 models). Appending lazily avoids the flash of an
-    // empty picker card on every health-tick rebuild.
-    const switchSection = helpers.buildSection("", []);
-    const switchRows = switchSection.querySelector(".section-rows");
-    const switchRowEl = el("div", { className: "row pet-model-switch-row" });
-    const switchText = el("div", { className: "row-text" });
-    switchText.appendChild(el("span", { className: "row-label" }, t("petRowSwitchModel")));
-    switchRowEl.appendChild(switchText);
-
-    const switchCtl = el("div", { className: "row-control pet-model-picker-control" });
-    const picker = el("select", {
-      className: "setting-select pet-model-picker",
-      style: { minWidth: "0", fontSize: "13px" },
-    });
-    picker.appendChild(el("option", { value: "" }, "—"));
-    switchCtl.appendChild(picker);
-
-    const loadBtn = softBtn(t("petModelLoadButton"), async () => {
-      const target = picker.value;
-      if (!target) return;
-      if (!window.petSettings || typeof window.petSettings.useModelDir !== "function") return;
-      loadBtn.disabled = true;
-      const origLabel = loadBtn.textContent;
-      loadBtn.textContent = t("petPickModelBusy");
-      try {
-        const ret = await window.petSettings.useModelDir(target);
-        if (ret && !ret.ok && ret.error) notifyError(t("petReloadError") + ret.error);
-        if (ret && ret.ok && ret.reloadError) notifyError(t("petReloadError") + ret.reloadError);
-      } finally {
-        loadBtn.disabled = false;
-        loadBtn.textContent = origLabel;
-        void ctx.refreshAll();
-      }
-    }, { accent: true });
-    loadBtn.disabled = true;
-    switchCtl.appendChild(loadBtn);
-    switchRowEl.appendChild(switchCtl);
-    switchRows.appendChild(switchRowEl);
 
     // ── Row 2: scanned folders (collapsed disclosure) ─────────────────
     const trigger = el("button", {
@@ -592,42 +578,26 @@
       applyFoldersExpanded();
     });
 
-    // Populate the switcher asynchronously. Done at render time so it picks
-    // up new gguf files dropped into the models folder while the settings
-    // window is open. With fewer than two models there is nothing to
-    // switch to — the card never appears (and an empty list surfaces the
-    // folder manager instead).
+    // The model list still earns its keep: while the engine is stopped the
+    // health payload carries no model at all, and the hero then claimed
+    // 未选择模型 even though a model IS configured. Fill it from the same
+    // source the old picker read. An empty install opens the folder
+    // manager instead.
     if (typeof window.petSettings.listLocalModels === "function") {
       window.petSettings.listLocalModels().then((ret) => {
         const models = (ret && ret.models) || [];
-        if (models.length < 2) {
-          if (models.length === 0) {
-            foldersExpanded = true;
-            applyFoldersExpanded();
-          }
+        if (models.length === 0) {
+          foldersExpanded = true;
+          applyFoldersExpanded();
           return;
         }
-        const currentPath = ((models.find((m) => m && m.current) || {}).path) || "";
-        picker.innerHTML = "";
-        for (const m of models) {
-          if (!m || !m.path) continue;
-          const sizeLabel = formatSize(m.sizeBytes);
-          const flag = m.current ? " ✓" : "";
-          const opt = el("option", { value: m.path, title: m.path },
-            `${m.label}${sizeLabel ? "  ·  " + sizeLabel : ""}${flag}`);
-          picker.appendChild(opt);
-        }
-        picker.dataset.current = currentPath || "";
-        // Selecting a DIFFERENT entry enables the Load button.
-        picker.addEventListener("change", () => {
-          loadBtn.disabled = !picker.value || picker.value === currentPath;
-        });
-        // Pre-select the currently loaded model (its ✓ flag doubles as the
-        // status display) — with nothing to switch to, the button stays
-        // disabled.
-        picker.value = currentPath || "";
-        loadBtn.disabled = !picker.value || picker.value === currentPath;
-        box.insertBefore(switchSection, trigger);
+        if (hasPath || !heroName.isConnected) return;
+        const cur = models.find((m) => m && m.current);
+        if (!cur || !cur.path) return;
+        heroName.textContent = cur.label || pickLabelFromPath(cur.path);
+        heroPath.textContent = cur.path;
+        heroPath.title = cur.path;
+        heroPath.classList.remove("is-unset");
       }).catch(() => {});
     }
   }

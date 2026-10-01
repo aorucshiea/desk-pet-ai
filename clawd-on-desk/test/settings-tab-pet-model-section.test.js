@@ -42,12 +42,18 @@ test("model section is a hero card plus a lazy model switcher", () => {
   assert.match(code, /pet-model-hero-path/);
   // The duplicate-description picker label key is no longer used here.
   assert.doesNotMatch(code, /t\("petModelPickerLabel"\)/);
-  // The switcher card is built unappended and only inserted when the
-  // scan finds at least two models — no flash of an empty picker.
-  assert.match(code, /t\("petRowSwitchModel"\)/);
-  assert.match(code, /box\.insertBefore\(switchSection, trigger\)/);
-  assert.match(code, /models\.length < 2/);
-  assert.match(code, /picker\.value = currentPath \|\| "";/);
+  // The duplicate picker is gone: the hero's 更换 button already opens the
+  // model picker, so a second list of the same files below it only invited
+  // "why are there two places to switch models?".
+  assert.doesNotMatch(code, /pet-model-switch-row/);
+  assert.doesNotMatch(code, /insertBefore\(switchSection/);
+  assert.doesNotMatch(code, /t\("petRowSwitchModel"\)/);
+  // The model scan still earns its keep: while the engine is stopped the
+  // health payload carries no model at all, so the hero is filled from the
+  // configured model instead of falsely reading 未选择模型. An empty
+  // install still opens the folder manager.
+  assert.match(code, /heroName\.textContent = cur\.label/);
+  assert.match(code, /models\.length === 0/);
 });
 
 test("scanned folders live behind a collapsed disclosure", () => {
