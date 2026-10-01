@@ -59,10 +59,21 @@ class StubNode {
     return this.children.map((c) => c.textContent).join("");
   }
   get childElementCount() { return this.children.length; }
-  setAttribute(k, v) { this.attrs[k] = String(v); }
+  setAttribute(k, v) {
+    this.attrs[k] = String(v);
+    // The value attribute reflects onto the property (textInput relies on
+    // reading .value back).
+    if (k === "value") this.value = String(v);
+  }
   appendChild(c) { this.children.push(c); return c; }
   addEventListener(type, fn) { (this._listeners[type] ||= []).push(fn); }
-  click() { for (const fn of this._listeners.click || []) fn({ preventDefault() {} }); }
+  click() {
+    // Listeners may be async (fetch-models handlers); surface their
+    // promises so tests can await completion.
+    const rs = [];
+    for (const fn of this._listeners.click || []) rs.push(fn({ preventDefault() {} }));
+    return Promise.all(rs.filter((r) => r && typeof r.catch === "function"));
+  }
   querySelector(sel) { return findNode(this, (n) => n.classList.contains(sel.slice(1))); }
 }
 
@@ -96,6 +107,7 @@ function makeContext(snapshotSkills) {
     createTextNode: (txt) => makeText(txt),
   };
   const window = {};
+  const toasts = [];
   const sandbox = { document, window, Node: doc, console };
   vm.createContext(sandbox);
   vm.runInContext(fs.readFileSync(SRC, "utf8"), sandbox, { filename: "settings-tab-providers.js" });
@@ -106,13 +118,13 @@ function makeContext(snapshotSkills) {
   // the sandbox object — the export lands directly on it.
   sandbox.ClawdSettingsTabProviders.init({
     helpers: { t: (k) => k },
-    ops: { showToast() {} },
+    ops: { showToast: (msg) => toasts.push(msg) },
     state: { snapshot: { skills: snapshotSkills } },
     tabs,
   });
   // Mount the page (the settings shell calls core.tabs.providers.render).
   tabs.providers.render(root);
-  return { sandbox, root, doc };
+  return { sandbox, root, doc, toasts, window };
 }
 
 function isButton(n) { return n && n.tagName !== "#text" && String(n.tagName).toUpperCase() === "BUTTON"; }
@@ -173,12 +185,58 @@ describe("settings-tab-providers: 添加供应商 pane", () => {
     vm.createContext(sandbox);
     vm.runInContext(fs.readFileSync(I18N_SRC, "utf8"), sandbox, { filename: "settings-i18n.js" });
     const STRINGS = sandbox.ClawdSettingsI18n.STRINGS;
-    const keys = ["provModeCloud", "provModeLocal", "provAddHintCloud", "provCloudPresets", "provPresetLmstudioDesc", "provPresetOllamaDesc", "provAddProvider", "provManualTitle"];
+    const keys = ["provModeCloud", "provModeLocal", "provAddHintCloud", "provCloudPresets", "provPresetLmstudioDesc", "provPresetOllamaDesc", "provAddProvider", "provManualTitle", "provFetchModels", "provFetchOk", "provFetchFail"];
     for (const lang of ["en", "zh", "zh-TW", "ko", "ja"]) {
       const block = STRINGS[lang] || {};
       for (const k of keys) {
         assert.ok(typeof block[k] === "string" && block[k].length > 0, `${k} missing from merged language table: ${lang}`);
       }
     }
+  });
+
+  test("local mode: the full list renders — server items, add button, built-in engine", () => {
+    const { root } = makeContext({
+      defaultProvider: "local",
+      modelProviders: [{ provider: "lmstudio", apiKey: "lm-studio", baseUrl: "http://127.0.0.1:1234/v1", model: "local-model" }],
+    });
+    clickMode(root, "provModeLocal");
+
+    const text = textOf(root);
+    assert.ok(text.includes("provGroupLocalServers"), "local servers group title present");
+    assert.ok(text.includes("provAddProvider"), "add button present in the local list");
+    assert.ok(text.includes("provLocalName"), "built-in engine item present");
+    // Detail defaulted to the built-in engine (defaultProvider local) and
+    // mounts its status line instead of a cloud hint.
+    assert.ok(text.includes("provStatusChecking"), "engine status line mounted");
+    assert.ok(!text.includes("provCloudPickHint"), "no cloud hint in local mode");
+  });
+
+  test("server detail: 获取模型列表 fills the datalist without a key field", async () => {
+    const { root, toasts, window } = makeContext({
+      defaultProvider: "local",
+      modelProviders: [{ provider: "lmstudio", apiKey: "lm-studio", baseUrl: "http://127.0.0.1:1234/v1", model: "local-model" }],
+    });
+    window.settingsAPI = { discoverModels: async (payload) => {
+      Object.assign(window, { _discoverPayload: payload });
+      return { ok: true, models: ["z-model", "a-model"] };
+    } };
+
+    clickMode(root, "provModeLocal");
+    const lmItem = findNode(root, (n) => isButton(n) && textOf(n).includes("LM Studio"));
+    assert.ok(lmItem, "LM Studio source item present");
+    await lmItem.click(); // select → renderServerDetail
+
+    const fetchBtn = findNode(root, (n) => isButton(n) && textOf(n).includes("provFetchModels"));
+    assert.ok(fetchBtn, "获取模型列表 button present");
+    await fetchBtn.click(); // async handler: payload → datalist → toast
+
+    assert.deepEqual(JSON.parse(JSON.stringify(window._discoverPayload)), {
+      baseUrl: "http://127.0.0.1:1234/v1",
+      apiKey: "lm-studio",
+    }, "discovery payload carries the stored dummy key, not an undefined keyInp");
+    const dl = findNode(root, (n) => n.tagName === "datalist" && n.attrs && n.attrs.id === "prov-model-dl");
+    assert.ok(dl, "model datalist present");
+    assert.deepEqual(dl.children.map((o) => o.value), ["z-model", "a-model"], "datalist filled with discovered ids");
+    assert.ok(toasts.some((msg) => String(msg).includes("provFetchOk")), "success toast shown");
   });
 });
