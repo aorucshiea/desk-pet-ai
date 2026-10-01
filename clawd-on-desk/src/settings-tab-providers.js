@@ -452,10 +452,10 @@
     d.appendChild(el("p", { className: "prov-detail-desc" },
       t(_sourceMode === "local" ? "provAddHint" : "provAddHintCloud")));
 
-    // Local presets — LM Studio / Ollama. LOCAL MODE ONLY: showing them
-    // inside the cloud half was exactly the "why is lmstudio here" bug.
-    if (_sourceMode === "local") {
-    const grid = el("div", { className: "prov-preset-grid" });
+    // One preset-card factory for both halves of the page. It must live
+    // ABOVE the mode branches: declared inside the local-only block, the
+    // cloud grid's loop threw "mkPreset is not defined" and the whole add
+    // pane died right after the 云厂商 heading — "click does nothing".
     const mkPreset = (name, desc, cfg) => {
       const card = el("button", { type: "button", className: "prov-preset-card" });
       card.appendChild(el("span", { className: "prov-preset-name" }, tile(tileFor(cfg.provider)), name));
@@ -469,7 +469,12 @@
       });
       return card;
     };
-    grid.appendChild(mkPreset("LM Studio", t("provPresetLmstudioDesc"), {
+
+    // Local presets — LM Studio / Ollama. LOCAL MODE ONLY: showing them
+    // inside the cloud half was exactly the "why is lmstudio here" bug.
+    if (_sourceMode === "local") {
+      const grid = el("div", { className: "prov-preset-grid" });
+      grid.appendChild(mkPreset("LM Studio", t("provPresetLmstudioDesc"), {
       provider: "lmstudio",
       apiKey: "lm-studio",          // LM Studio ignores the key
       baseUrl: "http://127.0.0.1:1234/v1",
@@ -478,17 +483,17 @@
       reasoningEffort: null,
       contextWindow: null,
     }));
-    grid.appendChild(mkPreset("Ollama", t("provPresetOllamaDesc"), {
-      provider: "ollama",
-      apiKey: "ollama",             // Ollama ignores the key locally
-      baseUrl: "http://127.0.0.1:11434/v1",
-      model: "llama3.2",            // change to a model you actually pulled
-      thinking: false,
-      reasoningEffort: null,
-      contextWindow: null,
-    }));
-    d.appendChild(grid);
-    } // end of local-only presets
+      grid.appendChild(mkPreset("Ollama", t("provPresetOllamaDesc"), {
+        provider: "ollama",
+        apiKey: "ollama",             // Ollama ignores the key locally
+        baseUrl: "http://127.0.0.1:11434/v1",
+        model: "llama3.2",            // change to a model you actually pulled
+        thinking: false,
+        reasoningEffort: null,
+        contextWindow: null,
+      }));
+      d.appendChild(grid);
+    }
 
     // Cloud provider presets — shown in cloud mode only. 国产优先,
     // then global aggregators. One click creates the provider with the

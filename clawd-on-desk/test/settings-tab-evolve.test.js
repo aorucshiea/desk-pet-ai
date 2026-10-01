@@ -4,6 +4,7 @@ const { test, describe } = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("fs");
 const path = require("path");
+const vm = require("vm");
 
 const SRC_DIR = path.join(__dirname, "..", "src");
 const EVOLVE_SRC = path.join(SRC_DIR, "settings-tab-evolve.js");
@@ -62,25 +63,20 @@ describe("settings-tab-evolve: plugin kernel page", () => {
 
   test("every evolve i18n key exists in all five product languages", () => {
     const tabCode = fs.readFileSync(EVOLVE_SRC, "utf8");
-    const i18nCode = fs.readFileSync(I18N_SRC, "utf8");
     const used = [...new Set([...tabCode.matchAll(/t\("(evolve[A-Za-z]+)"/g)].map((m) => m[1]))];
     assert.ok(used.length >= 30, `expected the full evolve keyset, found ${used.length}`);
 
-    // Slice PET_PRODUCT_STRINGS into per-language blocks and require each
-    // key per block — the en fallback merge would otherwise hide gaps.
-    const start = i18nCode.indexOf("const PET_PRODUCT_STRINGS = {");
-    assert.ok(start > 0, "PET_PRODUCT_STRINGS block found");
-    const section = i18nCode.slice(start);
-    const markers = ["en", "zh", '"zh-TW"', "ko", "ja"].map(
-      (lang) => `    ${lang}: {`
-    );
-    const bounds = markers.map((m) => section.indexOf(m));
-    assert.ok(bounds.every((b) => b > 0), "all five language blocks found");
-    bounds.push(section.length);
-    for (let i = 0; i < markers.length; i++) {
-      const block = section.slice(bounds[i], bounds[i + 1]);
+    // Load the real i18n module and check the MERGED table the runtime
+    // serves. Source slicing stopped working when the strings were split
+    // between the primary STRINGS table and the English gap-filler table.
+    const sandbox = { console };
+    vm.createContext(sandbox);
+    vm.runInContext(fs.readFileSync(I18N_SRC, "utf8"), sandbox, { filename: "settings-i18n.js" });
+    const STRINGS = sandbox.ClawdSettingsI18n.STRINGS;
+    for (const lang of ["en", "zh", "zh-TW", "ko", "ja"]) {
+      const block = STRINGS[lang] || {};
       for (const key of used) {
-        assert.match(block, new RegExp(`\\b${key}: "`), `${key} missing in ${markers[i].trim()}`);
+        assert.ok(typeof block[key] === "string" && block[key].length > 0, `${key} missing in merged table: ${lang}`);
       }
     }
   });

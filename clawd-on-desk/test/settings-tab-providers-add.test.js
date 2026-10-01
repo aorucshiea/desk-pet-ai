@@ -1,0 +1,184 @@
+"use strict";
+
+const { test, describe } = require("node:test");
+const assert = require("node:assert/strict");
+const fs = require("fs");
+const path = require("path");
+const vm = require("vm");
+
+const SRC = path.join(__dirname, "..", "src", "settings-tab-providers.js");
+const I18N_SRC = path.join(__dirname, "..", "src", "settings-i18n.js");
+
+// ── Regression guards for the 添加供应商 (add provider) pane ──────────
+// The captain's live bug: clicking "+ 添加供应商" in cloud mode rendered
+// only up to the 云厂商 heading and stopped — mkPreset was declared inside
+// the local-only branch, so the cloud preset loop threw and the rest of
+// the pane (manual form, add button) never mounted. These tests EXECUTE
+// the real render pipeline (with a minimal DOM stub) along the exact
+// click path, so a scope or render-order break fails loudly instead of
+// dying silently in the renderer console.
+
+// Minimal DOM: just enough of Element for the providers tab to render.
+function makeText(txt) {
+  const n = new StubNode("#text");
+  n._textValue = txt;
+  return n;
+}
+
+class StubNode {
+  constructor(tag) {
+    this.tagName = tag;
+    this.children = [];
+    this.attrs = {};
+    this.style = {};
+    this._cls = "";
+    this.disabled = false;
+    this.isConnected = true;
+    this._listeners = {};
+  }
+  get className() { return this._cls; }
+  set className(v) { this._cls = String(v); }
+  get classList() {
+    const self = this;
+    return {
+      contains(c) { return self._cls.split(/\s+/).includes(c); },
+      add(...cs) { for (const c of cs) if (!self.classList.contains(c)) self._cls = (self._cls + " " + c).trim(); },
+      toggle(c, on) { self._cls = self._cls.split(/\s+/).filter((x) => x && x !== c).concat(on ? [c] : []).join(" "); },
+    };
+  }
+  set innerHTML(v) { if (v === "") this.children.length = 0; else this._html = v; }
+  get innerHTML() { return this._html || ""; }
+  set textContent(v) {
+    // Standard DOM: assigning text replaces the subtree with one text node
+    // (softBtn labels rely on this).
+    this.children.length = 0;
+    if (v !== "") this.children.push(makeText(String(v)));
+  }
+  get textContent() {
+    if (this.tagName === "#text") return this._textValue;
+    return this.children.map((c) => c.textContent).join("");
+  }
+  get childElementCount() { return this.children.length; }
+  setAttribute(k, v) { this.attrs[k] = String(v); }
+  appendChild(c) { this.children.push(c); return c; }
+  addEventListener(type, fn) { (this._listeners[type] ||= []).push(fn); }
+  click() { for (const fn of this._listeners.click || []) fn({ preventDefault() {} }); }
+  querySelector(sel) { return findNode(this, (n) => n.classList.contains(sel.slice(1))); }
+}
+
+function textOf(n) {
+  if (!n) return "";
+  if (n.tagName === "#text") return String(n.textContent);
+  return n.children.map(textOf).join("");
+}
+
+function walk(n, fn) {
+  if (!n || n.tagName === "#text") return null;
+  if (fn(n)) return n;
+  for (const c of n.children) {
+    const hit = walk(c, fn);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+function findNode(root, fn) { return walk(root, fn); }
+
+function countClass(n, cls) {
+  if (!n || n.tagName === "#text") return 0;
+  return (n.classList.contains(cls) ? 1 : 0) + n.children.reduce((s, c) => s + countClass(c, cls), 0);
+}
+
+function makeContext(snapshotSkills) {
+  const doc = class DocNode extends StubNode {};
+  const document = {
+    createElement: (tag) => new doc(tag),
+    createTextNode: (txt) => makeText(txt),
+  };
+  const window = {};
+  const sandbox = { document, window, Node: doc, console };
+  vm.createContext(sandbox);
+  vm.runInContext(fs.readFileSync(SRC, "utf8"), sandbox, { filename: "settings-tab-providers.js" });
+
+  const tabs = {};
+  const root = new doc("div");
+  // Inside the vm the IIFE binds to the context's own globalThis, which IS
+  // the sandbox object — the export lands directly on it.
+  sandbox.ClawdSettingsTabProviders.init({
+    helpers: { t: (k) => k },
+    ops: { showToast() {} },
+    state: { snapshot: { skills: snapshotSkills } },
+    tabs,
+  });
+  // Mount the page (the settings shell calls core.tabs.providers.render).
+  tabs.providers.render(root);
+  return { sandbox, root, doc };
+}
+
+function isButton(n) { return n && n.tagName !== "#text" && String(n.tagName).toUpperCase() === "BUTTON"; }
+
+function clickMode(root, key) {
+  const btn = findNode(root, (n) => isButton(n) && textOf(n).includes(key));
+  assert.ok(btn, `mode button ${key} should exist`);
+  btn.click();
+}
+
+function openAddPane(root) {
+  const add = findNode(root, (n) => isButton(n) && textOf(n).includes("provAddProvider"));
+  assert.ok(add, "the + 添加供应商 button should exist in the source list");
+  add.click();
+}
+
+describe("settings-tab-providers: 添加供应商 pane", () => {
+  test("cloud mode: the click mounts the full pane — 14 vendor presets + manual form", () => {
+    const { root } = makeContext({ defaultProvider: "local", modelProviders: [] });
+    // Page opens in cloud mode (segmented control default), then the
+    // captain's exact action: click 添加供应商.
+    openAddPane(root);
+
+    const cards = countClass(root, "prov-preset-card");
+    assert.equal(cards, 14, `expected all 14 cloud vendor preset cards, got ${cards}`);
+    const text = textOf(root);
+    assert.ok(text.includes("provCloudPresets"), "云厂商 heading present");
+    for (const vendor of ["DeepSeek", "Kimi", "智谱GLM", "通义千问", "MiniMax", "硅基流动", "火山方舟", "腾讯混元", "百度文心", "OpenAI", "Anthropic", "Gemini", "Groq", "OpenRouter"]) {
+      assert.ok(text.includes(vendor), `vendor preset missing: ${vendor}`);
+    }
+    // The pane did not die mid-render: manual form and add action mounted.
+    assert.ok(text.includes("provManualTitle"), "manual OpenAI form heading present");
+    assert.ok(text.includes("provFieldKey"), "manual form fields present");
+    assert.ok(findNode(root, (n) => textOf(n).includes("provAddAction")), "添加 button present");
+    // No local servers leaked into the cloud half.
+    assert.ok(!text.includes("LM Studio"), "cloud add pane must not mention LM Studio");
+    assert.ok(!text.includes("Ollama"), "cloud add pane must not mention Ollama");
+  });
+
+  test("local mode: the same pane shows the two local server presets instead", () => {
+    const { root } = makeContext({ defaultProvider: "local", modelProviders: [] });
+    openAddPane(root);
+    clickMode(root, "provModeLocal"); // selection carries over → add pane re-renders local
+
+    const text = textOf(root);
+    assert.ok(text.includes("provPresetLmstudioDesc"), "LM Studio preset present");
+    assert.ok(text.includes("provPresetOllamaDesc"), "Ollama preset present");
+    assert.equal(countClass(root, "prov-preset-card"), 2, "exactly the two local presets");
+    assert.ok(text.includes("provManualTitle"), "manual form still present in local mode");
+  });
+
+  test("the add-pane i18n keys exist in all five product languages (post-merge)", () => {
+    // Load the real i18n module and assert against the MERGED table the
+    // runtime actually serves — the source file splits keys between the
+    // primary STRINGS table and the English gap-filler table, so raw
+    // source slicing produces false negatives.
+    const sandbox = { console };
+    vm.createContext(sandbox);
+    vm.runInContext(fs.readFileSync(I18N_SRC, "utf8"), sandbox, { filename: "settings-i18n.js" });
+    const STRINGS = sandbox.ClawdSettingsI18n.STRINGS;
+    const keys = ["provModeCloud", "provModeLocal", "provAddHintCloud", "provCloudPresets", "provPresetLmstudioDesc", "provPresetOllamaDesc", "provAddProvider", "provManualTitle"];
+    for (const lang of ["en", "zh", "zh-TW", "ko", "ja"]) {
+      const block = STRINGS[lang] || {};
+      for (const k of keys) {
+        assert.ok(typeof block[k] === "string" && block[k].length > 0, `${k} missing from merged language table: ${lang}`);
+      }
+    }
+  });
+});
