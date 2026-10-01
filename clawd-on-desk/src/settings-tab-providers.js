@@ -142,7 +142,7 @@
   function renderHeader(parent) {
     const wrap = el("div", { className: "pet-page-header" });
     const textCol = el("div", { className: "pet-page-header-text" });
-    textCol.appendChild(el("h1", {}, t("provTitle")));
+    textCol.appendChild(el("h1", {}, t("sidebarProviders")));
     textCol.appendChild(el("p", { className: "subtitle" }, t("provSubtitle")));
     wrap.appendChild(textCol);
     parent.appendChild(wrap);

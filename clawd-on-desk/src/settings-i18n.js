@@ -3743,6 +3743,7 @@
       petRowBackend: "推理后端",
       petRowBackendDesc: "Windows 默认使用更稳定的 CPU。Vulkan 为实验功能，失败会自动回退 CPU。",
       petChangeModel: "更换...",
+      petOpenModelPathGeneric: "在文件夹中显示",
       petChangeModelBusy: "加载中...",
       petReloadError: "模型加载失败：",
       petModelPickerLabel: "可用的本地模型",
@@ -4326,7 +4327,15 @@
   };
   for (const [lang, values] of Object.entries(PET_PRODUCT_STRINGS)) {
     if (!STRINGS[lang]) STRINGS[lang] = {};
-    Object.assign(STRINGS[lang], PET_PRODUCT_STRINGS.en, values);
+    const target = STRINGS[lang];
+    // The English product table only FILLS GAPS. Assigning it wholesale made
+    // every key it repeats render in English for all languages, clobbering
+    // real translations in the main table (15 keys in zh alone: the whole
+    // providers hero plus the evolve page's space map).
+    for (const [key, fallback] of Object.entries(PET_PRODUCT_STRINGS.en)) {
+      if (!(key in target)) target[key] = fallback;
+    }
+    Object.assign(target, values);
   }
 
   root.ClawdSettingsI18n = {

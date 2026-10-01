@@ -656,93 +656,29 @@
       const prefs = await window.petSettings.getEnginePrefs();
       engineEnabled = !!(prefs && prefs.params && prefs.params.engine_enabled);
     } catch {}
-    if (!engineEnabled) {
-      box.appendChild(sectionTitle(t("petSectionEngine")));
-      const gateCard = helpers.buildSection("", []);
-      const gateRows = gateCard.querySelector(".section-rows");
-      const gateRow = el("div", { className: "row" });
-      const gateText = el("div", { className: "row-text" });
-      gateText.appendChild(el("span", { className: "row-label" }, t("petEngineGateTitle")));
-      gateText.appendChild(el("span", { className: "row-desc" }, t("petEngineGateDesc")));
-      // The gate reflects the PREF (engine_enabled), but the sidecar
-      // auto-manages the llama-server process whenever the pet needs local
-      // inference (a local model is selected and something asks for
-      // completion). Pref off + live process = this exact confusion, so
-      // say it out loud instead of letting two widgets contradict each
-      // other (Norman: feedback must show the system's real state).
-      const liveLlama = !!(ctx && ctx.healthSnapshot && ctx.healthSnapshot.llamaReady);
-      if (liveLlama) {
-        gateText.appendChild(el("div", {
-          className: "row-desc",
-          style: { marginTop: "6px", color: "var(--text-primary)" },
-        }, t("petEngineGateLive")));
-      }
-      gateRow.appendChild(gateText);
-      if (liveLlama) {
-        // The engine is actually running, so the useful action is to STOP
-        // the process — not to flip a preference that the auto-manager
-        // ignores anyway. This really calls POST /api/engine/stop.
-        const stopBtn = softBtn(t("petEngineStopNow"), async () => {
-          stopBtn.disabled = true;
-          stopBtn.classList.add("is-busy");
-          try {
-            const r = await window.petSettings.engineStop();
-            if (!r || r.status !== "ok") {
-              notifyError((r && r.message) || t("petEngineStopFailed"));
-            } else {
-              // Ask again — the sidecar's auto-manager may bring it
-              // straight back (a local model is selected and something
-              // wants inference). Silence here reads as "the button
-              // does nothing", so say what actually happened.
-              try {
-                const p = await window.petSettings.engineParams();
-                if (p && p.running) notifyError(t("petEngineStopRestarted"));
-              } catch {}
-            }
-          } catch (e) {
-            notifyError(t("petEngineStopFailed") + ((e && e.message) || e || ""));
-          }
-          void ctx.refreshAll();
-        });
-        gateRow.appendChild(el("div", { className: "row-control" }, stopBtn));
-      } else {
-        const gateBtn = softBtn(t("petEngineGateEnable"), async () => {
-          gateBtn.disabled = true;
-          gateBtn.classList.add("is-busy");
-          try {
-            await window.petSettings.setEngineParams({ engine_enabled: true });
-          } catch {}
-          void ctx.refreshAll();
-        });
-        gateRow.appendChild(el("div", { className: "row-control" }, gateBtn));
-      }
-      gateRows.appendChild(gateRow);
-      box.appendChild(gateCard);
-      // NOTE: no early return here any more.
-      //
-      // The advanced engine parameters used to be rendered only when the
-      // engine was already enabled — so the moment a user switched it off
-      // (or came back to configure it), the knobs they wanted literally
-      // vanished from the page. Parameters are now always visible; the
-      // card above says whether they are in effect yet.
-    }
-
     box.appendChild(sectionTitle(t("petSectionEngine")));
     const engSection = helpers.buildSection("", []);
     const engRows = engSection.querySelector(".section-rows");
 
-    // Shut the gate again → collapses back to the single 启用 row.
+    // One switch showing the real preference. The gate card that used to
+    // sit above this section rendered "OFF, click 启用" while this row's
+    // hardcoded `true` said "已启用" — two widgets contradicting each other.
     engRows.appendChild(switchRow(
       t("petEngineGateTitle"),
-      t("petEngineGateOnDesc"),
-      true,
+      t("petEngineGateDesc"),
+      engineEnabled,
       async (next) => {
-        if (next) return { ok: true };
-        await window.petSettings.setEngineParams({ engine_enabled: false });
+        await window.petSettings.setEngineParams({ engine_enabled: !!next });
         void ctx.refreshAll();
         return { ok: true };
       },
     ));
+    const liveLlama = !!(ctx && ctx.healthSnapshot && ctx.healthSnapshot.llamaReady);
+    if (!engineEnabled && liveLlama) {
+      engRows.appendChild(el("div", { className: "row" },
+        el("div", { className: "row-text" },
+          el("span", { className: "row-desc" }, t("petEngineGateLive")))));
+    }
 
     // ── Row 1: runtime switch ───────────────────────────────────────────
     // Start uses the currently configured model (errors loudly when none
@@ -1000,14 +936,17 @@
       try {
         const ret = await window.petSettings.engineUpdateCheck();
         if (!ret || ret.status !== "ok" || !ret.info) {
-          // Surface the actual reason (connection refused / timeout) so
-          // the user can tell "sidecar not running" apart from GitHub
-          // being unreachable.
+          // The raw reason (connection refused / timeout) still matters for
+          // telling "sidecar not running" apart from GitHub being
+          // unreachable — but it belongs in the hover title, not in the
+          // row, where `connect ECONNREFUSED 127.0.0.1:18765` just reads
+          // as a broken page.
           const reason = (ret && ret.message) || (ret && ret.error) || "";
+          if (reason) engValue.title = reason;
           if (haveLocal) {
-            engValue.textContent = `build ${localBuild}（${t("petEngineUnreachable")}${reason ? `: ${reason}` : ""}）`;
+            engValue.textContent = `build ${localBuild}（${t("petEngineUnreachable")}）`;
           } else {
-            engValue.textContent = t("petEngineNotInstalled") + "（" + t("petEngineUnreachable") + (reason ? `: ${reason}` : "") + "）";
+            engValue.textContent = t("petEngineNotInstalled") + "（" + t("petEngineUnreachable") + "）";
           }
           return;
         }
