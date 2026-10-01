@@ -73,6 +73,23 @@ def _normalise_device(raw: Optional[str] = None) -> str:
     return device
 
 
+def _backend_lib_present(binary_dir: Path, backend: str) -> bool:
+    """True when llama.cpp's runtime library for `backend` sits next to a
+    binary (`ggml-cuda.dll`, `ggml-vulkan.dll`…).
+
+    Modern llama.cpp releases are ONE llama-server plus per-backend DLLs:
+    `fetch-llama-release.ps1 -Backend cuda` unpacks them side by side in
+    `bin/<triple>/`, and only Vulkan gets a `backends/vulkan/` subdir. So a
+    shared binary can serve an explicit backend — but only when that
+    backend's DLL is actually there, otherwise "Vulkan" would silently run
+    the CPU build.
+    """
+    try:
+        return any(binary_dir.glob(f"ggml-{backend}*.dll"))
+    except OSError:
+        return False
+
+
 def _candidate_binary_paths(device: Optional[str] = None) -> list[Path]:
     """Where to look for llama-server, in priority order.
 
@@ -101,6 +118,8 @@ def _candidate_binary_paths(device: Optional[str] = None) -> list[Path]:
         base = Path(sys.executable).resolve().parent
         if windows_backend_dir:
             out.append(base / "backends" / windows_backend_dir / exe)
+            if _backend_lib_present(base, windows_backend_dir):
+                out.append(base / exe)
         else:
             out.append(base / exe)
     else:
@@ -112,6 +131,9 @@ def _candidate_binary_paths(device: Optional[str] = None) -> list[Path]:
             out.append(pkg_root / "bin" / triple / "backends" / windows_backend_dir / exe)
             out.append(repo_root / "llama.cpp" / f"build-{triple}-{windows_backend_dir}" / "bin" / exe)
             out.append(repo_root / "llama.cpp" / f"build-{triple}-{windows_backend_dir}" / exe)
+            shared = pkg_root / "bin" / triple
+            if _backend_lib_present(shared, windows_backend_dir):
+                out.append(shared / exe)
         else:
             out.append(pkg_root / "bin" / triple / exe)
             out.append(repo_root / "llama.cpp" / "build" / "bin" / exe)
@@ -150,11 +172,140 @@ def _platform_triple() -> str:
     return f"{sys_name.lower()}-{machine}"
 
 
+_DEVICE_PROBE_TTL_SEC = 300.0
+_DEVICE_PROBE_TIMEOUT_SEC = 8.0
+# (monotonic seconds, binary path, device names) — see probe_device_names().
+_device_probe: Optional[tuple[float, str, Optional[list[str]]]] = None
+
+_GPU_BACKENDS = ("cuda", "vulkan", "metal")
+
+
+def _parse_list_devices(stdout: str) -> list[str]:
+    """`llama-server --list-devices` prints a header line then two-space
+    indented device names (`  CUDA0`), or `  (none)`."""
+    names: list[str] = []
+    for line in (stdout or "").splitlines():
+        if not (line.startswith("  ") or line.startswith("\t")):
+            continue
+        stripped = line.strip()
+        if not stripped or stripped.startswith("("):
+            continue
+        names.append(stripped)
+    return names
+
+
+def backend_of_device(name: str) -> str:
+    n = (name or "").lower()
+    for backend in _GPU_BACKENDS:
+        if n.startswith(backend):
+            return backend
+    return ""
+
+
+def probe_device_names(binary: Optional[Path]) -> Optional[list[str]]:
+    """Ask llama-server which offload devices it can address.
+
+    Ground truth beats file sniffing: a `ggml-cuda.dll` whose CUDA runtime
+    DLLs are missing loads nothing and reports no devices, which is exactly
+    the case where offering "CUDA" in Settings would be a lie the engine
+    can't keep. Returns None when the question could not be asked (no
+    binary, unrunnable build, timeout) so callers can fall back to the
+    cheaper file heuristic instead of punishing the user for it.
+
+    Cached because /api/health polls detection on every tick and answering
+    it loads the whole ggml stack.
+    """
+    global _device_probe
+    if binary is None:
+        return None
+    key = str(binary)
+    now = time.monotonic()
+    if _device_probe and _device_probe[1] == key and now - _device_probe[0] < _DEVICE_PROBE_TTL_SEC:
+        return _device_probe[2]
+    names: Optional[list[str]]
+    try:
+        completed = subprocess.run(
+            [key, "--list-devices"],
+            capture_output=True,
+            text=True,
+            timeout=_DEVICE_PROBE_TIMEOUT_SEC,
+            cwd=str(binary.parent),
+        )
+        names = _parse_list_devices(completed.stdout or "")
+    except Exception as exc:
+        get_logger().info(
+            "llama-server --list-devices unusable (%s); falling back to file check", exc)
+        names = None
+    _device_probe = (now, key, names)
+    return names
+
+
+def _dedicated_backend_binary(
+    backend: str, shared_paths: list[Path]
+) -> Optional[Path]:
+    """The `backends/<backend>/llama-server[.exe]` build, if one is
+    installed. Anything the plain (no-backend) lookup already returns is the
+    shared binary, not a dedicated build — that distinction is what tells
+    "Vulkan installed" from "the same CPU build found again"."""
+    try:
+        candidates = _candidate_binary_paths(backend)
+    except Exception:
+        return None
+    for p in candidates:
+        if p in shared_paths:
+            continue
+        try:
+            if p.is_file():
+                return p
+        except OSError:
+            continue
+    return None
+
+
+def _installed_gpu_backends(
+    default_binary: Optional[Path], shared_paths: list[Path]
+) -> list[str]:
+    """GPU backends the installed engine ships a runtime for: either a
+    dedicated build, or a `ggml-<backend>.dll` next to the shared binary.
+    Windows only — Metal never resolves to anything here."""
+    found: list[str] = []
+    for backend in ("cuda", "vulkan"):
+        if _dedicated_backend_binary(backend, shared_paths) is not None:
+            found.append(backend)
+            continue
+        if default_binary is not None and _backend_lib_present(default_binary.parent, backend):
+            found.append(backend)
+    return found
+
+
+def _backend_reason(backend: str, *, probed: bool, found: bool = True) -> str:
+    """Why a backend is offered — or why it is not. Surfaced as the tooltip
+    on the 推理后端 buttons, so "只能选 CPU" explains itself."""
+    if backend == "vulkan":
+        base = "实验性 Vulkan GPU 后端"
+        if not probed:
+            return base + "（已安装，未能向引擎确认设备）"
+        return base if found else (
+            "已安装 Vulkan 引擎，但引擎没有枚举到任何 Vulkan 设备："
+            "多半缺 ggml-vulkan.dll 或显卡驱动没有 Vulkan ICD。")
+    if backend == "cuda":
+        base = "NVIDIA GPU（引擎自带的 CUDA 构建）"
+        if not probed:
+            return base + "（已安装，未能向引擎确认设备）"
+        return base if found else (
+            "引擎目录里有 ggml-cuda.dll，但 llama-server 枚举不到 CUDA 设备："
+            "通常缺 cudart64_12.dll / cublas64_12.dll，或驱动版本与构建不匹配。"
+            "可以换装完整的 CUDA 发布包，或改装 Vulkan 后端。")
+    return "Apple Silicon GPU（Metal）" if found else "未识别到 Metal 设备"
+
+
 def detect_backend() -> dict:
-    """Best-effort report of which acceleration backend the llama-server
-    binary likely uses. Pure heuristic: we just look at the OS/arch and
-    whether common runtime libs are present. The actual backend gets
-    confirmed by parsing llama-server's --version output once it starts."""
+    """Which acceleration backends this machine's engine can actually run.
+
+    `available` is what Settings may offer; `reasons` says why the others
+    are missing, so an unselectable backend is explained rather than
+    silently absent.
+    """
     sys_name = platform.system()
     machine = platform.machine().lower()
     current = _normalise_device()
@@ -164,17 +315,44 @@ def detect_backend() -> dict:
     if sys_name == "Windows":
         backends.append("cpu")
         reasons["cpu"] = "Stable CPU inference for Windows"
-        vulkan_available = any(p.is_file() for p in _candidate_binary_paths("vulkan"))
-        if vulkan_available:
-            backends.append("vulkan")
-            experimental.append("vulkan")
-            reasons["vulkan"] = "Experimental Vulkan GPU backend"
+        shared_paths = [p for p in _candidate_binary_paths() if p.is_file()]
+        default_binary = shared_paths[0] if shared_paths else None
+        installed = _installed_gpu_backends(default_binary, shared_paths)
+        device_backends: set[str] = set()
+        all_devices: list[str] = []
+        for backend in installed:
+            own = _dedicated_backend_binary(backend, shared_paths)
+            # A dedicated backends/<backend>/ build answers for itself; the
+            # shared binary answers for every backend DLL next to it.
+            names = probe_device_names(own or default_binary)
+            if names is None:
+                # Could not ask the engine — keep the old file-based
+                # behaviour rather than hiding a backend that may work.
+                backends.append(backend)
+                if backend == "vulkan":
+                    experimental.append("vulkan")
+                reasons[backend] = _backend_reason(backend, probed=False)
+                continue
+            all_devices.extend(names)
+            device_backends |= {backend_of_device(n) for n in names}
+            if backend in device_backends:
+                backends.append(backend)
+                if backend == "vulkan":
+                    experimental.append("vulkan")
+                reasons[backend] = _backend_reason(backend, probed=True)
+            else:
+                reasons[backend] = _backend_reason(backend, probed=True, found=False)
+        for backend in ("cuda", "vulkan"):
+            if backend not in installed:
+                reasons[backend] = "未安装该后端的推理引擎：点「检查版本」→「更新引擎」，或用「从文件夹更新…」装入本地下载包。"
         return {
             "available": backends,
             "recommended": "cpu",
             "current": current if current in backends else "cpu",
             "experimental": experimental,
             "reasons": reasons,
+            "installed": installed,
+            "devices": sorted(set(all_devices)),
         }
     if sys_name == "Darwin" and machine in ("arm64", "aarch64"):
         backends.append("metal")
@@ -412,6 +590,16 @@ class LlamaServer:
             f"{hint}\n  已检查的路径:\n  {searched}"
         )
 
+    def _device_arg(self) -> Optional[str]:
+        """llama.cpp's own name for the selected backend (`CUDA0`,
+        `VULKAN0`…), or None when the engine could not be asked. Passing a
+        guessed name is worse than passing nothing: llama-server rejects an
+        unknown device and refuses to start."""
+        for name in probe_device_names(self._binary) or []:
+            if backend_of_device(name) == self.device:
+                return name
+        return None
+
     def _build_argv(self) -> list[str]:
         if not self.model_path:
             raise RuntimeError("model_path is empty; refusing to start llama-server")
@@ -426,6 +614,14 @@ class LlamaServer:
         ]
         if self.device != "cpu" and self.n_gpu_layers != 0:
             argv += ["--gpu-layers", str(self.n_gpu_layers)]
+        # An explicit backend has to be named on the command line too: the
+        # single-binary release layout carries ggml-cuda.dll /
+        # ggml-vulkan.dll side by side, and without --device llama.cpp picks
+        # for itself — which is how "Vulkan" silently ends up on the CPU.
+        if self.device in _GPU_BACKENDS:
+            device_arg = self._device_arg()
+            if device_arg:
+                argv += ["--device", device_arg]
         if self.threads:
             argv += ["--threads", str(self.threads)]
         # Weight loading: explicit mmap keeps a 20 GB+ checkpoint from being
