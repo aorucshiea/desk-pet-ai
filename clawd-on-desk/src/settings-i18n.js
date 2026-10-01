@@ -3850,6 +3850,8 @@
     "zh-TW": {
       settingsSubtitle: "設定桌寵在桌面上怎麼動作。",
       sidebarModels: "大腦",
+      petTitle: "大腦",
+      petSubtitle: "目前在用的大腦——誰在替你思考。",
       sidebarSkills: "技能系統",
       sidebarProviders: "模型來源",
       sidebarScreenClick: "屏幕點擊",
@@ -4003,6 +4005,8 @@
     ko: {
       settingsSubtitle: "데스크톱에서 Desk Pet의 동작 방식을 설정합니다.",
       sidebarModels: "두뇌",
+      petTitle: "두뇌",
+      petSubtitle: "지금 당신을 위해 생각하고 있는 뇌.",
       sidebarSkills: "스킬",
       sidebarProviders: "모델 소스",
       sidebarScreenClick: "화면 클릭",
@@ -4154,6 +4158,8 @@
     ja: {
       settingsSubtitle: "Desk Pet のデスクトップでの動作を設定します。",
       sidebarModels: "脳",
+      petTitle: "脳",
+      petSubtitle: "いま思考している脳。",
       sidebarSkills: "スキル",
       sidebarProviders: "モデルソース",
       sidebarScreenClick: "画面クリック",
