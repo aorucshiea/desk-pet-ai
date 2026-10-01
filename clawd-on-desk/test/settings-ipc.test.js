@@ -662,16 +662,21 @@ test("settings IPC serves agent/about/external and remove-theme dialog helpers",
     assert.deepStrictEqual(await ipcMain.invoke("settings:list-agents"), [
       { id: "codex", name: "Codex", eventSource: "hook", capabilities: { permission: true } },
     ]);
-    assert.deepStrictEqual(await ipcMain.invoke("settings:get-about-info"), {
+    const about = await ipcMain.invoke("settings:get-about-info");
+    assert.deepStrictEqual(about, {
       version: "1.2.3",
       appName: "deskpt",
-      repoUrl: "https://github.com/rullerzhou-afk/clawd-on-desk",
+      repoUrl: "https://github.com/aorucshiea/desk-pet-ai",
       license: "AGPL-3.0-only",
       copyright: "\u00a9 2026",
       upstreamRepoUrl: "https://github.com/rullerzhou-afk/clawd-on-desk",
       upstreamLabel: "clawd-on-desk",
       heroSvgContent: "<svg id=\"hero\"></svg>",
     });
+    // About must send users to THIS product, not to the upstream repo it
+    // was forked from — the two fields exist precisely to keep them apart.
+    assert.notStrictEqual(about.repoUrl, about.upstreamRepoUrl);
+    assert.strictEqual(about.repoUrl, require("../package.json").homepage.replace(/\.git$/i, ""));
     assert.deepStrictEqual(await ipcMain.invoke("settings:confirm-remove-theme", "user-theme"), {
       confirmed: true,
     });
