@@ -288,6 +288,12 @@
       inUse: defaultProvider === "local",
       onSelect: () => select("local"),
     }));
+    // 3. the way IN: without this button the local half had no way to add
+    // LM Studio / Ollama at all ("无法选别的了").
+    listEl.appendChild(softBtn("+ " + t("provAddProvider"), () => {
+      selectedSource = "__add__";
+      renderAll();
+    }, { accent: selectedSource === "__add__" })).classList.add("prov-add-btn");
   }
 
   // ── Right pane: detail for the selected source ─────────────────────────
