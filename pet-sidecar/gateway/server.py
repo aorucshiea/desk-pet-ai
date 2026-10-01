@@ -751,7 +751,15 @@ def build_app(
         # downloads it via /api/update-apply and only then calls
         # /api/load-model. The pet still wants /api/health to answer 200
         # in the meantime so the bubble doesn't show a permanent error.
-        if initial_model and Path(initial_model).exists():
+        if not _engine_enabled():
+            # The user stopped the engine. Restarting the pet must not
+            # resurrect it - that is the "I turned it off and it came back"
+            # complaint. Wait for an explicit /api/engine/start.
+            log.info(
+                "built-in engine disabled by the user; not starting "
+                "(call /api/engine/start to re-enable)"
+            )
+        elif initial_model and Path(initial_model).exists():
             try:
                 await server.start()
                 startup_error = None
@@ -1907,6 +1915,8 @@ def build_app(
 
     @app.post("/api/engine/start")
     async def engine_start():
+        # An explicit start is the user's intent too.
+        _set_engine_enabled(True)
         """Manual engine start from the settings page. Uses whatever model
         the client is configured with; fails loudly when none is set (the
         user must pick a model first)."""
@@ -1921,6 +1931,9 @@ def build_app(
     @app.post("/api/engine/stop")
     async def engine_stop():
         was = server.alive
+        # Stopping IS the user saying "I want this off" - persist it so the
+        # next pet restart does not quietly bring it back.
+        _set_engine_enabled(False)
         await server.stop()
         return {"ok": True, "was_running": was}
 
@@ -1931,6 +1944,7 @@ def build_app(
         return {
             "ok": True,
             "running": server.alive,
+            "enabled": _engine_enabled(),
             "params": {
                 "load_mode": server.load_mode,
                 "cache_type_k": server.cache_type_k,
@@ -2713,6 +2727,35 @@ def _sanitize(s: str) -> str:
     """Sanitize for tool name prefix (must match _sanitize_name in providers/base.py)."""
     return re.sub(r"[^A-Za-z0-9_]", "_", str(s or ""))
 
+
+def _engine_enabled_path() -> Path:
+    """Where the user's engine on/off intent is persisted."""
+    root = os.environ.get("PET_MEMORY_DIR") or str(Path.home() / ".pet")
+    return Path(root) / "engine-enabled.json"
+
+
+def _engine_enabled() -> bool:
+    """May the sidecar start the built-in engine on its own?
+
+    Written by /api/engine/stop (False) and /api/engine/start (True).
+    A missing file means True so existing installs behave as before.
+    """
+    try:
+        p = _engine_enabled_path()
+        if not p.exists():
+            return True
+        return bool(json.loads(p.read_text(encoding="utf-8")).get("enabled", True))
+    except Exception:
+        return True
+
+
+def _set_engine_enabled(flag: bool) -> None:
+    try:
+        p = _engine_enabled_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps({"enabled": bool(flag)}), encoding="utf-8")
+    except Exception as exc:
+        get_logger().warning("could not persist engine enabled=%s: %s", flag, exc)
 
 def _build_local_provider(server, server_state, req, lora_arr=None):
     """Build a fresh LocalProvider with the pre-computed LoRA array.
