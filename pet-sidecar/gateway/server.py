@@ -1816,6 +1816,12 @@ def build_app(
             "llama_server": sub_health,
             "port": server.port,
             "startup_error": startup_error,
+            # Explicit so Electron's isHealthy can tell "engine off by the
+            # user's choice" (gateway fully usable for providers) apart
+            # from "engine still warming up" — otherwise it treats every
+            # healthy sidecar as unhealthy and kill/respawns it in a loop
+            # the moment the active model is a remote one.
+            "engine_enabled": _engine_enabled(),
         }
 
     @app.get("/api/devices")

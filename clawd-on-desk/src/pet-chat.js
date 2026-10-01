@@ -583,7 +583,12 @@ class Sidecar {
       const r = await httpJson("GET", `${this.baseUrl()}/api/health`, null, 1500);
       if (!(r.status === 200 && r.json && r.json.ok === true)) return false;
       if (this.modelPresent(initialModelDir)) {
+        // engine_enabled === false is the user's explicit choice (provider
+        // models only): the gateway is fully healthy and must NOT be
+        // judged unhealthy for llama-server being down, or every
+        // ensureRunning kill/respawns it in a loop.
         return r.json.alive === true
+          || r.json.engine_enabled === false
           || !!(r.json.llama_server && r.json.llama_server.status === "ok");
       }
       return true;
@@ -843,6 +848,7 @@ class Sidecar {
           }
           if (
             health.json.alive === true ||
+            health.json.engine_enabled === false ||
             (health.json.llama_server && health.json.llama_server.status === "ok")
           ) {
             return { status: "started" };
