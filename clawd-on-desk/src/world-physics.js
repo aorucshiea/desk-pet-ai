@@ -1,124 +1,129 @@
 /**
- * world-physics.js — 桌面刚体世界的运动学核（02 前瞻 P0）。
+ * world-physics.js — 桌面刚体世界的运动学核（02 前瞻 P0，v2）。
  *
- * 卡通物理（见前瞻 05 术语钉死）：这不是物理仿真，是平台游戏规则——
- * 重力、贴地（grounded）、被顶起、掉落。P0 只管 y 轴贴地与掉落；
- * 水平行走留到 P1 与动画系统 locomotion 汇合。
+ * 卡通物理（见前瞻 05 术语钉死）：平台游戏规则——重力、贴地（grounded）、
+ * 被顶起、掉落。只管 y 轴；水平行走留到 P1 与动画系统 locomotion 汇合。
  *
- * 设计约束（全是踩过的坑换来的）：
- *   - 主进程跑（桌宠位移 = BrowserWindow.setBounds，每帧 IPC 不可接受）
- *   - 外部写入（用户拖拽/设置预览）优先：检测到非本模块造成的位置变化 → 静默
- *     500ms 后从新位置继续
- *   - 守卫挂起：拖拽锁定 / 宠物隐藏 / mini 模式 / mini 过场中 → 完全不碰窗口
- *   - 一切参数 px、秒、屏幕坐标系（y 向下增大）
+ * v2 修订（机长实测反馈 2026-10-01）：
+ *   1. **参数方程掉落**：Electron 主进程 setInterval 被节流到 ~50ms（实测 vy
+ *      恒撞 dt clamp 上限）——逐帧欧拉积分一卡一卡且慢放。改为掉落开始记
+ *      (t0, y0)，每 tick 代入 y(t) = y0 + ½g(t−t0)² 解析取位：物理时间永远
+ *      与真实时间一致，tick 频率只影响平滑度不影响速度/距离。
+ *   2. **贴地锚点 = 角色内容矩形底**（getObjRect 一族），不是窗口 rect 底——
+ *      窗口四周有透明边距，视觉贴地必须贴内容。
+ *   3. 尺寸变化期间让位（主题 GIF 切状态重调窗高时不同写 y，防正反馈漂移）。
+ *
+ * 外部写入（用户拖拽/设置预览）优先：检测到非本模块造成的位置变化 → 静默
+ * 500ms 后从新位置继续。守卫：拖拽锁定 / 宠物隐藏 / mini 模式 / mini 过场。
+ * 一切单位：DIP（geometry 层已归一）、秒、屏幕坐标系（y 向下增大）。
  */
 
 const DEFAULTS = {
   gravity: 3200,          // px/s^2 — 500px 掉落 ≈ 0.56s（真机钉过手感区间）
-  tickMs: 16,             // ~60Hz
+  tickMs: 16,             // 请求 16ms；主进程实际 ~50ms——解析式不依赖它
   settleEpsPx: 0.6,       // 贴地判定容差
   externalHoldMs: 500,    // 外部位置变化后的让位时间
-  maxDtMs: 50,            // 主进程卡顿时的积分上限（防穿地）
-};
-
-// TEMP-PROBE (remove after P0 verification)
-const probe = {
-  tickN: 0,
-  log(msg) {
-    try {
-      require("fs").appendFileSync(
-        require("path").join(require("electron").app.getPath("userData"), "world-probe.log"),
-        msg + "\n");
-    } catch (_) {}
-  },
-  transitions: [],   // grounded/頂起/掉落 transitions only — quiet by design
+  maxDtMs: 50,            // 保留常量供外部读取；解析路径不再用它截断
 };
 
 function createWorldPhysics(options) {
   const getBounds = options.getBounds;               // () => {x,y,width,height}|null
-  const setPosition = options.setPosition;           // (x, y) => void
-  const getFloorY = options.getFloorY;               // () => number（屏幕坐标）
+  const setPosition = options.setPosition;           // (x, y) => void（窗口左上）
+  const getFloorY = options.getFloorY;               // () => number DIP（屏幕坐标）
   const guards = options.guards || [];               // Array<() => boolean> true=suspend
   const cfg = Object.assign({}, DEFAULTS, options.config);
   const onLanded = options.onLanded || null;         // (vy) => void — A4 供 somatic 上报
+  // 内容矩形底边（视觉贴地锚点）。缺实现时退化为窗口底（行为=旧版）。
+  const getContentBottom = options.getContentBottom
+    || ((b) => (b ? b.y + b.height : null));
 
   let timer = null;
   let lastT = 0;
-  let vy = 0;
   let grounded = false;
   let holdUntil = 0;
-  let lastApplied = null; // 本模块上次写入的位置
-  let lastSeenHeight = null; // 尺寸稳定检测：clawd 主题按 GIF 逐帧调高时物理必须让位
+  let lastApplied = null;   // 本模块上次写入的窗口位置
+  let lastSeenHeight = null;
+  // falling: { t0, winY0, vy0 } — 解析掉落：winY(t) = winY0 + vy0·t + ½·g·t²
+  let fall = null;
 
   function suspended() {
     for (const g of guards) { try { if (g()) return true; } catch (_) {} }
     return Date.now() < holdUntil;
   }
 
-  /** 一次积分步（抽出来便于单测）。state 见文件尾测试。 */
-  function stepState(state, bounds, floor, dt) {
-    const petBottom = bounds.y + bounds.height;
+  // 窗口顶 y → 内容底（DIP 屏坐标）
+  function contentBottom(b) {
+    const cb = b ? getContentBottom(b) : null;
+    return (typeof cb === "number" && isFinite(cb)) ? cb : (b ? b.y + b.height : null);
+  }
+  // 目标窗口 y：使内容底 = floor
+  function targetWinY(b, floor) {
+    const cb = contentBottom(b);
+    if (cb === null) return null;
+    return b.y + (floor - cb);
+  }
+
+  /** 解析步进：输入当前时刻，直接得到目标窗口 y 与新状态。可测。 */
+  function stepPosition(state, b, floor, nowT) {
+    const target = targetWinY(b, floor);
+    if (target === null) return { holding: true, winY: b.y, grounded: state.grounded, landingVy: 0 };
     if (state.grounded) {
-      if (floor - petBottom > cfg.settleEpsPx) {
-        // 支撑面下降/消失（任务栏收回等）→ 进入掉落（有加速过程，不是瞬移）
-        return { y: bounds.y, vy: 0, grounded: false, landedVy: 0 };
+      if (floor - (contentBottom(b)) > cfg.settleEpsPx) {
+        // 支撑面下降 → 进入解析掉落
+        return { holding: false, winY: b.y, grounded: false,
+                 fall: { t0: nowT, winY0: b.y, vy0: 0 }, landingVy: 0 };
       }
-      // 贴住地板：刚性 reconcile —— 地板抬升（被顶起）或窗口高度被外部改变
-      // （主题 GIF 逐帧调尺寸），都每帧重解算 y，防止漂移。
-      const targetY = floor - bounds.height;
-      if (Math.abs(bounds.y - targetY) > cfg.settleEpsPx) {
-        return { y: targetY, vy: 0, grounded: true, landedVy: 0 };
+      // 贴住（地板抬升顶起 / 内容几何变化 reconcile）
+      if (Math.abs(b.y - target) > cfg.settleEpsPx) {
+        return { holding: false, winY: target, grounded: true, landingVy: 0 };
       }
-      return { y: bounds.y, vy: 0, grounded: true, landedVy: 0 };
+      return { holding: true, winY: b.y, grounded: true, landingVy: 0 };
     }
-    const nvy = state.vy + cfg.gravity * dt;
-    let ny = bounds.y + nvy * dt;
-    if (ny + bounds.height >= floor) {
-      ny = floor - bounds.height;
-      return { y: ny, vy: 0, grounded: true, landedVy: nvy };
+    // falling：参数方程
+    const t = (nowT - state.fall.t0) / 1000;
+    const winY = state.fall.winY0 + state.fall.vy0 * t + 0.5 * cfg.gravity * t * t;
+    if (winY >= target) {
+      return { holding: false, winY: target, grounded: true,
+               landingVy: state.fall.vy0 + cfg.gravity * t };
     }
-    return { y: ny, vy: nvy, grounded: false, landedVy: 0 };
+    return { holding: false, winY, grounded: false, fall: state.fall, landingVy: 0 };
   }
 
   function tick() {
-    probe.tickN = (probe.tickN || 0) + 1;
-    const sus = suspended();
-    if (sus) { lastApplied = null; return; }
+    if (suspended()) { lastApplied = null; return; }
     const b = getBounds();
     if (!b) return;
-    // 外部写入检测：bounds 偏离本模块的上次写入 → 别人在动（拖拽等），让位
-    if (lastApplied && (Math.abs(b.x - lastApplied.x) > 1 || Math.abs(b.y - lastApplied.y) > 1)) {
-      holdUntil = Date.now() + cfg.externalHoldMs;
-      lastApplied = null; vy = 0; grounded = false;
-      return;
-    }
-    // 尺寸变化期间让位：高度在变说明 clawd 主题正在调动画尺寸，
-    // 此时双方同写 y 会正向反馈（渲染窗被一路推飞）——物理必须闭眼等待。
     if (lastSeenHeight !== null && b.height !== lastSeenHeight) {
       lastSeenHeight = b.height;
       holdUntil = Date.now() + 150;
-      lastApplied = null;
-      vy = 0; grounded = false;
+      lastApplied = null; grounded = false; fall = null;
       return;
     }
     lastSeenHeight = b.height;
-    const now = Date.now();
-    const dt = Math.min(now - lastT, cfg.maxDtMs) / 1000;
-    lastT = now;
-    const next = stepState({ vy, grounded }, b, getFloorY(), dt);
-    const changed = next.y !== b.y;
-    // TEMP-PROBE: only log state transitions (grounded flips + floor moves), never steady state
-    if (next.grounded !== grounded || (changed && next.grounded)) {
-      probe.log(`t=${now % 100000} grounded=${grounded}->${next.grounded} y=${b.y}->${next.y} floor=${getFloorY()} vy=${Math.round(next.landedVy || vy)}`);
+    if (lastApplied && (Math.abs(b.x - lastApplied.x) > 1 || Math.abs(b.y - lastApplied.y) > 1)) {
+      holdUntil = Date.now() + cfg.externalHoldMs;
+      lastApplied = null; grounded = false; fall = null;
+      return;
     }
-    vy = next.vy;
-    if (next.landedVy > 0 && !grounded && next.grounded && onLanded) {
-      try { onLanded(next.landedVy); } catch (_) {}
+    const now = Date.now();
+    lastT = now;
+    const next = stepPosition(
+      { grounded, fall: fall || { t0: now, winY0: b.y, vy0: 0 } },
+      b, getFloorY(), now);
+    if (!next.grounded && next.fall) fall = next.fall;
+    if (next.grounded) fall = null;
+    if (next.landingVy > 0 && !grounded && onLanded) {
+      try { onLanded(next.landingVy); } catch (_) {}
     }
     grounded = next.grounded;
-    if (changed) {
-      setPosition(b.x, Math.round(next.y));
-      lastApplied = { x: b.x, y: Math.round(next.y) };
+    if (!next.holding) {
+      const wy = Math.round(next.winY);
+      if (Math.abs(b.y - wy) > cfg.settleEpsPx) {
+        setPosition(b.x, wy);
+        lastApplied = { x: b.x, y: wy };
+      } else {
+        lastApplied = { x: b.x, y: b.y };
+      }
     } else {
       lastApplied = { x: b.x, y: b.y };
     }
@@ -131,9 +136,9 @@ function createWorldPhysics(options) {
       timer = setInterval(tick, cfg.tickMs);
       if (timer.unref) timer.unref();
     },
-    stop() { if (timer) clearInterval(timer); timer = null; lastApplied = null; },
+    stop() { if (timer) clearInterval(timer); timer = null; lastApplied = null; fall = null; },
     isRunning: () => !!timer,
-    _stepState: stepState,          // 测试钩子
+    _stepPosition: stepPosition,   // 测试钩子
     _defaults: DEFAULTS,
   };
 }

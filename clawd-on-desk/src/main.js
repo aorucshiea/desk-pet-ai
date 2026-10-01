@@ -3574,6 +3574,11 @@ if (!gotTheLock) {
             if (win && !win.isDestroyed()) petWindowRuntime.applyPetWindowPosition(x, y);
           },
           getFloorY: () => worldGeometry.getFloorY(),
+          // 视觉贴地锚点 = 角色内容矩形底（窗口四周有透明边距，贴窗口底会显得悬空）
+          getContentBottom: (b) => {
+            const r = petWindowRuntime.getObjRect(b);
+            return r ? r.y + r.h : null; // null → 模块内 fallback 到窗口底
+          },
           guards: [
             () => petWindowRuntime.isDragLocked(),
             () => petWindowRuntime.isPetHidden(),
@@ -3581,19 +3586,9 @@ if (!gotTheLock) {
             () => _mini.getMiniTransitioning(),
           ],
         });
-        worldGeometry.start((y) => {
-          try {
-            require("fs").appendFileSync(require("path").join(app.getPath("userData"), "world-probe.log"),
-              `[world] floor -> ${y}\n`);
-          } catch (_) {}
-        });
+        worldGeometry.start(() => {});
         worldPhysics.start();
         worldRuntime = { geometry: worldGeometry, physics: worldPhysics };
-        // TEMP-PROBE (remove after P0 verification): file-level, survives console redirection
-        try {
-          require("fs").appendFileSync(require("path").join(app.getPath("userData"), "world-probe.log"),
-            `[world] started floor=${worldGeometry.getFloorY()} bounds=${JSON.stringify(win && win.getBounds())}\n`);
-        } catch (_) {}
       }
     } catch (err) {
       console.warn("Clawd: world physics failed to start, continuing without it:", err && err.message);

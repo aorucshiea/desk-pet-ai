@@ -52,10 +52,6 @@ function createWorldGeometry(options = {}) {
       };
       fns.hTray = fns.FindWindowW("Shell_TrayWnd", null);
     } catch (err) {
-      // TEMP-PROBE (remove after verification)
-      try { require("fs").appendFileSync(
-        require("path").join(require("electron").app.getPath("userData"), "world-probe.log"),
-        `[world-geometry] koffi init FAILED: ${err && err.stack ? err.stack.split("\n")[0] : err}\n`); } catch (_) {}
       console.warn("world-geometry: koffi init failed, static floor only:", err && err.message);
       fns = null;
     }
@@ -73,10 +69,7 @@ function createWorldGeometry(options = {}) {
   function readFloor() {
     const wa = screen.getPrimaryDisplay().workArea; // {x,y,width,height}
     const workBottom = wa.y + wa.height;
-    if (!fns || !fns.hTray) {
-      probeGeo.onceNull();
-      return workBottom;
-    }
+    if (!fns || !fns.hTray) return workBottom;
     try {
       const abd = { cbSize: 48 };
       const st = Number(fns.SHAppBarMessage(0x4, abd));
@@ -84,35 +77,14 @@ function createWorldGeometry(options = {}) {
       const rc = {};
       fns.GetWindowRect(fns.hTray, rc);
       const trayTopDip = toDip(rc.top);
-      probeGeo.sampleOnce(trayTopDip, workBottom, taskbarPopped);
       if (taskbarPopped === null) taskbarPopped = trayTopDip < workBottom - POP_IN_PX;
       else if (taskbarPopped && trayTopDip > workBottom - POP_OUT_PX) taskbarPopped = false;
       else if (!taskbarPopped && trayTopDip < workBottom - POP_IN_PX) taskbarPopped = true;
       return taskbarPopped ? trayTopDip : workBottom;
-    } catch (err) {
-      probeGeo.errorOnce(err);
+    } catch (_) {
       return taskbarPopped ? wa.y + wa.height : workBottom; // keep last known on error
     }
   }
-
-  // TEMP-PROBE helpers (remove after verification)
-  const probeGeo = {
-    _done: {},
-    _w(msg) {
-      try { require("fs").appendFileSync(
-        require("path").join(require("electron").app.getPath("userData"), "world-probe.log"),
-        `[world-geometry] ${msg}\n`); } catch (_) {}
-    },
-    onceNull() { if (!this._done.null) { this._done.null = 1; this._w("fns/hTray null — static floor forever"); } },
-    sampleOnce(top, bottom, popped) {
-      if (!this._done.sampled || this._lastTop !== top) {
-        this._done.sampled = 1;
-        if (this._lastTop !== top) this._w(`trayTop ${this._lastTop} -> ${top} (workBottom=${bottom}, popped=${popped})`);
-        this._lastTop = top;
-      }
-    },
-    errorOnce(err) { if (!this._done.err) { this._done.err = 1; this._w(`readFloor error: ${err && err.message}`); } },
-  };
 
   function start(onChange) {
     if (timer) return;
