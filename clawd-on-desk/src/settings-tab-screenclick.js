@@ -260,7 +260,7 @@
         testBtn.disabled = true;
         result.textContent = t("holoTesting");
         try {
-          var ret = await window.settingsAPI.holoTest(urlInput.value.trim(), keyInput.value.trim());
+          var ret = await window.petSettings.holoTest(urlInput.value.trim(), keyInput.value.trim());
           if (ret && ret.status === "ok" && ret.ok) {
             var names = (ret.models || []).slice(0, 6).join(", ");
             result.textContent = t("holoTestOk") + (names ? "  →  " + names : "");
@@ -304,7 +304,7 @@
       onclick: async function() {
         var task = (input.value || "").trim();
         if (!task) return;
-        if (!window.settingsAPI || typeof window.settingsAPI.holoRun !== "function") {
+        if (!window.petSettings || typeof window.petSettings.holoRun !== "function") {
           status.textContent = t("holoUnavailable");
           return;
         }
@@ -312,7 +312,7 @@
         cancelBtn.disabled = false;
         status.textContent = t("holoRunning");
         try {
-          var ret = await window.settingsAPI.holoRun(task);
+          var ret = await window.petSettings.holoRun(task);
           status.textContent = (ret && (ret.status === "ok" ? (ret.summary || ret.message || t("holoDone")) : (ret.message || t("holoFailed"))));
         } catch (err) {
           status.textContent = t("holoFailed") + (err && err.message || err);
@@ -327,7 +327,7 @@
       disabled: "disabled",
       style: { marginTop: "8px", padding: "6px 16px", fontSize: "13px", borderRadius: "4px", cursor: "pointer" },
       onclick: async function() {
-        try { if (window.settingsAPI && window.settingsAPI.holoCancel) await window.settingsAPI.holoCancel(); } catch (e) {}
+        try { if (window.petSettings && window.petSettings.holoCancel) await window.petSettings.holoCancel(); } catch (e) {}
         status.textContent = t("holoCancelled");
       },
     }, t("holoCancel"));

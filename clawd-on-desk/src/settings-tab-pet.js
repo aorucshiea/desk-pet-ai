@@ -695,7 +695,7 @@
               // wants inference). Silence here reads as "the button
               // does nothing", so say what actually happened.
               try {
-                const p = await window.petSettings.getEngineParams();
+                const p = await window.petSettings.engineParams();
                 if (p && p.running) notifyError(t("petEngineStopRestarted"));
               } catch {}
             }

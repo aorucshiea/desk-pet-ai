@@ -64,13 +64,13 @@
   function isKernelCore(name) { return name === "plugin_forge"; }
 
   function fetchState() {
-    if (window.settingsAPI && typeof window.settingsAPI.pluginsState === "function") {
-      return window.settingsAPI.pluginsState().then(async (state) => {
+    if (window.petSettings && typeof window.petSettings.pluginsState === "function") {
+      return window.petSettings.pluginsState().then(async (state) => {
         // Config editing arrived with the sidecar's config endpoints; until
         // then this degrades silently and the page just shows no editors.
-        if (state && state.status === "ok" && typeof window.settingsAPI.pluginsConfig === "function") {
+        if (state && state.status === "ok" && typeof window.petSettings.pluginsConfig === "function") {
           try {
-            const cfg = await window.settingsAPI.pluginsConfig();
+            const cfg = await window.petSettings.pluginsConfig();
             if (cfg && cfg.status === "ok") state.configData = cfg;
           } catch {}
         }
@@ -369,10 +369,10 @@
   }
 
   async function saveConfig(name, inputs, btn) {
-    if (!window.settingsAPI || typeof window.settingsAPI.pluginsSetConfig !== "function") return;
+    if (!window.petSettings || typeof window.petSettings.pluginsSetConfig !== "function") return;
     btn.disabled = "disabled";
     try {
-      const r = await window.settingsAPI.pluginsSetConfig(name, collectValues(inputs));
+      const r = await window.petSettings.pluginsSetConfig(name, collectValues(inputs));
       if (r && r.status === "ok") toast(t("evolveConfigSaved"));
       else toast(t("evolveConfigFail"), true);
     } catch {
@@ -475,10 +475,10 @@
   }
 
   async function unloadPlugin(name, btn) {
-    if (!window.settingsAPI || typeof window.settingsAPI.pluginsUnload !== "function") return;
+    if (!window.petSettings || typeof window.petSettings.pluginsUnload !== "function") return;
     btn.disabled = "disabled";
     try {
-      const r = await window.settingsAPI.pluginsUnload(name);
+      const r = await window.petSettings.pluginsUnload(name);
       if (r && r.status === "ok") toast(`${t("evolveUnloaded")}${name}`);
       else toast(`${t("evolveUnloadFail")}${name}`, true);
     } catch {
@@ -489,10 +489,10 @@
   }
 
   async function enablePlugin(name, btn) {
-    if (!window.settingsAPI || typeof window.settingsAPI.pluginsLoad !== "function") return;
+    if (!window.petSettings || typeof window.petSettings.pluginsLoad !== "function") return;
     btn.disabled = "disabled";
     try {
-      const r = await window.settingsAPI.pluginsLoad(name);
+      const r = await window.petSettings.pluginsLoad(name);
       if (r && r.status === "ok") toast(`${t("evolveEnabled")}${name}`);
       else toast(`${t("evolveEnableFail")}${name}`, true);
     } catch {
