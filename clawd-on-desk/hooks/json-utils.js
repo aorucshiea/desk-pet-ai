@@ -33,6 +33,52 @@ function isAbsoluteCommandToken(token) {
 }
 
 /**
+ * Rename a staged file into place, retrying the Windows lock window.
+ *
+ * On Windows a just-created file is routinely held for a few tens of
+ * milliseconds by Defender / the search indexer, and `rename` onto an open
+ * destination fails with EPERM (not ENOENT-style, so callers cannot tell it
+ * apart from a real failure). The write already succeeded, so retrying is
+ * the fix; anything else re-throws.
+ */
+const RENAME_RETRY_MS = [0, 25, 75, 150, 300];
+
+function isTransientRenameError(err) {
+  const code = String((err && err.code) || "");
+  return code === "EPERM" || code === "EACCES" || code === "EBUSY";
+}
+
+function sleepSync(ms) {
+  if (ms <= 0) return;
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function renameWithRetrySync(tmpPath, filePath) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      fs.renameSync(tmpPath, filePath);
+      return;
+    } catch (err) {
+      if (!isTransientRenameError(err) || attempt >= RENAME_RETRY_MS.length - 1) throw err;
+      sleepSync(RENAME_RETRY_MS[attempt + 1]);
+    }
+  }
+}
+
+async function renameWithRetryAsync(tmpPath, filePath) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await fs.promises.rename(tmpPath, filePath);
+      return;
+    } catch (err) {
+      if (!isTransientRenameError(err) || attempt >= RENAME_RETRY_MS.length - 1) throw err;
+      const ms = RENAME_RETRY_MS[attempt + 1];
+      if (ms > 0) await new Promise((resolve) => setTimeout(resolve, ms));
+    }
+  }
+}
+
+/**
  * Atomically write a JS object as pretty JSON. Writes to a sibling tmp file
  * then renames into place so concurrent readers never see a half-written
  * config. Creates the parent directory if missing. Cleans up the tmp file
@@ -45,7 +91,7 @@ function writeJsonAtomic(filePath, data) {
   fs.mkdirSync(dir, { recursive: true });
   try {
     fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2), "utf-8");
-    fs.renameSync(tmpPath, filePath);
+    renameWithRetrySync(tmpPath, filePath);
   } catch (err) {
     try { fs.unlinkSync(tmpPath); } catch {}
     throw err;
@@ -59,7 +105,7 @@ async function writeJsonAtomicAsync(filePath, data) {
   await fs.promises.mkdir(dir, { recursive: true });
   try {
     await fs.promises.writeFile(tmpPath, JSON.stringify(data, null, 2), "utf-8");
-    await fs.promises.rename(tmpPath, filePath);
+    await renameWithRetryAsync(tmpPath, filePath);
   } catch (err) {
     try { await fs.promises.unlink(tmpPath); } catch {}
     throw err;
@@ -120,7 +166,7 @@ function writeTextAtomic(filePath, text, encoding = "utf-8") {
   fs.mkdirSync(dir, { recursive: true });
   try {
     fs.writeFileSync(tmpPath, text, encoding);
-    fs.renameSync(tmpPath, filePath);
+    renameWithRetrySync(tmpPath, filePath);
   } catch (err) {
     try { fs.unlinkSync(tmpPath); } catch {}
     throw err;
@@ -413,6 +459,8 @@ module.exports = {
   readTextFileStripBomAsync,
   readJsonFile,
   readJsonFileAsync,
+  renameWithRetrySync,
+  renameWithRetryAsync,
   writeJsonAtomic,
   writeJsonAtomicAsync,
   writeJsonAtomicWithBackup,
