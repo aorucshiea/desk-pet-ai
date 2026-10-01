@@ -129,7 +129,6 @@ jobs:
           name: mac-installer-mac-arm64
           path: |
             clawd-on-desk/dist/*.dmg
-            clawd-on-desk/dist/latest-mac.yml
 
   build-linux:
     runs-on: ubuntu-22.04
@@ -185,7 +184,6 @@ jobs:
           path: |
             clawd-on-desk/dist/*.AppImage
             clawd-on-desk/dist/*.deb
-            clawd-on-desk/dist/latest-linux.yml
 
   build-windows:
     runs-on: windows-2022
@@ -256,7 +254,6 @@ jobs:
           path: |
             clawd-on-desk/dist/*.exe
             clawd-on-desk/dist/*.exe.blockmap
-            clawd-on-desk/dist/latest.yml
 
   release:
     needs: [build-mac, build-linux, build-windows]

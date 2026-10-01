@@ -79,7 +79,6 @@ jobs:
           path: |
             clawd-on-desk/dist/*.AppImage
             clawd-on-desk/dist/*.deb
-            clawd-on-desk/dist/latest-linux.yml
           if-no-files-found: error
           retention-days: 7
 
@@ -155,6 +154,5 @@ jobs:
           path: |
             clawd-on-desk/dist/*.exe
             clawd-on-desk/dist/*.exe.blockmap
-            clawd-on-desk/dist/latest.yml
           if-no-files-found: error
           retention-days: 7
