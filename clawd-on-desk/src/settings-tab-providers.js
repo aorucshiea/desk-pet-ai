@@ -197,7 +197,7 @@
     }, label);
   }
 
-  function sourceItem({ id, p, selected, inUse, onSelect }) {
+  function sourceItem({ id, p, selected, inUse, onSelect, onRemove }) {
     const item = el("button", {
       type: "button",
       className: "prov-item" + (selected ? " selected" : ""),
@@ -211,6 +211,18 @@
     item.appendChild(text);
     if (inUse) item.appendChild(el("span", { className: "prov-tag" }, t("provInUse")));
     else item.appendChild(el("span", { className: "prov-dot" + (p ? "" : " idle") }));
+    if (onRemove) {
+      const del = el("span", {
+        className: "prov-del",
+        title: t("provRemove"),
+        onClick: (ev) => {
+          ev.stopPropagation();
+          if (inUse) { toast(t("provDelBlocked")); return; }
+          onRemove();
+        },
+      }, "\u2715");
+      item.appendChild(del);
+    }
     return item;
   }
 
@@ -257,6 +269,11 @@
           selected: selectedSource === p.provider,
           inUse: defaultProvider === p.provider,
           onSelect: () => select(p.provider),
+          onRemove: async () => {
+            await saveProviders(providers.filter((x) => x.provider !== p.provider));
+            if (selectedSource === p.provider) selectedSource = defaultProvider === p.provider ? "local" : selectedSource;
+            renderAll();
+          },
         }));
       }
       listEl.appendChild(softBtn("+ " + t("provAddProvider"), () => {
@@ -278,8 +295,18 @@
         selected: selectedSource === p.provider,
         inUse: defaultProvider === p.provider,
         onSelect: () => select(p.provider),
+        onRemove: async () => {
+          await saveProviders(providers.filter((x) => x.provider !== p.provider));
+          renderAll();
+        },
       }));
     }
+    // The add button belongs to THIS group (the built-in engine cannot be
+    // "added"), so it sits here — not stranded below the engine entry.
+    listEl.appendChild(softBtn("+ " + t("provAddProvider"), () => {
+      selectedSource = "__add__";
+      renderAll();
+    }, { accent: selectedSource === "__add__" })).classList.add("prov-add-btn");
     // 2. the engine that ships with the pet — LAST, by request
     listEl.appendChild(subGroupTitle(t("provGroupBuiltin")));
     listEl.appendChild(sourceItem({
@@ -288,12 +315,6 @@
       inUse: defaultProvider === "local",
       onSelect: () => select("local"),
     }));
-    // 3. the way IN: without this button the local half had no way to add
-    // LM Studio / Ollama at all ("无法选别的了").
-    listEl.appendChild(softBtn("+ " + t("provAddProvider"), () => {
-      selectedSource = "__add__";
-      renderAll();
-    }, { accent: selectedSource === "__add__" })).classList.add("prov-add-btn");
   }
 
   // ── Right pane: detail for the selected source ─────────────────────────
@@ -359,7 +380,7 @@
     // The llama.cpp engine lives here rather than on the Brain page: it is
     // part of "run the model on this machine". The card itself is owned by
     // the Brain tab module (its health poll feeds it) and adopted here.
-    if (core && core.enginePanel && typeof core.enginePanel.mount === "function") {
+    if (false && core && core.enginePanel && typeof core.enginePanel.mount === "function") {
       const engineHost = el("div", { className: "prov-engine-host" });
       d.appendChild(engineHost);
       core.enginePanel.mount(engineHost);
@@ -389,9 +410,11 @@
           const btn = d.querySelector(".prov-fetch-btn");
           if (btn) btn.disabled = true;
           try {
+            // Local servers ship a dummy key (LM Studio / Ollama ignore
+            // it); there is deliberately no key field on this form.
             const res = await window.settingsAPI.discoverModels({
               baseUrl: urlInp.value.trim(),
-              apiKey: keyInp.value.trim(),
+              apiKey: (p.apiKey || "").trim(),
             });
             if (res && res.ok && Array.isArray(res.models) && res.models.length) {
               modelDl.innerHTML = "";
