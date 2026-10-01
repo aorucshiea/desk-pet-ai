@@ -582,17 +582,13 @@
     }
     if (selectedSource === "local") {
       if (_sourceMode === "cloud") {
-        // Browsing cloud sources while the built-in engine happens to be
-        // in use: rendering its config card here would contradict the
-        // filter the user just chose. Point the way instead.
+        // Cloud mode talks ONLY about cloud. The built-in engine has its
+        // own home under Local models - and per the captain, even
+        // MENTIONING it here is wrong. So: a neutral cloud hint, nothing
+        // about local, no pointers, no engine talk.
         const card = el("div", { className: "section" });
-        card.appendChild(el("div", { className: "prov-detail-title" },
-          el("span", { className: "prov-detail-name" }, t("provLocalInUseTitle"))));
-        card.appendChild(el("p", { className: "prov-detail-desc" }, t("provLocalInUseHint")));
-        card.appendChild(softBtn(t("provLocalInUseGo"), () => {
-          _sourceMode = "local";
-          renderAll();
-        }, { accent: true }));
+        card.appendChild(el("p", { className: "prov-detail-desc" },
+          t("provCloudPickHint")));
         d.appendChild(card);
         return;
       }
