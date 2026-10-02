@@ -110,6 +110,7 @@ function makeContext(snapshotSkills) {
   };
   const window = {};
   const toasts = [];
+  const state = { snapshot: { skills: snapshotSkills } };
   const sandbox = { document, window, Node: doc, console };
   vm.createContext(sandbox);
   vm.runInContext(fs.readFileSync(SRC, "utf8"), sandbox, { filename: "settings-tab-providers.js" });
@@ -121,12 +122,12 @@ function makeContext(snapshotSkills) {
   sandbox.ClawdSettingsTabProviders.init({
     helpers: { t: (k) => k },
     ops: { showToast: (msg) => toasts.push(msg) },
-    state: { snapshot: { skills: snapshotSkills } },
+    state,
     tabs,
   });
   // Mount the page (the settings shell calls core.tabs.providers.render).
   tabs.providers.render(root);
-  return { sandbox, root, doc, toasts, window };
+  return { sandbox, root, doc, toasts, window, state };
 }
 
 function isButton(n) { return n && n.tagName !== "#text" && String(n.tagName).toUpperCase() === "BUTTON"; }
@@ -166,10 +167,16 @@ describe("settings-tab-providers: 添加供应商 pane", () => {
     assert.ok(!text.includes("Ollama"), "cloud add pane must not mention Ollama");
   });
 
-  test("local mode: the same pane shows the two local server presets instead", () => {
+  test("local mode: the same pane shows the two local server presets instead", async () => {
     const { root } = makeContext({ defaultProvider: "local", modelProviders: [] });
-    openAddPane(root);
-    clickMode(root, "provModeLocal"); // selection carries over → add pane re-renders local
+    // Mode switch RESETS the selection: local mode opens on the built-in
+    // engine, not on whatever the cloud half had selected.
+    clickMode(root, "provModeLocal");
+    assert.ok(textOf(root).includes("provStatusChecking"), "local mode opens on the built-in engine");
+
+    const addLocal = findNode(root, (n) => isButton(n) && textOf(n).includes("provAddProvider"));
+    assert.ok(addLocal, "local list has its own add button");
+    await addLocal.click();
 
     const text = textOf(root);
     assert.ok(text.includes("provPresetLmstudioDesc"), "LM Studio preset present");
@@ -187,7 +194,7 @@ describe("settings-tab-providers: 添加供应商 pane", () => {
     vm.createContext(sandbox);
     vm.runInContext(fs.readFileSync(I18N_SRC, "utf8"), sandbox, { filename: "settings-i18n.js" });
     const STRINGS = sandbox.ClawdSettingsI18n.STRINGS;
-    const keys = ["provModeCloud", "provModeLocal", "provAddHintCloud", "provCloudPresets", "provPresetLmstudioDesc", "provPresetOllamaDesc", "provAddProvider", "provManualTitle", "provFetchModels", "provFetchOk", "provFetchFail"];
+    const keys = ["provModeCloud", "provModeLocal", "provAddHintCloud", "provCloudPresets", "provPresetLmstudioDesc", "provPresetOllamaDesc", "provAddProvider", "provManualTitle", "provFetchModels", "provFetchOk", "provFetchFail", "provFetchOffline", "provModelsTitle", "provModelsAdd", "provModelsAddAll", "provCapTools", "provCapImages", "provCapThinking", "provModelsLast", "provCancel"];
     for (const lang of ["en", "zh", "zh-TW", "ko", "ja"]) {
       const block = STRINGS[lang] || {};
       for (const k of keys) {
@@ -213,39 +220,86 @@ describe("settings-tab-providers: 添加供应商 pane", () => {
     assert.ok(!text.includes("provCloudPickHint"), "no cloud hint in local mode");
   });
 
-  test("server detail: 获取模型列表 fills the datalist without a key field", async () => {
-    const { root, toasts, window } = makeContext({
+  test("server detail: 获取模型列表 feeds the model manager without a key field", async () => {
+    const { root, toasts, window, state } = makeContext({
       defaultProvider: "local",
       modelProviders: [{ provider: "lmstudio", apiKey: "lm-studio", baseUrl: "http://127.0.0.1:1234/v1", model: "local-model" }],
     });
-    window.settingsAPI = { discoverModels: async (payload) => {
-      Object.assign(window, { _discoverPayload: payload });
-      return { ok: true, models: ["z-model", "a-model"] };
-    } };
+    window.settingsAPI = {
+      // Mirror the real store: the snapshot the tab renders from must
+      // reflect the save, or renderAll() re-renders stale state.
+      update: async (_key, value) => {
+        state.snapshot.skills = { ...state.snapshot.skills, ...value };
+        window._saved = value;
+      },
+      discoverModels: async (payload) => {
+        Object.assign(window, { _discoverPayload: payload });
+        return { ok: true, models: ["z-model", "a-model"] };
+      },
+    };
 
     clickMode(root, "provModeLocal");
     const lmItem = findNode(root, (n) => isButton(n) && textOf(n).includes("LM Studio"));
     assert.ok(lmItem, "LM Studio source item present");
     await lmItem.click(); // select → renderServerDetail
 
+    // Legacy single-model entry lazily becomes a one-row model list with
+    // the legacy id marked as the active model.
+    const menuList = findNode(root, (n) => n.classList.contains("prov-model-list"));
+    assert.ok(menuList, "model list present");
+    assert.ok(textOf(menuList).includes("local-model"), "legacy model id listed");
+    assert.ok(findNode(root, (n) => n.classList.contains("prov-model-row") && n.classList.contains("is-active")),
+      "legacy id is the active row");
+
     const fetchBtn = findNode(root, (n) => isButton(n) && textOf(n).includes("provFetchModels"));
     assert.ok(fetchBtn, "获取模型列表 button present");
-    await fetchBtn.click(); // async handler: payload → datalist → toast
+    await fetchBtn.click(); // async handler: payload → menu → toast
 
     assert.deepEqual(JSON.parse(JSON.stringify(window._discoverPayload)), {
       baseUrl: "http://127.0.0.1:1234/v1",
       apiKey: "lm-studio",
     }, "discovery payload carries the stored dummy key, not an undefined keyInp");
     // The custom dropdown (NOT a native datalist — that one filters by the
-    // input's current text and reads as dead) lists every discovered id.
+    // input's current text and reads as dead) lists every discovered id
+    // plus the "add all" footer.
     const menu = findNode(root, (n) => n.classList.contains("prov-model-menu"));
     assert.ok(menu, "model dropdown menu present");
     assert.equal(menu.hidden, false, "menu opens after discovery");
-    assert.deepEqual(menu.children.map((o) => textOf(o)), ["z-model", "a-model"], "menu lists discovered ids");
-    menu.children[0].click(); // pick the first model
-    const picked = findNode(root, (n) => n.tagName === "input" && n.value === "z-model");
-    assert.ok(picked, "clicking a menu item fills the model field");
-    assert.equal(menu.hidden, true, "menu closes after picking");
+    assert.deepEqual(menu.children.map((o) => textOf(o)), ["z-model", "a-model", "provModelsAddAll"],
+      "menu lists discovered ids + add-all footer");
     assert.ok(toasts.some((msg) => String(msg).includes("provFetchOk")), "success toast shown");
+
+    // Picking a discovered id activates it AND persists the list entry
+    // (gateway contract: entry.model stays the active id). The legacy
+    // "local-model" entry STAYS in the list — picking adds, it never
+    // silently drops existing entries. Each persist re-renders the pane,
+    // so the menu must be re-located every round (stale nodes belong to a
+    // detached DOM with stale closures).
+    menu.children[0].click(); // z-model
+    await new Promise((r) => setTimeout(r, 0)); // let the async persist settle
+    assert.ok(window._saved, "model pick persisted skills");
+    const savedLm = window._saved.modelProviders.find((x) => x.provider === "lmstudio");
+    assert.equal(savedLm.model, "z-model", "picked id becomes the active model");
+    assert.deepEqual(JSON.parse(JSON.stringify(savedLm.models.map((m) => m.id))), ["local-model", "z-model"],
+      "picked id added to the list, legacy entry kept");
+
+    // "Add all" merges the rest of the discovery result without touching
+    // the active pick. Every persist re-renders, so re-locate the fetch
+    // button each round too (the old one belongs to a detached DOM).
+    await new Promise((r) => setTimeout(r, 0));
+    let fb = findNode(root, (n) => isButton(n) && textOf(n).includes("provFetchModels"));
+    await fb.click();
+    let menu2 = findNode(root, (n) => n.classList.contains("prov-model-menu") && !n.hidden);
+    menu2.children[1].click(); // a-model → picked as active
+    await new Promise((r) => setTimeout(r, 0));
+    fb = findNode(root, (n) => isButton(n) && textOf(n).includes("provFetchModels"));
+    await fb.click();
+    menu2 = findNode(root, (n) => n.classList.contains("prov-model-menu") && !n.hidden);
+    menu2.children[2].click(); // provModelsAddAll
+    await new Promise((r) => setTimeout(r, 0));
+    const merged = window._saved.modelProviders.find((x) => x.provider === "lmstudio");
+    assert.deepEqual(JSON.parse(JSON.stringify(merged.models.map((m) => m.id))), ["local-model", "z-model", "a-model"],
+      "add-all merges without duplicates");
+    assert.equal(merged.model, "a-model", "the last explicit pick stays active");
   });
 });

@@ -124,6 +124,10 @@
     return (id || "?").slice(0, 2).toUpperCase();
   }
 
+  function isLocalId(id) {
+    return id === "local" || id === "lmstudio" || id === "ollama";
+  }
+
   function displayName(p) {
     if (!p) return t("provLocalName");
     if (p.provider === "lmstudio") return "LM Studio";
@@ -154,7 +158,14 @@
       seg.appendChild(el("button", {
         type: "button",
         className: "prov-mode-btn" + (activeMode === opt ? " is-active" : ""),
-        onClick: () => { _sourceMode = opt; renderAll(); },
+        onClick: () => {
+          _sourceMode = opt;
+          // A selection carries over across modes and shows a local
+          // server's detail under the cloud tab (and vice versa). Reset
+          // it; renderDetail picks a mode-appropriate default.
+          selectedSource = null;
+          renderAll();
+        },
       }, t(opt === "cloud" ? "provModeCloud" : "provModeLocal")));
     }
     wrap.appendChild(seg);
@@ -343,22 +354,19 @@
   }
 
   // ── CherryStudio-style model discovery ────────────────────────────────
-  // One factory for every form that has a model field. Replaces the
-  // native <datalist>, which silently filters candidates by the input's
-  // current text — a placeholder like "local-model" matches none of the
-  // discovered ids and the dropdown reads as dead. The custom menu lists
-  // everything the endpoint serves; clicking the input reopens it.
-  function mountModelDiscovery(d, { modelInp, urlInp, getKey }) {
+  // One factory for every form that has a model list. Replaces the native
+  // <datalist>, which silently filters candidates by the input's current
+  // text — a placeholder like "local-model" matches none of the discovered
+  // ids and the dropdown reads as dead. The custom menu lists everything
+  // the endpoint serves; onPick(id) selects one, the footer adds them all.
+  function mountModelDiscovery(d, { urlInp, getKey, onPick, onAddAll }) {
     const menu = el("div", { className: "prov-model-menu" });
     menu.hidden = true;
     d.appendChild(menu);
 
-    modelInp.addEventListener("click", () => {
-      if (menu.childElementCount > 0) menu.hidden = !menu.hidden;
-    });
     const onDocClick = (ev) => {
       if (!menu.isConnected) { document.removeEventListener("click", onDocClick); return; }
-      if (!menu.hidden && !menu.contains(ev.target) && ev.target !== modelInp) menu.hidden = true;
+      if (!menu.hidden && !menu.contains(ev.target)) menu.hidden = true;
     };
     document.addEventListener("click", onDocClick);
 
@@ -373,10 +381,18 @@
           for (const m of res.models) {
             const item = el("button", { type: "button", className: "prov-model-item" }, m);
             item.addEventListener("click", () => {
-              modelInp.value = m;
               menu.hidden = true;
+              if (onPick) onPick(m);
             });
             menu.appendChild(item);
+          }
+          if (onAddAll) {
+            const all = el("button", { type: "button", className: "prov-model-item prov-model-addall" }, t("provModelsAddAll"));
+            all.addEventListener("click", () => {
+              menu.hidden = true;
+              onAddAll(res.models);
+            });
+            menu.appendChild(all);
           }
           menu.hidden = false;
           toast(String(t("provFetchOk")).replace("{n}", String(res.models.length)));
@@ -597,6 +613,223 @@
     }
   }
 
+  // ── Provider model list (CherryStudio-style) ──────────────────────────
+  // A provider serves ONE active model to the gateway (`entry.model`,
+  // unchanged contract) but the user manages a LIST of them: enable /
+  // disable, per-model context window / max output / capabilities, add
+  // from discovery, delete. Legacy entries with a single `model` string
+  // lazily grow the list on first render.
+  function providerModels(p) {
+    const list = Array.isArray(p.models)
+      ? p.models.filter((m) => m && m.id)
+      : [];
+    if (!list.length && p.model) {
+      list.push({
+        id: p.model,
+        enabled: true,
+        contextWindow: p.contextWindow || null,
+        maxOutput: null,
+        capabilities: { tools: true, images: false, thinking: !!p.thinking },
+      });
+    }
+    return list;
+  }
+
+  function renderModelManager(d, { p, providers, skills, urlInp, getKey }) {
+    const id = p.provider;
+    const persist = async (models, activeId) => {
+      const updated = { ...p, models, model: activeId != null ? activeId : p.model };
+      await saveProviders(providers.map((x) => x.provider === id ? updated : x));
+      toast(t("provSaved"));
+      renderAll();
+    };
+
+    const header = el("div", { className: "prov-models-head" });
+    header.appendChild(el("span", { className: "section-title prov-models-title" }, t("provModelsTitle")));
+    header.appendChild(softBtn(t("provFetchModels"), () => fetchModels()));
+    d.appendChild(header);
+
+    const listWrap = el("div", { className: "prov-model-list" });
+    d.appendChild(listWrap);
+
+    const drawList = () => {
+      const models = providerModels(p);
+      listWrap.innerHTML = "";
+      if (!models.length) {
+        listWrap.appendChild(el("div", { className: "prov-subgroup-empty" }, t("provModelsEmpty")));
+      }
+      for (const m of models) {
+        const active = p.model === m.id;
+        const row = el("div", { className: "prov-model-row" + (active ? " is-active" : "") });
+
+        const pick = el("button", {
+          type: "button",
+          className: "prov-model-pick",
+          title: t("provModelsPickHint"),
+          onClick: async () => {
+            if (active) return;
+            await persist(models.map((x) => x.id === m.id ? { ...x, enabled: true } : x), m.id);
+          },
+        });
+        const pickText = el("span", { className: "prov-model-id" }, m.id);
+        pick.appendChild(pickText);
+        if (active) pick.appendChild(el("span", { className: "prov-tag" }, t("provInUse")));
+        else if (m.enabled === false) pick.appendChild(el("span", { className: "prov-model-disabled" }, t("provModelsOff")));
+        row.appendChild(pick);
+
+        if (m.contextWindow) {
+          row.appendChild(el("span", { className: "prov-model-ctx" }, fmtTokens(m.contextWindow)));
+        }
+
+        const sw = switchEl(m.enabled !== false, () => {});
+        sw.addEventListener("click", async () => {
+          // switchEl's own click handler toggled the class first, so the
+          // class now holds the DESIRED state, not the current one.
+          const desired = sw.classList.contains("on");
+          const modelsNow = providerModels(p);
+          if (!desired && active) {
+            const nextEnabled = modelsNow.find((x) => x.id !== m.id && x.enabled !== false);
+            if (!nextEnabled) { toast(t("provModelsLast"), true); renderAll(); return; }
+            await persist(modelsNow.map((x) => x.id === m.id ? { ...x, enabled: false } : x), nextEnabled.id);
+            return;
+          }
+          await persist(modelsNow.map((x) => x.id === m.id ? { ...x, enabled: desired } : x));
+        });
+        const swWrap = el("div", { className: "row-control" });
+        swWrap.appendChild(sw);
+        row.appendChild(swWrap);
+
+        row.appendChild(el("button", {
+          type: "button", className: "prov-model-btn", title: t("provModelsEdit"),
+          onClick: () => drawEditRow(m, row),
+        }, "✎"));
+
+        row.appendChild(el("button", {
+          type: "button", className: "prov-model-btn prov-model-del", title: t("provRemove"),
+          onClick: async () => {
+            const modelsNow = providerModels(p);
+            if (modelsNow.length <= 1) { toast(t("provModelsLast"), true); return; }
+            const wasActive = p.model === m.id;
+            const rest = modelsNow.filter((x) => x.id !== m.id);
+            const nextActive = wasActive
+              ? (rest.find((x) => x.enabled !== false) || rest[0]).id
+              : p.model;
+            await persist(rest, nextActive);
+          },
+        }, "✕"));
+
+        listWrap.appendChild(row);
+      }
+    };
+
+    const fmtTokens = (n) => {
+      const v = Number(n);
+      if (!v || v <= 0) return "";
+      return v >= 1000 ? `${Math.round(v / 1024) || Math.round(v / 1000)}K` : String(v);
+    };
+
+    // Inline editor: one row swaps into inputs for id / context window /
+    // max output / capabilities. Save keeps the gateway contract coherent:
+    // renaming the ACTIVE id also rewrites p.model.
+    const drawEditRow = (m, row) => {
+      row.innerHTML = "";
+      row.classList.add("is-editing");
+      const models = providerModels(p);
+      const idInp = textInput(m.id, { placeholder: t("provModelsIdPh") });
+      const ctxInp = textInput(m.contextWindow, { placeholder: t("provModelsCtxPh") });
+      const outInp = textInput(m.maxOutput, { placeholder: t("provMaxOutput") });
+      row.appendChild(idInp);
+      row.appendChild(ctxInp);
+      row.appendChild(outInp);
+
+      const caps = m.capabilities || {};
+      const cap = (label, checked) => {
+        const wrap = el("label", { className: "prov-cap" });
+        const box = el("input", { type: "checkbox" });
+        box.checked = !!checked;
+        wrap.appendChild(box);
+        wrap.appendChild(el("span", {}, label));
+        return { wrap, box };
+      };
+      const cTools = cap(t("provCapTools"), caps.tools !== false);
+      const cImages = cap(t("provCapImages"), caps.images);
+      const cThink = cap(t("provCapThinking"), caps.thinking);
+      const capWrap = el("div", { className: "prov-caps" });
+      capWrap.appendChild(cTools.wrap); capWrap.appendChild(cImages.wrap); capWrap.appendChild(cThink.wrap);
+      row.appendChild(capWrap);
+
+      const ops = el("div", { className: "prov-model-editops" });
+      ops.appendChild(softBtn(t("provSave"), async () => {
+        const newId = (idInp.value || "").trim();
+        if (!newId) { toast(t("provModelsIdPh"), true); return; }
+        if (newId !== m.id && models.some((x) => x.id === newId)) { toast(t("provModelsDup"), true); return; }
+        const next = models.map((x) => x.id === m.id ? {
+          ...x,
+          id: newId,
+          contextWindow: Number(ctxInp.value) || null,
+          maxOutput: Number(outInp.value) || null,
+          capabilities: { tools: cTools.box.checked, images: cImages.box.checked, thinking: cThink.box.checked },
+        } : x);
+        await persist(next, p.model === m.id ? newId : null);
+      }, { accent: true }));
+      ops.appendChild(softBtn(t("provCancel"), () => renderAll()));
+      row.appendChild(ops);
+    };
+
+    // Compact add row — always visible under the list.
+    let addRow = null;
+    const drawAddRow = () => {
+      if (addRow) addRow.remove();
+      addRow = el("div", { className: "prov-model-add" });
+      const idInp = textInput("", { placeholder: t("provModelsIdPh") });
+      const ctxInp = textInput("", { placeholder: t("provModelsCtxPh") });
+      addRow.appendChild(idInp);
+      addRow.appendChild(ctxInp);
+      addRow.appendChild(softBtn("+ " + t("provModelsAdd"), async () => {
+        const nid = (idInp.value || "").trim();
+        if (!nid) { toast(t("provModelsIdPh"), true); return; }
+        const models = providerModels(p);
+        if (models.some((x) => x.id === nid)) { toast(t("provModelsDup"), true); return; }
+        models.push({
+          id: nid,
+          enabled: true,
+          contextWindow: Number(ctxInp.value) || null,
+          maxOutput: null,
+          capabilities: { tools: true, images: false, thinking: false },
+        });
+        idInp.value = ""; ctxInp.value = "";
+        await persist(models, p.model || nid);
+      }));
+      d.appendChild(addRow);
+    };
+
+    const fetchModels = mountModelDiscovery(d, {
+      urlInp,
+      getKey,
+      onPick: async (picked) => {
+        const models = providerModels(p);
+        const known = models.some((x) => x.id === picked);
+        const next = known
+          ? models.map((x) => x.id === picked ? { ...x, enabled: true } : x)
+          : [...models, { id: picked, enabled: true, contextWindow: null, maxOutput: null, capabilities: { tools: true, images: false, thinking: false } }];
+        await persist(next, picked);
+      },
+      onAddAll: async (ids) => {
+        const models = providerModels(p);
+        const known = new Set(models.map((x) => x.id));
+        for (const mid of ids) {
+          if (!known.has(mid)) {
+            models.push({ id: mid, enabled: false, contextWindow: null, maxOutput: null, capabilities: { tools: true, images: false, thinking: false } });
+          }
+        }
+        await persist(models, p.model);
+      },
+    });
+
+    drawList();
+    drawAddRow();
+  }
+
   function renderServerDetail(d, skills, providers, p) {
     const id = p.provider;
     d.appendChild(el("div", { className: "prov-detail-title" },
@@ -608,15 +841,15 @@
       id === "lmstudio" ? t("provLmstudioDesc") : t("provOllamaDesc")));
 
     const urlInp = textInput(p.baseUrl, { placeholder: id === "lmstudio" ? "http://127.0.0.1:1234/v1" : "http://127.0.0.1:11434/v1" });
-    const modelInp = textInput(p.model, { placeholder: id === "ollama" ? "llama3.2" : "local-model" });
     d.appendChild(fieldRow(t("provFieldUrl"), urlInp));
-    d.appendChild(fieldRow(t("provFieldModel"), modelInp));
-    const fetchServerModels = mountModelDiscovery(d, {
-      modelInp,
+
+    // Model list (CherryStudio-style): pick / enable / edit / add, with
+    // discovery feeding both single pick and "add all".
+    renderModelManager(d, {
+      p, providers, skills,
       urlInp,
       getKey: () => (p.apiKey || "").trim(),
     });
-    d.appendChild(softBtn(t("provFetchModels"), () => fetchServerModels()));
 
     const actions = el("div", { className: "prov-actions" });
     const use = useButton(skills.defaultProvider || "local", id);
@@ -625,7 +858,6 @@
       const updated = {
         ...p,
         baseUrl: urlInp.value.trim() || p.baseUrl,
-        model: modelInp.value.trim() || p.model,
       };
       await saveProviders(providers.map((x) => x.provider === id ? updated : x));
       toast(t("provSaved"));
@@ -648,20 +880,30 @@
 
     d.appendChild(el("p", { className: "prov-detail-desc" }, t("provCustomDesc")));
 
+    // API key with an eye toggle — keys are pasted blind otherwise.
     const keyInp = textInput(p.apiKey, { type: "password", placeholder: "sk-..." });
+    const keyWrap = el("div", { className: "prov-secret" });
+    keyWrap.appendChild(keyInp);
+    const eye = el("button", { type: "button", className: "prov-model-btn", title: t("provKeyReveal") }, "👁");
+    eye.addEventListener("click", () => {
+      const hidden = keyInp.getAttribute("type") === "password";
+      keyInp.setAttribute("type", hidden ? "text" : "password");
+      eye.textContent = hidden ? "🙈" : "👁";
+    });
+    keyWrap.appendChild(eye);
+    const keyField = el("div", { className: "prov-field" });
+    keyField.appendChild(el("span", { className: "prov-field-label" }, t("provFieldKey")));
+    keyField.appendChild(keyWrap);
+    d.appendChild(keyField);
+
     const urlInp = textInput(p.baseUrl, { placeholder: "https://api.deepseek.com/v1" });
-    const modelInp = textInput(p.model, { placeholder: "deepseek-chat" });
-    const ctxInp = textInput(p.contextWindow, { placeholder: "131072" });
-    d.appendChild(fieldRow(t("provFieldKey"), keyInp));
     d.appendChild(fieldRow(t("provFieldUrl"), urlInp));
-    d.appendChild(fieldRow(t("provFieldModel"), modelInp));
-    const fetchEditModels = mountModelDiscovery(d, {
-      modelInp,
+
+    renderModelManager(d, {
+      p, providers, skills,
       urlInp,
       getKey: () => keyInp.value.trim(),
     });
-    d.appendChild(softBtn(t("provFetchModels"), () => fetchEditModels()));
-    d.appendChild(fieldRow(t("provFieldContext"), ctxInp));
 
     const thinkRow = el("div", { className: "prov-field" });
     thinkRow.appendChild(el("span", { className: "prov-field-label" }, t("provThinking")));
@@ -687,10 +929,8 @@
         ...p,
         apiKey: keyInp.value.trim() || p.apiKey,
         baseUrl: urlInp.value.trim() || "https://api.openai.com/v1",
-        model: modelInp.value.trim() || null,
         thinking: thinkCb.classList.contains("on"),
         reasoningEffort: effortSel.value || null,
-        contextWindow: Number(ctxInp.value) || null,
       };
       await saveProviders(providers.map((x) => x.provider === id ? updated : x));
       toast(t("provSaved"));
@@ -843,7 +1083,15 @@
   function renderDetail(d, skills, providers) {
     d.innerHTML = "";
     const defaultProvider = skills.defaultProvider || "local";
-    if (!selectedSource) selectedSource = defaultProvider;
+    if (!selectedSource) {
+      // Mode-appropriate default: never open a local server's detail under
+      // the cloud tab (or the reverse) just because it happens to be the
+      // active provider.
+      const mode = _sourceMode || "cloud";
+      selectedSource = mode === "cloud"
+        ? (isLocalId(defaultProvider) ? "local" : defaultProvider)
+        : (isLocalId(defaultProvider) ? defaultProvider : "local");
+    }
 
     if (selectedSource === "__add__") {
       renderAddDetail(d, skills, providers);
@@ -882,7 +1130,12 @@
   function renderContent(parent) {
     const skills = (core.state.snapshot && core.state.snapshot.skills) || {};
     const providers = Array.isArray(skills.modelProviders) ? [...skills.modelProviders] : [];
-    if (!selectedSource) selectedSource = skills.defaultProvider || "local";
+    if (!selectedSource) {
+      const mode = _sourceMode || "cloud";
+      selectedSource = mode === "cloud"
+        ? (isLocalId(skills.defaultProvider || "local") ? "local" : (skills.defaultProvider || "local"))
+        : (isLocalId(skills.defaultProvider || "local") ? (skills.defaultProvider || "local") : "local");
+    }
     // A stale selection (provider removed on disk) falls back in renderDetail.
 
     // renderStateRow (the "现在用它说话" card) was removed on purpose:

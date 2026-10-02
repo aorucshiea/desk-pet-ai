@@ -948,6 +948,136 @@ html, body {
 .prov-model-item:hover {
   background: rgba(var(--accent-rgb), 0.12);
 }
+/* ── Provider model list (CherryStudio-style) ── */
+.prov-models-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 14px 0 6px;
+}
+.prov-models-title {
+  margin: 0;
+}
+.prov-model-list {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.prov-model-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel-bg);
+}
+.prov-model-row:last-child {
+  border-bottom: 0;
+}
+.prov-model-row.is-active {
+  background: rgba(var(--accent-rgb), 0.06);
+}
+.prov-model-pick {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 4px 6px;
+  border: 0;
+  background: transparent;
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  text-align: left;
+}
+.prov-model-id {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.prov-model-ctx {
+  flex: 0 0 auto;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgba(var(--accent-rgb), 0.12);
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+.prov-model-disabled {
+  color: var(--text-tertiary);
+  font-size: 11px;
+}
+.prov-model-btn {
+  flex: 0 0 auto;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  font-family: inherit;
+}
+.prov-model-btn:hover {
+  background: rgba(var(--accent-rgb), 0.12);
+  color: var(--text-primary);
+}
+.prov-model-del:hover {
+  color: #e5484d;
+}
+.prov-model-row.is-editing {
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.prov-model-row.is-editing .prov-input {
+  flex: 1 1 130px;
+  min-width: 0;
+}
+.prov-caps {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  width: 100%;
+}
+.prov-cap {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.prov-model-editops {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+}
+.prov-model-add {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+.prov-model-add .prov-input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.prov-secret {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.prov-secret .prov-input {
+  flex: 1 1 auto;
+}
+.prov-model-addall {
+  color: var(--accent);
+  font-weight: 600;
+}
 .prov-preset-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
