@@ -105,6 +105,8 @@ function makeContext(snapshotSkills) {
   const document = {
     createElement: (tag) => new doc(tag),
     createTextNode: (txt) => makeText(txt),
+    addEventListener() {},
+    removeEventListener() {},
   };
   const window = {};
   const toasts = [];
@@ -234,9 +236,16 @@ describe("settings-tab-providers: 添加供应商 pane", () => {
       baseUrl: "http://127.0.0.1:1234/v1",
       apiKey: "lm-studio",
     }, "discovery payload carries the stored dummy key, not an undefined keyInp");
-    const dl = findNode(root, (n) => n.tagName === "datalist" && n.attrs && n.attrs.id === "prov-model-dl");
-    assert.ok(dl, "model datalist present");
-    assert.deepEqual(dl.children.map((o) => o.value), ["z-model", "a-model"], "datalist filled with discovered ids");
+    // The custom dropdown (NOT a native datalist — that one filters by the
+    // input's current text and reads as dead) lists every discovered id.
+    const menu = findNode(root, (n) => n.classList.contains("prov-model-menu"));
+    assert.ok(menu, "model dropdown menu present");
+    assert.equal(menu.hidden, false, "menu opens after discovery");
+    assert.deepEqual(menu.children.map((o) => textOf(o)), ["z-model", "a-model"], "menu lists discovered ids");
+    menu.children[0].click(); // pick the first model
+    const picked = findNode(root, (n) => n.tagName === "input" && n.value === "z-model");
+    assert.ok(picked, "clicking a menu item fills the model field");
+    assert.equal(menu.hidden, true, "menu closes after picking");
     assert.ok(toasts.some((msg) => String(msg).includes("provFetchOk")), "success toast shown");
   });
 });

@@ -381,7 +381,17 @@
           menu.hidden = false;
           toast(String(t("provFetchOk")).replace("{n}", String(res.models.length)));
         } else {
-          toast((res && res.error) || t("provFetchFail"), true);
+          const raw = (res && res.error) || "";
+          const target = urlInp.value.trim();
+          if (/connect/i.test(raw) && target) {
+            // Refused/failed connection to the endpoint itself — the local
+            // server is probably not running (LM Studio closed, Ollama
+            // stopped, wrong URL). Name the target: "All connection
+            // attempts failed" alone reads as a mystery.
+            toast(`${t("provFetchOffline")} · ${target}`, true);
+          } else {
+            toast(raw || t("provFetchFail"), true);
+          }
         }
       } catch (err) {
         toast(String(err), true);
