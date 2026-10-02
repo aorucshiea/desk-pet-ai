@@ -1,73 +1,22 @@
-"""``memory`` builtin tool — the model's write surface into long-term memory.
+"""``memory`` builtin tool — the model's write surface into its own
+「记忆」 folder (free-form memory tree).
 
-Ported from hermes-agent ``tools/memory_tool.py``'s ``memory_tool()`` dispatch
-and ``MEMORY_SCHEMA``. Adapted to the desk-pet gateway's MCP ``register_builtin``
-handler signature: the handler is an async callable taking ``arguments: dict``
-and returning a result dict with ``content`` / ``is_error`` / ``summary``.
+机长 2026-10-02：这俩专门的类别记忆（MEMORY.md / USER.md）根本不需要存在。
+总体就新建一个文件夹「记忆」，模型自己创建文件夹写各种不同类型的记忆
+（经验 / 经历 / 技能 / 知识……结构自定），也可以直接在根部写「记忆.md」。
 
-The store itself is owned by ``server.py`` (one per process, booted in the
-lifespan) and injected here via :func:`set_memory_store`. This indirection
-keeps ``tool.py`` importable without a running sidecar (the tests pass a
-fresh ``MemoryStore`` directly to :func:`memory_dispatch`).
+The file store (:class:`gateway.memory.files.MemoryFiles`) enforces the
+sandbox — everything stays inside 记忆/, UTF-8, .md only, bounded sizes.
+Wired via :func:`set_memory_files` from memory_context (per active theme,
+so 换主题 = 换灵魂 while the folder structure follows the soul).
 """
 
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
-from .store import MemoryStore
-
-
-# Module-level singleton, set by server.py at boot. ``None`` means the
-# memory subsystem hasn't been wired up yet — tool calls fail soft rather
-# than crash the chat turn.
-_memory_store: Optional[MemoryStore] = None
-
-
-def set_memory_store(store: Optional[MemoryStore]) -> None:
-    """Inject the process-wide MemoryStore (called once from server.py lifespan)."""
-    global _memory_store
-    _memory_store = store
-
-
-def get_memory_store() -> Optional[MemoryStore]:
-    return _memory_store
-
-
-# ----------------------------------------------------------------------
-# Error helpers — recoverable shapes that tell the model how to retry
-# ----------------------------------------------------------------------
-
-def _tool_error(message: str) -> str:
-    """JSON string for a hard tool error (caller wraps into MCP result)."""
-    return json.dumps({"success": False, "error": message}, ensure_ascii=False)
-
-
-def _missing_old_text_error(store: MemoryStore, target: str, action: str) -> str:
-    """Recoverable error for replace/remove called without ``old_text``.
-
-    replace/remove are inherently targeted — without ``old_text`` there's no
-    entry to act on. A bare "old_text is required" is a dead-end for a small
-    model that just omitted the field, so we return the current inventory +
-    an explicit retry instruction. Mirrors the batch path's shape.
-    """
-    entries = store._entries_for(target)
-    current = store._char_count(target)
-    limit = store._char_limit(target)
-    return json.dumps(
-        {
-            "success": False,
-            "error": (
-                f"'{action}' needs old_text — a short unique substring of the entry "
-                f"to {action}. None was provided. Reissue the {action} with old_text "
-                f"set to part of one of the current_entries below."
-            ),
-            "current_entries": entries,
-            "usage": f"{current:,}/{limit:,}",
-        },
-        ensure_ascii=False,
-    )
+from .files import MAIN_FILE_NAME, MemoryFiles, get_memory_files
 
 
 # ----------------------------------------------------------------------
@@ -77,56 +26,39 @@ def _missing_old_text_error(store: MemoryStore, target: str, action: str) -> str
 def memory_dispatch(
     *,
     action: Optional[str] = None,
-    target: Optional[str] = "memory",
+    path: Optional[str] = None,
     content: Optional[str] = None,
-    old_text: Optional[str] = None,
-    operations: Optional[List[Dict[str, Any]]] = None,
-    store: Optional[MemoryStore] = None,
+    files: Optional[MemoryFiles] = None,
 ) -> Dict[str, Any]:
-    """Dispatch a memory tool call to the store. Returns the store result dict.
-
-    Two shapes:
-      - Single op: ``action`` + (``content`` / ``old_text``).
-      - Batch:     ``operations=[{action, content?, old_text?}, ...]`` applied
-                   atomically against the final char budget in ONE call.
-    """
-    store = store if store is not None else _memory_store
+    """Dispatch a memory tool call to the 记忆 file store."""
+    store = files if files is not None else get_memory_files()
     if store is None:
         return {"success": False, "error": "Memory is not available in this environment."}
 
-    # Strict providers fill optional schema fields with JSON null. Treat
-    # ``target: null`` as omitted so writes use the default store.
-    if target is None:
-        target = "memory"
-    if target not in {"memory", "user"}:
-        return {"success": False, "error": f"Invalid target '{target}'. Use 'memory' or 'user'."}
+    if action == "list":
+        tree = store.tree()
+        return {
+            "success": True,
+            "tree": tree,
+            "note": (
+                "当前记忆文件夹内容（相对「记忆/」的路径）。空树就用 write 建第一个文件，"
+                f"或直接写主记忆 {MAIN_FILE_NAME}。"
+            ),
+        }
+    if action == "read":
+        if not path:
+            return {"success": False, "error": "path is required for read"}
+        return store.read(path)
+    if action == "write":
+        if not path:
+            return {"success": False, "error": "path is required for write"}
+        return store.write(path, content or "")
+    if action == "delete":
+        if not path:
+            return {"success": False, "error": "path is required for delete"}
+        return store.delete(path)
 
-    # --- Batch path ----------------------------------------------------
-    if operations:
-        if not isinstance(operations, list):
-            return {"success": False, "error": "operations must be a list of {action, content?, old_text?} objects."}
-        return store.apply_batch(target, operations)
-
-    # --- Single-op path ------------------------------------------------
-    if action == "add" and not content:
-        return {"success": False, "error": "Content is required for 'add' action."}
-    if action == "replace" and (not old_text or not content):
-        if not old_text:
-            # Model omitted old_text — can't guess which entry. Return the
-            # inventory + retry instruction instead of a dead-end error.
-            return json.loads(_missing_old_text_error(store, target, "replace"))
-        return {"success": False, "error": "content is required for 'replace' action."}
-    if action == "remove" and not old_text:
-        return json.loads(_missing_old_text_error(store, target, "remove"))
-
-    if action == "add":
-        return store.add(target, content or "")
-    if action == "replace":
-        return store.replace(target, old_text or "", content or "")
-    if action == "remove":
-        return store.remove(target, old_text or "")
-
-    return {"success": False, "error": f"Unknown action '{action}'. Use: add, replace, remove"}
+    return {"success": False, "error": f"Unknown action '{action}'. Use: list, read, write, delete"}
 
 
 # ----------------------------------------------------------------------
@@ -137,14 +69,16 @@ async def memory_tool_handler(args: dict) -> Dict[str, Any]:
     """MCP ``register_builtin`` handler. Returns ``{content, is_error, summary}``."""
     result = memory_dispatch(
         action=args.get("action"),
-        target=args.get("target", "memory"),
+        path=args.get("path"),
         content=args.get("content"),
-        old_text=args.get("old_text"),
-        operations=args.get("operations"),
     )
     is_error = not result.get("success", False)
+    if result.get("action_ok") is False:
+        is_error = True
     text = json.dumps(result, ensure_ascii=False)
-    summary = result.get("error") or result.get("message") or result.get("note") or "memory updated"
+    summary = result.get("error") or result.get("note") or result.get("message") or "memory updated"
+    if result.get("path"):
+        summary = f"{result.get('path')}: {summary}"
     return {
         "content": [{"type": "text", "text": text}],
         "is_error": is_error,
@@ -159,62 +93,40 @@ async def memory_tool_handler(args: dict) -> Dict[str, Any]:
 MEMORY_TOOL_SCHEMA = {
     "name": "memory",
     "description": (
-        "Save durable facts to persistent memory that survive across restarts. "
-        "Memory is injected into every future turn, so keep entries compact and high-signal.\n\n"
-        "HOW: make ALL changes in ONE call via an 'operations' array (each item: "
-        "{action, content?, old_text?}). The batch applies atomically and the char limit "
-        "is checked only on the FINAL result — so one call can remove/replace stale entries "
-        "to free room AND add new ones, even when an add alone would overflow. Use the bare "
-        "action/content/old_text fields only for a single lone change.\n\n"
-        "WHEN: save proactively when the user states a preference, correction, or personal "
-        "detail, or you learn a stable fact about their environment, conventions, or workflow. "
-        "Priority: user preferences & corrections > environment facts > procedures.\n\n"
-        "IF FULL: an add is rejected with the current entries shown. Reissue as ONE batch "
-        "that removes/shortens stale entries and adds the new one together.\n\n"
-        "TARGETS: 'user' = who the user is (name, preferences, style). 'memory' = your own "
-        "notes (environment, conventions, lessons).\n\n"
-        "SKIP: trivial/obvious info, easily re-discovered facts, raw data dumps, task progress."
+        "你的持久记忆是一个名为「记忆」的文件夹——结构完全由你自己决定：建子文件夹分类"
+        "（经验 / 经历 / 技能 / 知识……名字随你），在里面写 .md 文件；也可以直接在根部写"
+        "「记忆.md」当你的主记忆（它每轮对话都会完整加载给你）。跨重启还在。\n\n"
+        "ACTIONS:\n"
+        "- list：看当前目录结构（何时用：不确定自己记过什么、要决定写进哪个文件时）\n"
+        "- read {path}：读一个记忆文件\n"
+        "- write {path, content}：写 / 新建（路径不存在会自动建文件夹）。content 用 markdown，"
+        "写事实与你的理解，别写流水账\n"
+        "- delete {path}：删掉过时文件\n\n"
+        "WHEN: 用户说出偏好/事实/纠正，你学到约定或教训，你对自己有了新感悟——立刻写。"
+        "没写进记忆的事，等于没发生过。\n"
+        "STYLE: 一个主题一个文件，短而高信号；过时的内容更新而不是堆叠；主记忆 记忆.md 保持"
+        "分段（我的感悟 / 我之所以是我 / 我的独特性 / 我要成为什么 / 我目前在做什么 / 我做到了什么）。"
     ),
     "input_schema": {
         "type": "object",
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["add", "replace", "remove"],
-                "description": "Single-op action. Omit when using 'operations'.",
+                "enum": ["list", "read", "write", "delete"],
+                "description": "对「记忆」文件夹的操作。",
             },
-            "target": {
+            "path": {
                 "type": "string",
-                "enum": ["memory", "user"],
-                "description": "'memory' for your own notes, 'user' for the user profile.",
-                "default": "memory",
+                "description": (
+                    "相对「记忆/」的路径，.md 结尾。例：记忆.md、经验/用户偏好.md、"
+                    "技能/debug心得.md。文件夹不存在时 write 会自动创建。"
+                ),
             },
             "content": {
                 "type": "string",
-                "description": "Entry content. Required for 'add' and 'replace' (single-op).",
-            },
-            "old_text": {
-                "type": "string",
-                "description": "REQUIRED for 'replace' and 'remove' (single-op): a short unique substring identifying the existing entry to modify. Omit only for 'add'.",
-            },
-            "operations": {
-                "type": "array",
-                "description": (
-                    "Batch shape: a list of operations applied atomically in one call "
-                    "against the final char budget. Preferred for multiple changes or "
-                    "consolidation. Each item is {action, content?, old_text?}."
-                ),
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "action": {"type": "string", "enum": ["add", "replace", "remove"]},
-                        "content": {"type": "string"},
-                        "old_text": {"type": "string"},
-                    },
-                    "required": ["action"],
-                },
+                "description": "文件内容（markdown）。仅 write 需要。",
             },
         },
-        "required": ["target"],
+        "required": ["action"],
     },
 }

@@ -46,7 +46,6 @@ from .memory.events import parse_event_block, promote_core
 from .memory.tool import (
     MEMORY_TOOL_SCHEMA,
     memory_tool_handler,
-    set_memory_store,
 )
 from .memory import impulse as _impulse_module
 from .memory import recall as _recall_module
@@ -1522,17 +1521,18 @@ def build_app(
 
     @app.get("/api/memory")
     async def get_memory_snapshot():
-        """Return the frozen MEMORY.md + USER.md blocks for system-prompt injection.
+        """Return the model-owned 「记忆」 folder for system-prompt injection.
 
         The renderer calls this once per fetchSkillsContext cache window and
-        prepends the blocks to the chat system prompt. Snapshot is frozen at
-        boot — mid-session writes persist to disk but only refresh the
-        snapshot on next sidecar restart, preserving the provider prefix cache.
+        injects the folder tree + the 记忆.md main file into the chat system
+        prompt. Mid-session tool writes persist to disk immediately; the tree
+        is read live so the model always sees its own latest structure.
         """
+        files = mem_ctx.memory_files()
         return {
-            "memory": memory_store.format_for_system_prompt("memory") or "",
-            "user": memory_store.format_for_system_prompt("user") or "",
-            "memory_dir": str(memory_dir),
+            "memory_dir": str(files.root),
+            "tree": files.tree(),
+            "root_md": files.read_main(),
             "theme": mem_ctx.current_theme,
         }
 
@@ -3323,17 +3323,20 @@ async def _stream_chat_provider(
         except Exception as exc:
             log.warning("gateway-side extraction failed: %s", exc)
 
+    _tail_from_think = ""
     for ev in think_filter.flush():
         if ev.get("event") == "delta":
-            clean = narration_filter.feed(
-                tag_filter.feed(ev["content"]) + tag_filter.flush()
-            ) + narration_filter.flush()
+            _tail_from_think += tag_filter.feed(ev["content"]) + tag_filter.flush()
             while _walk_queue:
                 yield _sse(_walk_queue.pop(0))
-            if clean:
-                yield _sse({"event": "delta", "content": clean})
         else:
             yield _sse(ev)
+    # The narration filter holds the last (newline-less) line of the reply
+    # in its buffer — flush it unconditionally, think_filter.flush() may
+    # legitimately have nothing left to say.
+    _clean_tail = narration_filter.feed(_tail_from_think) + narration_filter.flush()
+    if _clean_tail:
+        yield _sse({"event": "delta", "content": _clean_tail})
 
     # ── Emotion tag extraction ──
     # The LLM is instructed (via system prompt) to end replies with

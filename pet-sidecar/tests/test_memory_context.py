@@ -104,8 +104,9 @@ class TestSwitch:
         assert ctx.event_store.event_count() == 1
 
     def test_singletons_reinjected(self, ctx):
+        from gateway.memory import files as files_mod
         from gateway.memory import recall
-        from gateway.memory import tool
         ctx.switch("cybercat")
         assert recall.get_event_store() is ctx.event_store
-        assert tool.get_memory_store() is ctx.memory_store
+        assert files_mod.get_memory_files() is not None
+        assert files_mod.get_memory_files().root == ctx.memory_files().root

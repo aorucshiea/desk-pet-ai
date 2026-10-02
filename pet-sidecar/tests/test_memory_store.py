@@ -15,7 +15,8 @@ from pathlib import Path
 import pytest
 
 from gateway.memory import ENTRY_DELIMITER, MemoryStore
-from gateway.memory.tool import memory_dispatch, memory_tool_handler, set_memory_store
+from gateway.memory.files import MemoryFiles
+from gateway.memory.tool import memory_dispatch, memory_tool_handler
 
 
 @pytest.fixture
@@ -305,63 +306,87 @@ def test_consolidation_failure_budget_eventually_goes_terminal(store: MemoryStor
 
 
 # ----------------------------------------------------------------------
-# tool dispatch + MCP handler
+# tool dispatch + MCP handler — the 「记忆」 folder contract (2026-10-02)
 # ----------------------------------------------------------------------
 
-def test_dispatch_routes_to_add(store: MemoryStore):
-    r = memory_dispatch(action="add", target="memory", content="test", store=store)
+def _files(tmp_path: Path) -> MemoryFiles:
+    return MemoryFiles(tmp_path / "mem")
+
+
+def test_dispatch_write_and_read_roundtrip(tmp_path: Path):
+    f = _files(tmp_path)
+    r = memory_dispatch(action="write", path="经验/用户偏好.md", content="用户喜欢简洁", files=f)
+    assert r["success"] is True and r["path"] == "经验/用户偏好.md"
+    r = memory_dispatch(action="read", path="经验/用户偏好.md", files=f)
+    assert r["success"] is True and "用户喜欢简洁" in r["content"]
+
+
+def test_dispatch_list_returns_tree(tmp_path: Path):
+    f = _files(tmp_path)
+    memory_dispatch(action="write", path="记忆.md", content="# 我", files=f)
+    memory_dispatch(action="write", path="技能/debug.md", content="x", files=f)
+    r = memory_dispatch(action="list", files=f)
     assert r["success"] is True
+    assert r["tree"] == ["技能/debug.md", "记忆.md"]
 
 
-def test_dispatch_unknown_action(store: MemoryStore):
-    r = memory_dispatch(action="frobnicate", store=store)
-    assert r["success"] is False
-    assert "Unknown action" in r["error"]
+def test_dispatch_write_creates_folders(tmp_path: Path):
+    f = _files(tmp_path)
+    r = memory_dispatch(action="write", path="知识/新领域/笔记.md", content="x", files=f)
+    assert r["success"] is True
+    assert (f.root / "知识" / "新领域" / "笔记.md").is_file()
 
 
-def test_dispatch_invalid_target(store: MemoryStore):
-    r = memory_dispatch(action="add", target="bogus", content="x", store=store)
-    assert r["success"] is False
-    assert "Invalid target" in r["error"]
+def test_dispatch_rejects_traversal_and_non_md(tmp_path: Path):
+    f = _files(tmp_path)
+    for bad in ["../escape.md", "C:/x.md", "note.txt", ""]:
+        r = memory_dispatch(action="write", path=bad, content="x", files=f)
+        assert r["success"] is False, bad
 
 
-def test_dispatch_replace_without_old_text_returns_inventory(store: MemoryStore):
-    """A missing old_text must not be a dead end — return the inventory + retry hint."""
-    store.add("memory", "用户叫小明")
-    r = memory_dispatch(action="replace", target="memory", content="x", store=store)
-    assert r["success"] is False
-    assert "current_entries" in r
-    assert "用户叫小明" in r["current_entries"]
+def test_dispatch_delete(tmp_path: Path):
+    f = _files(tmp_path)
+    memory_dispatch(action="write", path="旧.md", content="x", files=f)
+    r = memory_dispatch(action="delete", path="旧.md", files=f)
+    assert r["success"] is True
+    assert memory_dispatch(action="read", path="旧.md", files=f)["success"] is False
 
 
-def test_dispatch_no_store_returns_error():
-    set_memory_store(None)
-    r = memory_dispatch(action="add", target="memory", content="x")
-    assert r["success"] is False
-    assert "not available" in r["error"].lower()
+def test_dispatch_no_files_returns_error():
+    from gateway.memory import files as files_mod
+    old = files_mod.get_memory_files()
+    files_mod.set_memory_files(None)
+    try:
+        r = memory_dispatch(action="list")
+        assert r["success"] is False
+        assert "not available" in r["error"].lower()
+    finally:
+        files_mod.set_memory_files(old)
 
 
-def test_mcp_handler_returns_mcp_shape(store: MemoryStore):
-    set_memory_store(store)
-    r = asyncio.run(memory_tool_handler({"action": "add", "target": "memory", "content": "via handler"}))
+def test_mcp_handler_returns_mcp_shape(tmp_path: Path):
+    from gateway.memory import files as files_mod
+    f = _files(tmp_path)
+    old = files_mod.get_memory_files()
+    files_mod.set_memory_files(f)
+    try:
+        r = asyncio.run(memory_tool_handler({"action": "write", "path": "记忆.md", "content": "# 我的灵魂档案"}))
+    finally:
+        files_mod.set_memory_files(old)
     assert r["is_error"] is False
-    assert r["content"][0]["type"] == "text"
     parsed = json.loads(r["content"][0]["text"])
     assert parsed["success"] is True
+    assert parsed["path"] == "记忆.md"
 
 
-def test_mcp_handler_error_path_is_marked(store: MemoryStore):
-    set_memory_store(store)
-    r = asyncio.run(memory_tool_handler({"action": "bogus"}))
+def test_mcp_handler_unknown_action(tmp_path: Path):
+    from gateway.memory import files as files_mod
+    f = _files(tmp_path)
+    old = files_mod.get_memory_files()
+    files_mod.set_memory_files(f)
+    try:
+        r = asyncio.run(memory_tool_handler({"action": "bogus"}))
+    finally:
+        files_mod.set_memory_files(old)
     assert r["is_error"] is True
-    assert "error" in r["summary"].lower() or "unknown" in r["summary"].lower()
-
-
-def test_mcp_handler_batch(store: MemoryStore):
-    set_memory_store(store)
-    args = {"operations": [
-        {"action": "add", "content": "a"},
-        {"action": "add", "content": "b"},
-    ]}
-    r = asyncio.run(memory_tool_handler(args))
-    assert r["is_error"] is False
+    assert "unknown" in r["summary"].lower()

@@ -28,6 +28,7 @@ from typing import Optional
 from .memory.events import EventStore
 from .memory.mood import MoodStore
 from .memory.store import MemoryStore
+from .memory.files import MemoryFiles, set_memory_files
 from .memory import continuity
 from .memory import loader
 from .memory import resonance as _resonance_module
@@ -75,12 +76,18 @@ class MemoryContext:
 
     def _inject_singletons(self) -> None:
         """Point the module-level singletons at the active stores."""
-        from .memory.tool import set_memory_store
+        from .memory.files import set_memory_files
         from .memory.recall import set_event_store
-        set_memory_store(self.memory_store)
+        set_memory_files(self.memory_files())
         set_event_store(self.event_store)
         _resonance_module.set_vector_store(self.theme_dir(self.current_theme))
         loader.reset_session()
+
+    def memory_files(self) -> MemoryFiles:
+        """The model-owned 「记忆」 folder for the active theme (换主题 =
+        换灵魂 — the free-form memory tree follows the soul, like
+        MEMORY.md / USER.md did). Rebuilt per call; cheap."""
+        return MemoryFiles(self.theme_dir(self.current_theme))
 
     # ------------------------------------------------------------------
     # Switching
