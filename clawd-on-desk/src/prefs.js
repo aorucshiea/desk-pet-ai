@@ -179,6 +179,14 @@ const SCHEMA = {
   keepSizeAcrossDisplays: { type: "boolean", default: false },
   // Free roam: when enabled and the pet is idle, it will wander around the screen
   freeRoam: { type: "boolean", default: false },
+  // 桌面物理（前瞻 02 P0）：重力地板 + 任务栏刚体。默认开；关掉回到「固定位置」行为。
+  physicsWorld: { type: "boolean", default: true },
+  // 重力强度 px/s²（DIP 屏坐标）。1000=气球飘落 …… 6400=默认手感 …… 12000=陨石。
+  physicsGravity: {
+    type: "number",
+    default: 6400,
+    validate: (v) => Number.isFinite(v) && v >= 1000 && v <= 12000,
+  },
   // Text-window zoom (bubbles, HUD, dashboard, settings, resume input). The
   // pet itself scales via `size` and is never zoomed. `textScale` is the
   // global default; `textScaleByDisplay` overrides it per display id (the

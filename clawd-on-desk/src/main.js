@@ -3564,7 +3564,8 @@ if (!gotTheLock) {
     // 外部写入（用户拖拽）经位置偏离检测让位 500ms。
     let worldRuntime = null;
     try {
-      if (process.env.PET_PHYSICS !== "0") {
+      const physicsEnabled = _settingsController.get("physicsWorld") !== false;
+      if (process.env.PET_PHYSICS !== "0" && physicsEnabled) {
         const createWorldGeometry = require("./world-geometry");
         const createWorldPhysics = require("./world-physics");
         const worldGeometry = createWorldGeometry({ screen, isWin });
@@ -3579,6 +3580,8 @@ if (!gotTheLock) {
             const r = petWindowRuntime.getObjRect(b);
             return r ? r.y + r.h : null; // null → 模块内 fallback 到窗口底
           },
+          // 重力 live-read：设置页「桌面物理」改完下一 tick 生效
+          getGravity: () => Number(_settingsController.get("physicsGravity")) || 0,
           guards: [
             () => petWindowRuntime.isDragLocked(),
             () => petWindowRuntime.isPetHidden(),

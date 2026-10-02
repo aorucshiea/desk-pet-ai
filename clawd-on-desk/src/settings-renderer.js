@@ -24,6 +24,7 @@ const SIDEBAR_TABS = [
   { id: "emotion", labelKey: "sidebarEmotion", available: true, keywords: "情绪 表情 心情 情感 emotion mood feeling" },
   { id: "proactive", labelKey: "sidebarProactive", available: true, keywords: "主动 主动说话 搭话 搭讪 冲动 开口 proactive impulse initiate" },
   { id: "shortcuts", labelKey: "sidebarShortcuts", available: true, keywords: "快捷键 热键 按键 组合键 shortcut hotkey keybinding" },
+  { id: "physics", labelKey: "sidebarPhysics", available: true, keywords: "物理 重力 掉落 地板 任务栏 桌面物理 physics gravity floor taskbar" },
   { id: "skills", labelKey: "sidebarSkills", available: true, keywords: "技能 记忆技能 学会 skill learn" },
   { id: "screenclick", labelKey: "sidebarScreenClick", available: true, keywords: "屏幕 看图 截图 屏幕点击 视觉 识别 画面 screen click vision ocr capture" },
   { id: "mcp", labelKey: "sidebarMcp", available: true, keywords: "MCP 工具 外部工具 服务器 mcp tool server" },
@@ -168,6 +169,7 @@ if (globalThis.ClawdSettingsTabMcp) globalThis.ClawdSettingsTabMcp.init(core);
 if (globalThis.ClawdSettingsTabEvolve) globalThis.ClawdSettingsTabEvolve.init(core);
 if (globalThis.ClawdSettingsTabMemory) globalThis.ClawdSettingsTabMemory.init(core);
 if (globalThis.ClawdSettingsTabHistory) globalThis.ClawdSettingsTabHistory.init(core);
+if (globalThis.ClawdSettingsTabPhysics) globalThis.ClawdSettingsTabPhysics.init(core);
 // ── Split "Theme" and "Animation map" back into two pages ─────────────
 // The theme page hosts only the theme picker again. The animation-map page
 // hosts the map rows plus the animation/sound-override section (each with

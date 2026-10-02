@@ -19,7 +19,7 @@
  */
 
 const DEFAULTS = {
-  gravity: 3200,          // px/s^2 — 500px 掉落 ≈ 0.56s（真机钉过手感区间）
+  gravity: 6400,          // px/s^2 — 真机手感钉：~0.29s 掉半屏，有地心引力的"砸下去"感
   tickMs: 16,             // 请求 16ms；主进程实际 ~50ms——解析式不依赖它
   settleEpsPx: 0.6,       // 贴地判定容差
   externalHoldMs: 500,    // 外部位置变化后的让位时间
@@ -33,6 +33,8 @@ function createWorldPhysics(options) {
   const guards = options.guards || [];               // Array<() => boolean> true=suspend
   const cfg = Object.assign({}, DEFAULTS, options.config);
   const onLanded = options.onLanded || null;         // (vy) => void — A4 供 somatic 上报
+  // 重力 live-read：设置页改完下一 tick 生效，无需重启
+  const getGravity = options.getGravity || (() => cfg.gravity);
   // 内容矩形底边（视觉贴地锚点）。缺实现时退化为窗口底（行为=旧版）。
   const getContentBottom = options.getContentBottom
     || ((b) => (b ? b.y + b.height : null));
@@ -64,7 +66,8 @@ function createWorldPhysics(options) {
   }
 
   /** 解析步进：输入当前时刻，直接得到目标窗口 y 与新状态。可测。 */
-  function stepPosition(state, b, floor, nowT) {
+  function stepPosition(state, b, floor, nowT, gravityOverride) {
+    const g = (typeof gravityOverride === "number" && gravityOverride > 0) ? gravityOverride : cfg.gravity;
     const target = targetWinY(b, floor);
     if (target === null) return { holding: true, winY: b.y, grounded: state.grounded, landingVy: 0 };
     if (state.grounded) {
@@ -81,10 +84,10 @@ function createWorldPhysics(options) {
     }
     // falling：参数方程
     const t = (nowT - state.fall.t0) / 1000;
-    const winY = state.fall.winY0 + state.fall.vy0 * t + 0.5 * cfg.gravity * t * t;
+    const winY = state.fall.winY0 + state.fall.vy0 * t + 0.5 * g * t * t;
     if (winY >= target) {
       return { holding: false, winY: target, grounded: true,
-               landingVy: state.fall.vy0 + cfg.gravity * t };
+               landingVy: state.fall.vy0 + g * t };
     }
     return { holding: false, winY, grounded: false, fall: state.fall, landingVy: 0 };
   }
@@ -109,7 +112,7 @@ function createWorldPhysics(options) {
     lastT = now;
     const next = stepPosition(
       { grounded, fall: fall || { t0: now, winY0: b.y, vy0: 0 } },
-      b, getFloorY(), now);
+      b, getFloorY(), now, getGravity());
     if (!next.grounded && next.fall) fall = next.fall;
     if (next.grounded) fall = null;
     if (next.landingVy > 0 && !grounded && onLanded) {
