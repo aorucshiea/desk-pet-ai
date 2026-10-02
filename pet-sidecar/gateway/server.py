@@ -55,6 +55,7 @@ from .memory import continuity as _continuity_module
 from .memory import resonance as _resonance_module
 from .memory import somatic as _somatic_module
 from . import petplugins as _petplugins_module
+from . import plugin_policy as _plugin_policy
 
 # Kernel container mirror: _stream_chat_provider is a MODULE-level function
 # and cannot see build_app's closure, so the live PluginManager is mirrored
@@ -673,6 +674,19 @@ def build_app(
                 return "[forge error: need 'name' and 'code']"
             if "\x00" in code or len(code) > 64_000:
                 return "[forge error: invalid or oversized code]"
+            # Audit V-1: refuse dangerous code BEFORE it reaches the plugins
+            # directory, and answer with the reason so the model can rewrite
+            # instead of wondering why its organ never showed up.
+            violations = _plugin_policy.check_source(code)
+            if violations:
+                return (
+                    "[forge refused: 这段代码没有通过插件安全策略，未写入]\n"
+                    + _plugin_policy.format_violations(violations)
+                    + "\n可用范围：只能 import gateway 与少量纯计算标准库"
+                    "（datetime/json/re/math/time/asyncio/threading/types 等），"
+                    "不能碰文件系统、进程、网络，也不能用 eval/exec/open/getattr(动态名)。"
+                    "需要这些能力请调用已注入的服务（ctx.tool / ctx.require）。"
+                )
             pdir = _petplugins_module.PluginManager.plugin_dir(memory_dir)
             pdir.mkdir(parents=True, exist_ok=True)
             target = pdir / f"{name}.py"
@@ -1301,6 +1315,9 @@ def build_app(
             "ok": True,
             "plugins": _pet_plugins.describe(),
             "pending": _pet_plugins.describe_pending(),
+            # Organs the static policy refused, with the reason. Without this
+            # a rejected plugin looks like one that simply never appeared.
+            "refusals": _pet_plugins.policy_refusals(),
             "effects": _pet_plugins.effects_report(),
             "services": sorted(str(s) for s in _pet_plugins.services.keys()),
         }

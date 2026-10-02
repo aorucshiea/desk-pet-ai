@@ -60,6 +60,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .log_setup import get_logger
+from . import plugin_policy as _plugin_policy
 
 log = get_logger()
 
@@ -394,6 +395,9 @@ class PluginManager:
         self._injects: dict[str, tuple[str, ...]] = {}  # name -> declared deps
         self._provided: dict[str, tuple[str, ...]] = {}  # name -> services it published
         self._pending: dict[str, Path] = {}  # skipped plugins waiting for services
+        # name -> why the policy gate refused it, so the settings UI and the
+        # forge tool answer can say more than "failed".
+        self._refusals: dict[str, str] = {}
         self._protected: set[str] = set()  # core contexts sync() must not touch
         # Plugins the user/UI deliberately switched OFF. Their file still
         # exists, so a plain sync() would bring them straight back — this
@@ -546,6 +550,7 @@ class PluginManager:
     def _load_file(self, path: Path) -> str:
         """Load one plugin file. Returns "loaded" | "skipped" | "failed"."""
         name = path.stem
+        self._refusals.pop(name, None)
         # isolate: unload the previous version first (hot reload)
         self._unload(name)
         try:
@@ -553,9 +558,20 @@ class PluginManager:
             # stores mtime as whole SECONDS, so a plugin rewritten within
             # the same second (the model iterating on its own organ — the
             # whole point) silently served STALE bytecode.
+            source = path.read_text(encoding="utf-8")
+            # Policy gate in front of exec() (audit V-1). The forge tool
+            # checks too, but a file can arrive by other means (the user
+            # drops one in, another tool writes it), and this is the last
+            # place where every plugin passes.
+            violations = _plugin_policy.check_source(source)
+            if violations:
+                log.warning("plugin '%s' refused: %s", name,
+                            _plugin_policy.format_violations(violations))
+                self._refusals[name] = _plugin_policy.format_violations(violations)
+                return "failed"
             module = types.ModuleType(f"petplugin_{name}_{int(time.time() * 1000)}")
             module.__file__ = str(path)
-            code = compile(path.read_text(encoding="utf-8"), str(path), "exec")
+            code = compile(source, str(path), "exec")
             exec(code, module.__dict__)
             inject = tuple(str(i) for i in getattr(module, "inject", []))
             self._injects[name] = inject
@@ -698,6 +714,12 @@ class PluginManager:
             for name in list(self._pending):
                 if name not in seen:
                     self._pending.pop(name, None)
+            # A refusal belongs to a file; once the file is gone the reason
+            # must go with it, or the UI keeps reporting an organ that no
+            # longer exists.
+            for name in list(self._refusals):
+                if name not in seen:
+                    self._refusals.pop(name, None)
         if loaded or unloaded:
             self.emit("plugins_changed", loaded=loaded, unloaded=unloaded)
         # Coeffect pass: services may have appeared/vanished during load.
@@ -1008,6 +1030,13 @@ def apply(ctx):
                 }
                 for name in sorted(self._pending)
             ]
+
+    def policy_refusals(self) -> dict[str, str]:
+        """Plugins the static policy refused, with the reason. A refusal must
+        never look like a plugin that simply vanished — that is how a
+        silently-lost organ becomes a support ticket."""
+        with self._lock:
+            return dict(self._refusals)
 
     def effects_report(self) -> dict[str, Any]:
         """Kernel-wide effect ledger, for the settings UI / debugging."""

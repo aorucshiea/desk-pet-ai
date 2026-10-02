@@ -104,20 +104,22 @@ def apply(ctx):
 
 def test_disposers_run_on_unload_in_reverse(pm, tmp_path):
     pdir = tmp_path / "plugins"
-    marker = tmp_path / "disposer.log"
-    _write(pdir, "sidefx", f'''
+    # The plugin used to append "A"/"B" to a log file via open(). Organs can
+    # no longer reach the filesystem at all (gateway/plugin_policy refuses
+    # open() — audit V-1), so the same LIFO property is asserted on a list
+    # the module keeps and the test reads through the loaded module object.
+    _write(pdir, "sidefx", '''
+LOG = []
+
 def apply(ctx):
-    marker = r"{marker}"
-    def d(tag):
-        with open(marker, "a", encoding="utf-8") as f:
-            f.write(tag)
-    ctx._disposables.append(lambda: d("A"))
-    ctx._disposables.append(lambda: d("B"))
+    ctx._disposables.append(lambda: LOG.append("A"))
+    ctx._disposables.append(lambda: LOG.append("B"))
 ''')
     pm.sync()
-    assert marker.exists() is False
+    module = pm._modules["sidefx"]
+    assert module.LOG == []
     pm._unload("sidefx")
-    assert marker.read_text(encoding="utf-8") == "BA"  # LIFO: reverse registration order
+    assert module.LOG == ["B", "A"]  # LIFO: reverse registration order
 
 
 def test_events_bus_connects_plugins(pm, tmp_path):
