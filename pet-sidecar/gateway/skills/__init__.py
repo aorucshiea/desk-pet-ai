@@ -615,7 +615,7 @@ class SkillService:
         sections.append("5. 行动：按上面的判断执行")
         sections.append("")
         sections.append("## 关于记忆的硬规则")
-        sections.append("- 任何对话，不写进 MEMORY.md/USER.md/experiences 就等于没发生过")
+        sections.append("- 任何对话，不写进「记忆」文件夹或 experiences 就等于没发生过")
         sections.append("- 主动调 memory 工具写入——不要说\"我会记住\"然后不写")
 
         text = "\n".join(sections) + "\n"

@@ -846,8 +846,9 @@ function registerSettingsIpc(options = {}) {
   });
 
   handle("settings:get-memory-view", async () => {
-    // Settings → Memory viewer: identity notes + episodic events +
-    // mood for the CURRENT theme (换身体 = 换灵魂).
+    // Settings → Memory viewer: the model's own 「记忆」 folder (tree +
+    // 记忆.md) + episodic events + mood for the CURRENT theme
+    // (换身体 = 换灵魂).
     const [mem, events, mood] = await Promise.all([
       sidecarJson("GET", "/api/memory", 4000),
       sidecarJson("GET", "/api/events/list", 4000),

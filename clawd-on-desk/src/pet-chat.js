@@ -675,8 +675,8 @@ class Sidecar {
       // Point gateway at the writable user adapter dir so /api/adapters
       // and /api/load-adapter see exactly what Settings UI shows.
       PET_ADAPTER_DIR: this.adapterDir || process.env.PET_ADAPTER_DIR || "",
-      // Long-term memory dir. The gateway boots a MemoryStore here and
-      // serves the frozen MEMORY.md / USER.md snapshot via /api/memory.
+      // Long-term memory dir. The gateway owns it: /api/memory serves the
+      // model's own 「记忆」 folder (tree + 记忆.md) out of here.
       // Same per-userData layout as adapters/models so memory survives
       // across restarts and is editable by the user.
       PET_MEMORY_DIR: path.join(app.getPath("userData"), "memories"),
@@ -2925,9 +2925,9 @@ module.exports = function initDeskPetChat(ctx) {
 	  }));
 
 	  // ── Long-term memory snapshot ────────────────────────────────────────
-	  // Fetches the frozen MEMORY.md + USER.md blocks from the sidecar so the
-	  // renderer can prepend them to the chat system prompt. Snapshot is
-	  // frozen at sidecar boot; refreshes next sidecar restart.
+	  // Fetches the model's 「记忆」 folder (tree + 记忆.md) from the sidecar so
+	  // the renderer can prepend it to the chat system prompt. Read live on
+	  // every turn — a memory-tool write is visible the next message.
 	  try { ipcMain.removeHandler("pet:get-memory"); } catch {}
 	  ipcMain.handle("pet:get-memory", wrapHandler("pet:get-memory", async () => {
 	    const r = await httpJson("GET", `${sidecar.baseUrl()}/api/memory`, null, 4000);

@@ -55,7 +55,7 @@ contextBridge.exposeInMainWorld("pet", {
   // B-5: gateway token for the renderer's direct sidecarFetch calls
   gatewayToken: () => ipcRenderer.invoke("pet:get-gateway-token"),
 
-  // Long-term memory snapshot (frozen MEMORY.md + USER.md from the sidecar)
+  // The model's own 「记忆」 folder (tree + 记忆.md), read live from the sidecar
   getMemory: () => ipcRenderer.invoke("pet:get-memory"),
 
   // External distillation: /learn prompt + skill creation
