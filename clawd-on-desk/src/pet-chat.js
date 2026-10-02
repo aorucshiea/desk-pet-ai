@@ -2744,9 +2744,28 @@ module.exports = function initDeskPetChat(ctx) {
           if (item.thinking != null) map[item.provider].thinking = item.thinking;
           if (item.reasoningEffort) map[item.provider].reasoningEffort = item.reasoningEffort;
           if (item.contextWindow) map[item.provider].contextWindow = Number(item.contextWindow);
+          // CherryStudio-style per-provider model list — keep it verbatim,
+          // otherwise every settings save wipes what the user curated.
+          if (Array.isArray(item.models)) map[item.provider].models = item.models;
         }
         fs.writeFileSync(p, JSON.stringify({ providers: map }, null, 2), "utf-8");
-        return { ok: true };
+        // Hot-reload the gateway's provider registry instead of restarting
+        // the whole sidecar: a restart taskkills the process tree, which
+        // guillotines any chat in flight (the captain's "让AI想想然后AI
+        // 直接挂了" — the model was mid-recall when a settings save
+        // restarted the sidecar under it).
+        let reloaded = false;
+        try {
+          const token = fs
+            .readFileSync(path.join(os.homedir(), ".pet", "gateway-token"), "utf8")
+            .trim();
+          const r = await fetch(`${sidecar.baseUrl()}/api/providers/reload`, {
+            method: "POST",
+            headers: { "content-type": "application/json", "x-pet-token": token },
+          });
+          reloaded = !!(r && r.ok);
+        } catch {}
+        return { ok: true, reloaded };
       } catch (e) { return { ok: false, error: String(e.message || e) }; }
     },
     "pet:get-provider-prefs": async () => {

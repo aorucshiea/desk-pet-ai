@@ -99,13 +99,12 @@
         const live = (core.state.snapshot && core.state.snapshot.skills) || {};
         await window.settingsAPI.update("skills", { ...live, modelProviders: providers });
       }
-      // Sync to providers.json and reload the gateway so the new routing
-      // takes effect without a manual restart.
+      // Sync to providers.json and hot-reload the gateway's provider
+      // registry (the main process does the reload after writing). NO
+      // sidecar restart here: a restart taskkills the process tree and
+      // guillotines any chat in flight — the "AI 直接挂了" bug.
       if (window.petSettings && typeof window.petSettings.saveProvidersConfig === "function") {
         await window.petSettings.saveProvidersConfig(providers);
-      }
-      if (window.petSettings && typeof window.petSettings.restartSidecar === "function") {
-        await window.petSettings.restartSidecar();
       }
     } catch {}
   }
