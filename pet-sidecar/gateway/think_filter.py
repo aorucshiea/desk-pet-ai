@@ -158,3 +158,42 @@ class ControlTagFilter:
         out = _CTRL_TAG_RE.sub("", self._buf)
         self._buf = ""
         return out
+
+
+# ── Tool-narration filter for streaming deltas ───────────────────────────────
+# Tool-loop models narrate their own tool calls as markdown-italic asides
+# ("_执行 recall..._", "_执行 pet_mood_now..._"). Those lines are pipeline
+# chatter — the tool-call SSE events already tell the renderer what ran —
+# so a line that is NOTHING BUT such a narration is dropped whole. Lines
+# are only decided at a newline, so the filter buffers the tail until it
+# can tell the line is complete.
+
+_NARRATION_RE = re.compile(
+    r"^\s*_{0,2}\s*执行\s+[A-Za-z_][\w]*\s*(?:\.\.\.)?\s*_{0,2}\s*$"
+)
+
+
+class ToolNarrationFilter:
+    """Stateful line scrubber for self-narrated tool-call asides."""
+
+    def __init__(self) -> None:
+        self._buf = ""
+
+    def feed(self, piece: str) -> str:
+        self._buf += piece
+        if "\n" not in self._buf:
+            return ""
+        return self._drain(final=False)
+
+    def flush(self) -> str:
+        return self._drain(final=True)
+
+    def _drain(self, *, final: bool) -> str:
+        if not final and "\n" not in self._buf:
+            return ""
+        parts = self._buf.split("\n")
+        self._buf = "" if final else parts.pop()
+        kept = [p for p in parts if not _NARRATION_RE.match(p)]
+        if not kept:
+            return ""
+        return "\n".join(kept) + ("\n" if not final else "")

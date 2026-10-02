@@ -74,6 +74,7 @@ class TestSampling:
         hits = 0
         for _ in range(200):
             loader.reset_session()
+            rc._recall_attempts.clear()  # isolate weight probability from retry escalation
             sampled = rc._sample_recall(seeded_store, cands)
             if sampled:
                 hits += 1
@@ -85,6 +86,7 @@ class TestSampling:
         hits = 0
         for _ in range(200):
             loader.reset_session()
+            rc._recall_attempts.clear()  # isolate weight probability from retry escalation
             sampled = rc._sample_recall(seeded_store, cands)
             if sampled:
                 hits += 1
@@ -107,6 +109,18 @@ class TestSampling:
         store.save()
         cands = rc._search_candidates(store, "ghost")
         assert rc._sample_recall(store, cands) == []
+
+    def test_force_surface_after_repeated_misses(self, seeded_store):
+        # The captain's bug: 模型对同一关键词连 recall 6 次全落空。After
+        # RECALL_FORCE_AFTER consecutive misses the memory must come back
+        # deterministically — the dice own the first tries only.
+        cands = rc._search_candidates(seeded_store, "丢钥匙")
+        rc._recall_attempts.clear()
+        loader.reset_session()
+        for e in cands:
+            rc._recall_attempts[e["id"]] = rc.RECALL_FORCE_AFTER
+        sampled = rc._sample_recall(seeded_store, cands)
+        assert sampled, "3 consecutive misses force the memory to surface"
 
 
 class TestHumanTimeAgo:

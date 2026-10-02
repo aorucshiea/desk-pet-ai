@@ -160,7 +160,7 @@ _PROACTIVE_PROMPT_PREFIX = "[系统提示"
 _somatic_buffer = _somatic_module.SensationBuffer()
 from . import screen_click
 from .screen_capture import capture as screen_capture
-from .think_filter import ThinkBlockFilter, ControlTagFilter
+from .think_filter import ThinkBlockFilter, ControlTagFilter, ToolNarrationFilter
 from .updater import DEFAULT_SOURCE as DEFAULT_UPDATE_SOURCE
 from .updater import ModelUpdater
 from .sidecar_updater import SidecarUpdater
@@ -3065,6 +3065,7 @@ async def _stream_chat_provider(
             _walk_queue.append({"event": "walk_desktop"})
 
     tag_filter = ControlTagFilter(on_control=_on_walk_control)
+    narration_filter = ToolNarrationFilter()
     accumulated_full_text: list[str] = []
     full_text = ""
 
@@ -3127,7 +3128,7 @@ async def _stream_chat_provider(
                     full_text += event["content"]
                     for ev in think_filter.feed(event["content"]):
                         if ev.get("event") == "delta":
-                            clean = tag_filter.feed(ev["content"])
+                            clean = narration_filter.feed(tag_filter.feed(ev["content"]))
                             while _walk_queue:
                                 yield _sse(_walk_queue.pop(0))
                             if clean:
@@ -3324,7 +3325,9 @@ async def _stream_chat_provider(
 
     for ev in think_filter.flush():
         if ev.get("event") == "delta":
-            clean = tag_filter.feed(ev["content"]) + tag_filter.flush()
+            clean = narration_filter.feed(
+                tag_filter.feed(ev["content"]) + tag_filter.flush()
+            ) + narration_filter.flush()
             while _walk_queue:
                 yield _sse(_walk_queue.pop(0))
             if clean:

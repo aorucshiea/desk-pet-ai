@@ -102,6 +102,14 @@ def _search_candidates(store: EventStore, keyword: str, limit: int = 8) -> List[
 # a person: the harder you try, the closer the memory gets.
 RECALL_RETRY_BONUS = 0.06
 
+# After this many failed attempts on the same event, it surfaces
+# GUARANTEED. The dice keep the first couple of tries fuzzy, but a model
+# that clearly remembers "something happened" must not loop 6 misses on
+# an event that is sitting right there in the directory (the captain's
+#「想想过去发生了什么」→ 6× recall 全落空). 3 misses ≈ "想了想、又想了
+# 想、再想想" — then it comes back.
+RECALL_FORCE_AFTER = 3
+
 # Core memories (核心长期记忆) recall at weight + this bonus — they're
 # the things the pet chose to never forget, so they surface far more
 # readily. A weight-100 core event starts at 50% instead of 10%.
@@ -151,6 +159,8 @@ def _sample_recall(store: EventStore, candidates: List[Dict[str, Any]]) -> List[
             base += CORE_RECALL_BONUS
         attempts = _recall_attempts.get(evt["id"], 0)
         p = min(1.0, base + attempts * RECALL_RETRY_BONUS)
+        if attempts >= RECALL_FORCE_AFTER:
+            p = 1.0
         if p >= 1.0 or random.random() < p:
             # 复活: a nearly-forgotten memory (（已模糊）) that luckily
             # surfaced is restored to a normal weight — it stops being a
