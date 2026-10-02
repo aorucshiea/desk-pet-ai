@@ -100,7 +100,7 @@
       headRow.appendChild(chip(t("memoryEventCount") + "：" + ((ret.events && ret.events.count) || 0), "rgba(90,200,120,0.22)"));
       parent.appendChild(headRow);
 
-      // ── 身份记忆 ──
+      // ── 意识记忆 ──
       parent.appendChild(section(t("memoryIdentity"), el("div", null,
         el("div", { style: { fontSize: "12px", color: "var(--text-secondary)", marginBottom: "4px" } }, "MEMORY.md" + (ident.memory_dir ? "  ·  " + ident.memory_dir : "")),
         pre(ident.memory),
