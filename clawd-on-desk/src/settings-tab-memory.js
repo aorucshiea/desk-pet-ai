@@ -1,9 +1,9 @@
 "use strict";
 
 // Settings → Memory viewer (持续自我存在 — same self, only the look changes).
-// Shows the CURRENT theme's soul-layer memory: identity notes
-// (MEMORY.md / USER.md), the episodic event list (weight/emotion/
-// resolved/core), and the mood state. Read-only for now.
+// Shows the CURRENT theme's soul layer: the model's own 「记忆」 folder
+// (tree + 记忆.md), the episodic event list (weight/emotion/resolved/core),
+// and the mood state. Read-only for now.
 
 (function initSettingsTabMemory(root) {
   var core = null;
@@ -100,12 +100,14 @@
       headRow.appendChild(chip(t("memoryEventCount") + "：" + ((ret.events && ret.events.count) || 0), "rgba(90,200,120,0.22)"));
       parent.appendChild(headRow);
 
-      // ── 意识记忆 ──
+      // ── 意识记忆（模型自主组织的「记忆」文件夹）──
       parent.appendChild(section(t("memoryIdentity"), el("div", null,
-        el("div", { style: { fontSize: "12px", color: "var(--text-secondary)", marginBottom: "4px" } }, "MEMORY.md" + (ident.memory_dir ? "  ·  " + ident.memory_dir : "")),
-        pre(ident.memory),
-        el("div", { style: { fontSize: "12px", color: "var(--text-secondary)", margin: "10px 0 4px 0" } }, "USER.md"),
-        pre(ident.user),
+        el("div", { style: { fontSize: "12px", color: "var(--text-secondary)", marginBottom: "4px" } }, "记忆/" + (ident.memory_dir ? "  ·  " + ident.memory_dir : "")),
+        pre((Array.isArray(ident.tree) && ident.tree.length)
+          ? ident.tree.map((p) => "- " + p).join("\n")
+          : "（空——模型会自己创建分类与文件）"),
+        el("div", { style: { fontSize: "12px", color: "var(--text-secondary)", margin: "10px 0 4px 0" } }, "记忆.md"),
+        pre(ident.root_md),
       )));
 
       // ── 事件记忆 ──
