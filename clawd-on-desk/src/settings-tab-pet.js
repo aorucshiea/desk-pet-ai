@@ -129,7 +129,15 @@
   // "starting" labels into a single yellow "starting" pill: at the page
   // level the user only cares whether things are healthy, warming up, or
   // broken. The full debug breakdown lives in the logs.
-  function deriveStatus(sidecarReady, llamaReady, probing, engineRunning) {
+  function deriveStatus(sidecarReady, llamaReady, probing, engineRunning, isProvider) {
+    // Provider mode (LM Studio / Ollama / cloud): the llama-server states
+    // are irrelevant — the brain channel is up iff the sidecar is.
+    if (isProvider) {
+      if (sidecarReady) return { tone: "ready", label: t("petStatusRunning") };
+      return probing
+        ? { tone: "starting", label: t("petStatusStarting") }
+        : { tone: "offline", label: t("petStatusError") };
+    }
     if (sidecarReady && llamaReady) return { tone: "ready", label: t("petStatusRunning") };
     if (!sidecarReady) {
       return probing
@@ -253,11 +261,18 @@
     const skills = (core && core.state && core.state.snapshot
       && core.state.snapshot.skills) || {};
     const id = skills.defaultProvider || "local";
-    if (id === "local") return { name: "", detail: "" };
+    if (id === "local") return { name: "", detail: "", isProvider: false, modelId: "", baseUrl: "" };
     const p = (skills.modelProviders || []).find((x) => x && x.provider === id) || {};
     const name = id === "lmstudio" ? "LM Studio" : id === "ollama" ? "Ollama" : id;
-    const where = p.model || (p.baseUrl ? String(p.baseUrl).replace(/^https?:\/\//, "") : "");
-    return { name, detail: [name, where].filter(Boolean).join(" · ") };
+    const modelId = p.model || "";
+    const where = modelId || (p.baseUrl ? String(p.baseUrl).replace(/^https?:\/\//, "") : "");
+    return {
+      name,
+      detail: [name, where].filter(Boolean).join(" · "),
+      isProvider: true,
+      modelId,
+      baseUrl: p.baseUrl || "",
+    };
   }
 
   // True when the user's focus (e.g. an open <select>) lives inside the
@@ -284,7 +299,10 @@
   function syncStatusPill(ctx) {
     if (!ctx.statusPillSlot) return;
     const { sidecarReady, llamaReady, probing, engineRunning } = ctx.healthSnapshot;
-    const { tone, label } = deriveStatus(sidecarReady, llamaReady, probing, engineRunning);
+    const { tone, label } = deriveStatus(
+      sidecarReady, llamaReady, probing, engineRunning,
+      !!activeBrainSource().isProvider,
+    );
     ctx.statusPillSlot.innerHTML = "";
     ctx.statusPillSlot.appendChild(statusPill(tone, label));
   }
@@ -367,7 +385,13 @@
   function renderModelSection(box, ctx) {
     box.innerHTML = "";
     const snap = ctx.healthSnapshot || {};
-    const modelDir = snap.modelDir || "";
+    const src = activeBrainSource();
+    // Provider mode (LM Studio / Ollama / cloud): the brain is the
+    // provider's ACTIVE model. health.model_dir is the BUILT-IN engine's
+    // gguf path — showing it here claimed the pet was running a model it
+    // had explicitly stopped using (the captain's stale-hero bug).
+    const isProvider = !!src.isProvider;
+    const modelDir = isProvider ? "" : (snap.modelDir || "");
     const hasPath = !!modelDir;
 
     box.appendChild(sectionTitle(t("petSectionModel")));
@@ -376,7 +400,6 @@
     // Read-only on purpose. Picking a model, opening its folder and
     // managing scan roots live in 模型来源 → 本地模型, next to the engine
     // that runs them; this card only answers "which brain is my pet on".
-    const src = activeBrainSource();
     const hero = el("div", { className: "section-rows pet-model-hero" });
 
     const heroMain = el("div", { className: "pet-model-hero-main" });
@@ -387,12 +410,21 @@
     const heroText = el("div", { className: "pet-model-hero-text" });
     const nameRow = el("div", { className: "pet-model-hero-name-row" });
     const heroName = el("span", { className: "pet-model-hero-name" },
-      hasPath ? pickLabelFromPath(modelDir)
-        : (src.name || t("petModelPathUnset")));
+      isProvider ? (src.modelId || src.name)
+        : (hasPath ? pickLabelFromPath(modelDir) : (src.name || t("petModelPathUnset"))));
     nameRow.appendChild(heroName);
-    // Live status beside the name. deriveStatus tones (ready/starting/
-    // idle/offline) map onto the hero badge's ok/warn/muted/bad palette.
-    const heroStatus = deriveStatus(snap.sidecarReady, snap.llamaReady, snap.probing, snap.engineRunning);
+    // Live status beside the name. In provider mode the llama-server
+    // states are meaningless — the channel is up iff the sidecar is.
+    let heroStatus;
+    if (isProvider) {
+      heroStatus = snap.sidecarReady
+        ? { tone: "ready", label: t("petStatusRunning") }
+        : (snap.probing
+          ? { tone: "starting", label: t("petStatusStarting") }
+          : { tone: "offline", label: t("petStatusError") });
+    } else {
+      heroStatus = deriveStatus(snap.sidecarReady, snap.llamaReady, snap.probing, snap.engineRunning);
+    }
     const heroTone = heroStatus.tone === "ready" ? "ok"
       : heroStatus.tone === "starting" ? "warn"
         : heroStatus.tone === "idle" ? "muted" : "bad";
@@ -402,9 +434,9 @@
     heroText.appendChild(nameRow);
 
     const heroPath = el("div", {
-      className: "pet-model-hero-path" + (hasPath ? "" : " is-unset"),
-      title: hasPath ? modelDir : src.detail,
-    }, hasPath ? modelDir : (src.detail || t("petModelPathUnset")));
+      className: "pet-model-hero-path" + (!isProvider && hasPath ? "" : " is-unset"),
+      title: isProvider ? (src.baseUrl || src.detail) : (hasPath ? modelDir : src.detail),
+    }, isProvider ? src.detail : (hasPath ? modelDir : (src.detail || t("petModelPathUnset"))));
     heroText.appendChild(heroPath);
     heroMain.appendChild(heroText);
     hero.appendChild(heroMain);
