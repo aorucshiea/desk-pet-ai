@@ -280,7 +280,7 @@ const updateRegistry = {
   disableMiniMode: requireBoolean("disableMiniMode"),
   freeRoam: requireBoolean("freeRoam"),
   physicsWorld: requireBoolean("physicsWorld"),
-  physicsGravity: requireIntegerInRange("physicsGravity", 1000, 12000),
+  physicsGravity: requireIntegerInRange("physicsGravity", 0, 1000),
   keepSizeAcrossDisplays: requireBoolean("keepSizeAcrossDisplays"),
   mobilePreviewEnabled: requireBoolean("mobilePreviewEnabled"),
 

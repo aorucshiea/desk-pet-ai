@@ -184,8 +184,8 @@ const SCHEMA = {
   // 重力强度 px/s²（DIP 屏坐标）。1000=气球飘落 …… 6400=默认手感 …… 12000=陨石。
   physicsGravity: {
     type: "number",
-    default: 6400,
-    validate: (v) => Number.isFinite(v) && v >= 1000 && v <= 12000,
+    default: 10,
+    validate: (v) => Number.isFinite(v) && v >= 0 && v <= 1000,  // m/s²
   },
   // Text-window zoom (bubbles, HUD, dashboard, settings, resume input). The
   // pet itself scales via `size` and is never zoomed. `textScale` is the

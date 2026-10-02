@@ -19,23 +19,26 @@
  */
 
 const DEFAULTS = {
-  gravity: 6400,          // px/s^2 — 真机手感钉：~0.29s 掉半屏，有地心引力的"砸下去"感
-  tickMs: 16,             // 请求 16ms；主进程实际 ~50ms——解析式不依赖它
-  settleEpsPx: 0.6,       // 贴地判定容差
-  externalHoldMs: 500,    // 外部位置变化后的让位时间
-  maxDtMs: 50,            // 保留常量供外部读取；解析路径不再用它截断
+  // 世界建模（机长 2026-10-01 裁定）：重力以 m/s² 表达，默认 10 ≈ 地球 9.8。
+  // 屏幕高度 ≈ 0.5 m（桌面玩偶的世界尺度）——每米像素数：
+  pxPerMeter: 2058,     // 1029 DIP px / 0.5 m
+  gravityMps2: 10,      // m/s²；等效 px/s² = gravityMps2 × pxPerMeter
+  tickMs: 16,           // 请求 16ms；主进程实测 ~28ms（解析式不依赖它）
+  settleEpsPx: 0.6,     // 贴地判定容差
+  externalHoldMs: 500,  // 外部位置变化后的让位时间
+  maxDtMs: 50,          // 保留常量供外部读取；解析路径不再用它截断
 };
 
 function createWorldPhysics(options) {
-  const getBounds = options.getBounds;               // () => {x,y,width,height}|null
-  const setPosition = options.setPosition;           // (x, y) => void（窗口左上）
-  const getFloorY = options.getFloorY;               // () => number DIP（屏幕坐标）
-  const guards = options.guards || [];               // Array<() => boolean> true=suspend
+  const getBounds = options.getBounds;
+  const setPosition = options.setPosition;
+  const getFloorY = options.getFloorY;
+  const guards = options.guards || [];
   const cfg = Object.assign({}, DEFAULTS, options.config);
-  const onLanded = options.onLanded || null;         // (vy) => void — A4 供 somatic 上报
-  // 重力 live-read：设置页改完下一 tick 生效，无需重启
-  const getGravity = options.getGravity || (() => cfg.gravity);
-  // 内容矩形底边（视觉贴地锚点）。缺实现时退化为窗口底（行为=旧版）。
+  const onLanded = options.onLanded || null;
+  // 重力 m/s²，live-read（设置页改完下一 tick 生效）。0 = 失重漂浮不掉落。
+  const getGravityMps2 = options.getGravityMps2 || (() => cfg.gravityMps2);
+  const getPxPerMeter = options.getPxPerMeter || (() => cfg.pxPerMeter);
   const getContentBottom = options.getContentBottom
     || ((b) => (b ? b.y + b.height : null));
 
@@ -65,13 +68,17 @@ function createWorldPhysics(options) {
     return b.y + (floor - cb);
   }
 
-  /** 解析步进：输入当前时刻，直接得到目标窗口 y 与新状态。可测。 */
-  function stepPosition(state, b, floor, nowT, gravityOverride) {
-    const g = (typeof gravityOverride === "number" && gravityOverride > 0) ? gravityOverride : cfg.gravity;
+  /** 解析步进：gravityMps2Override 以 m/s² 计；0 = 失重（悬浮不掉落）。 */
+  function stepPosition(state, b, floor, nowT, gravityMps2Override, pxPerMeterOverride) {
+    const gMps2 = (typeof gravityMps2Override === "number" && isFinite(gravityMps2Override) && gravityMps2Override >= 0)
+      ? gravityMps2Override : cfg.gravityMps2;
+    const ppm = (typeof pxPerMeterOverride === "number" && pxPerMeterOverride > 0)
+      ? pxPerMeterOverride : cfg.pxPerMeter;
+    const g = gMps2 * ppm; // → px/s²
     const target = targetWinY(b, floor);
     if (target === null) return { holding: true, winY: b.y, grounded: state.grounded, landingVy: 0 };
     if (state.grounded) {
-      if (floor - (contentBottom(b)) > cfg.settleEpsPx) {
+      if (g > 0 && floor - (contentBottom(b)) > cfg.settleEpsPx) {
         // 支撑面下降 → 进入解析掉落
         return { holding: false, winY: b.y, grounded: false,
                  fall: { t0: nowT, winY0: b.y, vy0: 0 }, landingVy: 0 };
@@ -82,7 +89,11 @@ function createWorldPhysics(options) {
       }
       return { holding: true, winY: b.y, grounded: true, landingVy: 0 };
     }
-    // falling：参数方程
+    if (g <= 0) {
+      // 失重：悬浮。不进入掉落，也不强制贴地——停在原地。
+      return { holding: true, winY: b.y, grounded: state.grounded, landingVy: 0 };
+    }
+    // falling：参数方程 y(t) = y0 + vy0·t + ½·g·t²
     const t = (nowT - state.fall.t0) / 1000;
     const winY = state.fall.winY0 + state.fall.vy0 * t + 0.5 * g * t * t;
     if (winY >= target) {
@@ -112,7 +123,7 @@ function createWorldPhysics(options) {
     lastT = now;
     const next = stepPosition(
       { grounded, fall: fall || { t0: now, winY0: b.y, vy0: 0 } },
-      b, getFloorY(), now, getGravity());
+      b, getFloorY(), now, getGravityMps2(), getPxPerMeter());
     if (!next.grounded && next.fall) fall = next.fall;
     if (next.grounded) fall = null;
     if (next.landingVy > 0 && !grounded && onLanded) {

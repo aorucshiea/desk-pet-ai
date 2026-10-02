@@ -3581,7 +3581,7 @@ if (!gotTheLock) {
             return r ? r.y + r.h : null; // null → 模块内 fallback 到窗口底
           },
           // 重力 live-read：设置页「桌面物理」改完下一 tick 生效
-          getGravity: () => Number(_settingsController.get("physicsGravity")) || 0,
+          getGravityMps2: () => { const v = Number(_settingsController.get("physicsGravity")); return Number.isFinite(v) ? v : 10; },
           guards: [
             () => petWindowRuntime.isDragLocked(),
             () => petWindowRuntime.isPetHidden(),

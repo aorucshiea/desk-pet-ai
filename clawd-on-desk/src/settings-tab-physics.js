@@ -71,12 +71,13 @@
 
   function renderGravity(parent) {
     const snap = core.state.snapshot || {};
-    const cur = Number(snap.physicsGravity) || 6400;
-    const valueLabel = el("span", { style: { fontSize: "13px", color: "var(--text-secondary)", fontFamily: "monospace", minWidth: "56px", textAlign: "right" } }, String(cur));
+    const cur = Number(snap.physicsGravity);
+    const v0 = Number.isFinite(cur) ? cur : 10;
+    const valueLabel = el("span", { style: { fontSize: "13px", color: "var(--text-secondary)", fontFamily: "monospace", minWidth: "84px", textAlign: "right" } }, `${v0} m/s²`);
     const slider = el("input", {
-      type: "range", min: "1000", max: "12000", step: "200", value: String(cur),
+      type: "range", min: "0", max: "100", step: "1", value: String(v0),
       style: { flex: "1", accentColor: "var(--accent)" },
-      oninput: () => { valueLabel.textContent = slider.value; },
+      oninput: () => { valueLabel.textContent = `${slider.value} m/s²`; },
       onchange: async () => {
         try {
           await window.settingsAPI.update("physicsGravity", Number(slider.value));
@@ -84,9 +85,9 @@
       },
     });
     const row = el("div", { style: { display: "flex", alignItems: "center", gap: "12px" } },
-      el("span", { style: { fontSize: "12px", color: "var(--text-secondary)" } }, t("physicsGravityMin")),
+      el("span", { style: { fontSize: "12px", color: "var(--text-secondary)", fontFamily: "monospace" } }, "0"),
       slider,
-      el("span", { style: { fontSize: "12px", color: "var(--text-secondary)" } }, t("physicsGravityMax")),
+      el("span", { style: { fontSize: "12px", color: "var(--text-secondary)", fontFamily: "monospace" } }, "100"),
       valueLabel,
     );
     parent.appendChild(card(

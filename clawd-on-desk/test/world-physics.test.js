@@ -17,10 +17,13 @@ function mk(overrides = {}) {
   return { phys, state, applied, landed };
 }
 
+const G = 10;      // m/s²
+const PPM = 500;   // px per meter (deliberately round for test math)
+
 test("grounded & content already on floor → holding steady, no writes", () => {
   const { phys, state } = mk();
   state.bounds.y = 929; // bottom=1029=floor
-  const r = phys._stepPosition({ grounded: true }, state.bounds, 1029, 1000);
+  const r = phys._stepPosition({ grounded: true }, state.bounds, 1029, 1000, G, PPM);
   assert.equal(r.holding, true);
   assert.equal(r.grounded, true);
 });
@@ -28,7 +31,7 @@ test("grounded & content already on floor → holding steady, no writes", () => 
 test("floor rises (taskbar pops) → rigid push-up to new floor", () => {
   const { phys, state } = mk();
   state.bounds.y = 929;
-  const r = phys._stepPosition({ grounded: true }, state.bounds, 981, 1000);
+  const r = phys._stepPosition({ grounded: true }, state.bounds, 981, 1000, G, PPM);
   assert.equal(r.grounded, true);
   assert.equal(r.winY, 881); // 981-100
 });
@@ -36,41 +39,45 @@ test("floor rises (taskbar pops) → rigid push-up to new floor", () => {
 test("regression: fall anchor (t0) must persist across ticks — the y=const freeze bug", () => {
   const { phys, state } = mk();
   state.bounds.y = 881; // 48px above floor 1029
-  const start = phys._stepPosition({ grounded: true }, state.bounds, 1029, 1000, 3200);
+  const start = phys._stepPosition({ grounded: true }, state.bounds, 1029, 1000, G, PPM);
   assert.equal(start.grounded, false);
-  // tick N: create fall anchor
-  const t1 = phys._stepPosition({ grounded: false, fall: start.fall }, state.bounds, 1029, 1050, 3200);
+  const t1 = phys._stepPosition({ grounded: false, fall: start.fall }, state.bounds, 1029, 1050, G, PPM);
   assert.ok(t1.fall, "fall state must be returned so it persists");
   assert.equal(t1.fall.t0, 1000);
-  // tick N+1 @ +120ms: winY = 881 + ½·3200·0.12²  (≈ 23px down)
-  const t2 = phys._stepPosition({ grounded: false, fall: t1.fall }, state.bounds, 1029, 1120, 3200);
+  const t2 = phys._stepPosition({ grounded: false, fall: t1.fall }, state.bounds, 1029, 1120, G, PPM);
   assert.ok(!t2.grounded);
-  const expected = 881 + 0.5 * 3200 * 0.12 * 0.12;
+  const expected = 881 + 0.5 * G * PPM * 0.12 * 0.12;
   assert.ok(Math.abs(t2.winY - expected) < 1e-6, `winY follows analytic gravity, got ${t2.winY} want ${expected}`);
 });
 
-test("gravity is adjustable at runtime (settings slider takes effect next tick)", () => {
+test("gravity unit is m/s² and live-readable (doubling g doubles displacement in same real time)", () => {
   const { phys, state } = mk();
   state.bounds.y = 881;
-  const g2x = phys._stepPosition({ grounded: false, fall: { t0: 0, winY0: 881, vy0: 0 } }, state.bounds, 2000, 100, 6400);
-  const g1x = phys._stepPosition({ grounded: false, fall: { t0: 0, winY0: 881, vy0: 0 } }, state.bounds, 2000, 100, 3200);
+  const g2x = phys._stepPosition({ grounded: false, fall: { t0: 0, winY0: 881, vy0: 0 } }, state.bounds, 2000, 100, 20, PPM);
+  const g1x = phys._stepPosition({ grounded: false, fall: { t0: 0, winY0: 881, vy0: 0 } }, state.bounds, 2000, 100, 10, PPM);
   assert.ok(!g2x.grounded && !g1x.grounded);
-  assert.ok(g2x.winY > g1x.winY, "double gravity => further along at same elapsed time");
+  assert.ok(g2x.winY > g1x.winY);
   assert.ok(Math.abs((g2x.winY - 881) - 2 * (g1x.winY - 881)) < 1e-6, "displacement scales linearly with g");
+});
+
+test("zero gravity (m/s²=0) = weightless hover: no fall, no snap", () => {
+  const { phys, state } = mk();
+  state.bounds.y = 500; // nowhere near floor
+  const r = phys._stepPosition({ grounded: false, fall: { t0: 0, winY0: 500, vy0: 0 } }, state.bounds, 1029, 1000, 0, PPM);
+  assert.equal(r.holding, true);
+  assert.equal(r.winY, 500); // floats in place
 });
 
 test("floor drops → fall with parametric gravity; position is a function of REAL elapsed time", () => {
   const { phys, state } = mk();
   state.bounds.y = 881; // 48px above floor 1029
-  const start = phys._stepPosition({ grounded: true }, state.bounds, 1029, 1000, 3200);
+  const start = phys._stepPosition({ grounded: true }, state.bounds, 1029, 1000, G, PPM);
   assert.equal(start.grounded, false);
   assert.deepEqual(start.fall, { t0: 1000, winY0: 881, vy0: 0 });
-  // 50ms later (one throttled Electron tick): analytic y = y0 + ½·g·t²
-  const mid = phys._stepPosition({ grounded: false, fall: start.fall }, state.bounds, 1029, 1050, 3200);
+  const mid = phys._stepPosition({ grounded: false, fall: start.fall }, state.bounds, 1029, 1050, G, PPM);
   assert.ok(!mid.grounded);
-  assert.ok(Math.abs(mid.winY - (881 + 0.5 * 3200 * 0.05 * 0.05)) < 1e-6);
-  // The same physical time regardless of tick cadence: 400ms in one tick vs four.
-  const late = phys._stepPosition({ grounded: false, fall: { t0: 1000, winY0: 881, vy0: 0 } }, state.bounds, 1029, 1400, 3200);
+  assert.ok(Math.abs(mid.winY - (881 + 0.5 * G * PPM * 0.05 * 0.05)) < 1e-6);
+  const late = phys._stepPosition({ grounded: false, fall: { t0: 1000, winY0: 881, vy0: 0 } }, state.bounds, 1029, 1400, G, PPM);
   assert.equal(late.grounded, true);
   assert.equal(late.winY, 929);
   assert.ok(late.landingVy > 0);
@@ -78,12 +85,10 @@ test("floor drops → fall with parametric gravity; position is a function of RE
 
 test("content-bottom anchor: floor snapping targets the visual content edge, not the window edge", () => {
   const { phys, state } = mk({
-    getContentBottom: (b) => b.y + 160, // window is 200 tall; content ends 40px above window bottom
+    getContentBottom: (b) => b.y + 160,
   });
   state.bounds = { x: 100, y: 500, width: 200, height: 200 };
-  // content bottom = 660; floor pops UP to 640 (e.g. taskbar) → content must be
-  // lifted so contentBottom == 640 → winY = 500 + (640 - 660) = 480
-  const r = phys._stepPosition({ grounded: true }, state.bounds, 640, 1000);
+  const r = phys._stepPosition({ grounded: true }, state.bounds, 640, 1000, G, PPM);
   assert.equal(r.winY, 480);
   assert.equal(r.grounded, true);
 });
@@ -94,7 +99,7 @@ test("external move (user drag) → 500ms hold, physics yields", async () => {
   phys.start();
   await new Promise((r) => setTimeout(r, 80));
   applied.length = 0;
-  state.bounds = { x: 300, y: 400, width: 100, height: 100 }; // external drag
+  state.bounds = { x: 300, y: 400, width: 100, height: 100 };
   await new Promise((r) => setTimeout(r, 150));
   phys.stop();
   assert.equal(applied.filter((a) => a.x === 300 && a.y !== 400).length, 0);
