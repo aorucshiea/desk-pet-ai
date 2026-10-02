@@ -3213,6 +3213,11 @@ async def _stream_chat_provider(
 
             log.info("MCP tool call: %s/%s args=%s", sn, tn, args)
 
+            # Plugin tools (自进化器官) don't produce the multimodal dict
+            # the screenshot extraction below expects — default to None so
+            # a pet/recall turn doesn't die on UnboundLocalError after the
+            # model already answered.
+            result = None
             _mgr = _kernel()
             if _mgr is not None and (sn == "pet" or tn in _mgr.all_tools()):
                 # plugin tool (自进化器官) — executed by the container
@@ -3249,7 +3254,7 @@ async def _stream_chat_provider(
             else:
                 messages.append({"role": "assistant", "content": f"[{tn}]"})
             # Build tool result content — multimodal if provider can see images
-            screenshot_b64 = result.get("screenshot_base64")
+            screenshot_b64 = result.get("screenshot_base64") if isinstance(result, dict) else None
             if screenshot_b64 and _can_see_images():
                 # For local providers (no function calling), use 'user' role
                 # because llama-server doesn't process images in 'tool' role
