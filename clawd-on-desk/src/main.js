@@ -3123,6 +3123,9 @@ registerSettingsIpc({
   getLanWsServer: () => _lanWss,
   getDeskPetChat: () => _petChat,
   getWorldGeometry: () => _worldGeometryRef,
+  // The decision loop needs the pet's current screen rect to rank nearby
+  // rigid bodies (space intuition). Same getter world-geometry already uses.
+  getPetBounds: () => (win && !win.isDestroyed() ? win.getBounds() : null),
 });
 
 registerSessionIpc({

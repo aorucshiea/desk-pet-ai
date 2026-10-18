@@ -801,24 +801,25 @@ def build_app(
             from .decision.loop import DecisionLoop
 
             if _ephemeral_ref is None:
-                _ephemeral_ref = EphemeralMemory()
+                _ephemeral_ref = EphemeralMemory(mem_ctx.theme_dir(mem_ctx.current_theme))
             if _intuition_registry_ref is None:
                 _intuition_registry_ref = IntuitionRegistry()
             if _body_log_ref is None:
                 _body_log_ref = BodyLog()
             if _decision_loop_ref is None:
-                def _collect_decision_state():
+                async def _collect_decision_state():
                     import time as _t
                     try:
                         mi = float(mood_store.emotion_index) if mood_store is not None else 0.0
                     except Exception:
                         mi = 0.0
                     hour = _t.localtime().tm_hour
+                    bodies = await _world_bodies_for_decision()
                     return {
                         "last_user_msg": _last_user_msg,
                         "mood_index": mi,
                         "idle_sec": max(0.0, _t.time() - _last_user_ts) if _last_user_ts else 0.0,
-                        "bodies": [],
+                        "bodies": bodies,
                         "recent_actions": len(getattr(_body_log_ref, "items", []) or []),
                         "time_of_day": "深夜" if 0 <= hour < 6 else "",
                     }
@@ -1604,6 +1605,17 @@ def build_app(
         _pet_plugins.services["mood"] = mood_store
         _pet_plugins.services["events"] = event_store
         _pet_plugins.services["memory"] = memory_store
+        # 换身体：瞬时记忆/身体日志属于当前身体，跟着换店（旧身体的
+        # 长期记忆仍在 themes/<slug>/ 里，不受影响）。
+        try:
+            if _ephemeral_ref is not None:
+                _ephemeral_ref.memory_dir = mem_ctx.theme_dir(mem_ctx.current_theme)
+                _ephemeral_ref.clear()
+                _ephemeral_ref.refresh_dir_snapshot()
+            if _body_log_ref is not None:
+                _body_log_ref.items.clear()
+        except Exception:
+            pass
         _pet_plugins.emit("theme_switched", theme=slug)
         return {
             "ok": True,
@@ -3031,6 +3043,11 @@ async def _world_tool(name: str, args: dict) -> str:
                 )
                 data = resp.json()
                 if data.get("status") == "ok":
+                    try:
+                        if _body_log_ref is not None:
+                            _body_log_ref.append(action, "id=%s" % body_id, source="intent")
+                    except Exception:
+                        pass
                     to = data.get("to") or {}
                     return "动作 %s 完成，刚体移动到 (x=%s, y=%s)" % (
                         action,
@@ -3044,6 +3061,42 @@ async def _world_tool(name: str, args: dict) -> str:
     except Exception as exc:
         return "[world] 连接桌宠失败：%s" % exc
     return "[world] 未知工具 %s" % name
+
+
+async def _world_bodies_for_decision() -> list[dict]:
+    """Bodies + distance to the pet, for the space intuition.
+
+    Best-effort: the decision loop must never block on Electron. On
+    timeout/error return [] — the space intuition then contributes nothing.
+    """
+    try:
+        port = _clawd_port()
+        async with httpx.AsyncClient(timeout=0.8) as client:
+            resp = await client.get(
+                "http://127.0.0.1:%d/world/bodies" % port,
+                headers=_clawd_headers(),
+            )
+            data = resp.json()
+        if data.get("status") == "error":
+            return []
+        pet = data.get("pet") or {}
+        px = py = None
+        if pet:
+            px = float(pet.get("x", 0)) + float(pet.get("width", 0)) / 2
+            py = float(pet.get("y", 0)) + float(pet.get("height", 0)) / 2
+        out = []
+        for b in data.get("bodies") or []:
+            r = b.get("rect") or {}
+            left, top = float(r.get("left", 0)), float(r.get("top", 0))
+            right, bottom = float(r.get("right", 0)), float(r.get("bottom", 0))
+            dist = 9999.0
+            if px is not None and py is not None:
+                cx, cy = (left + right) / 2, (top + bottom) / 2
+                dist = ((cx - px) ** 2 + (cy - py) ** 2) ** 0.5
+            out.append({"id": b.get("id"), "label": b.get("label") or "", "dist": round(dist)})
+        return out
+    except Exception:
+        return []
 
 
 async def _gather_tools(mcp_manager: MCPManager, req: ChatRequest) -> Optional[list[ToolDef]]:
@@ -3322,8 +3375,18 @@ async def _stream_chat_provider(
     def _on_walk_control(kind: str, dx: int | None, dy: int | None) -> None:
         if kind == "walk":
             _walk_queue.append({"event": "walk", "dx": dx, "dy": dy})
+            try:
+                if _body_log_ref is not None:
+                    _body_log_ref.append("walk", f"dx={dx}, dy={dy}", source="intent")
+            except Exception:
+                pass
         else:
             _walk_queue.append({"event": "walk_desktop"})
+            try:
+                if _body_log_ref is not None:
+                    _body_log_ref.append("walk_desktop", "", source="intent")
+            except Exception:
+                pass
 
     tag_filter = ControlTagFilter(on_control=_on_walk_control)
     narration_filter = ToolNarrationFilter()

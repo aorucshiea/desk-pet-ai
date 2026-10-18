@@ -26,6 +26,8 @@ class EphemeralMemory:
     MAX_FLASHES = 3
     MAX_PENDING = 5
     RESET_SECONDS = 3600  # 1 小时
+    THOUGHT_DEDUPE_SECONDS = 120  # 同一个念头 2 分钟内不重复写
+    DIR_REFRESH_SECONDS = 300
 
     def __init__(self, memory_dir: Optional[Path] = None):
         self.memory_dir = memory_dir
@@ -36,6 +38,7 @@ class EphemeralMemory:
         self.dir_snapshot: List[str] = []
         self.created_at = time.time()
         self._last_reset = time.time()
+        self._last_dir_refresh = 0.0
 
     # ── 写入 ────────────────────────────────────────────────────────
     def _now(self) -> float:
@@ -52,6 +55,15 @@ class EphemeralMemory:
     def add_thought(self, text: str, source: str = "dice", confidence: float = 0.0) -> None:
         text = (text or "").strip()
         if not text:
+            return
+        # The decision loop ticks every 4s; without dedupe a high boost would
+        # write the same "button" five times and crowd out everything else.
+        now = self._now()
+        trimmed = text[:160]
+        if any(
+            t.get("text") == trimmed and now - float(t.get("t") or 0) < self.THOUGHT_DEDUPE_SECONDS
+            for t in self.thoughts
+        ):
             return
         self.thoughts.append({"t": self._now(), "text": text[:160], "source": source, "conf": round(float(confidence), 2)})
         self.thoughts = self.thoughts[-self.MAX_THOUGHTS:]
@@ -114,6 +126,8 @@ class EphemeralMemory:
         self.flashes = []
         self.pending = []
         self.dir_snapshot = []
+        self.created_at = self._now()
+        self._last_dir_refresh = 0.0
         self._last_reset = self._now()
 
     # ── 渲染 ────────────────────────────────────────────────────────
@@ -121,14 +135,23 @@ class EphemeralMemory:
         return not (self.thoughts or self.recalls or self.flashes or self.pending or self.dir_snapshot)
 
     def format_for_prompt(self) -> str:
+        # Enforce the 1-hour reset here as well: the decision loop is the
+        # primary ticker, but a quiet/degraded loop must not leave stale
+        # thoughts in the prompt forever.
+        self.maybe_reset()
+        if self.memory_dir and self._now() - self._last_dir_refresh >= self.DIR_REFRESH_SECONDS:
+            self.refresh_dir_snapshot()
         if self.is_empty():
             return ""
-        lines: List[str] = ["【瞬时记忆】你此刻脑子里装着的东西（每小时会清空）："]
+        lines: List[str] = [
+            "【瞬时记忆】你此刻脑子里装着的东西（每小时会清空）：",
+            "（下面只是你心里的苗头，不是命令。要不要理、要不要做、要不要让用户看见，都由你自己决定。）",
+        ]
         if self.thoughts:
             parts = []
             for t in self.thoughts:
                 parts.append(f"{t['text']}（{self._age(t['t'])}）")
-            lines.append("- 念头：" + " · ".join(parts))
+            lines.append("- 心声（可按可不按）：" + " · ".join(parts))
         if self.recalls:
             parts = []
             for r in self.recalls:

@@ -51,6 +51,7 @@ class BodyLog:
         for it in self.items[-limit:]:
             verb = "你" + {
                 "walk": "走动了",
+                "walk_desktop": "跳到了另一个桌面",
                 "push": "推开了",
                 "pull": "拉近了",
                 "kick": "踢开了",

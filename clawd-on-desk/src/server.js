@@ -374,6 +374,14 @@ function startHttpServer() {
       const out = geo && typeof geo.listBodies === "function"
         ? geo.listBodies()
         : { status: "error", message: "world geometry unavailable", bodies: [] };
+      // The gateway's decision loop ranks bodies by distance to the pet;
+      // include the current screen rect (DIP) so it does not have to guess.
+      if (out && out.status === "ok" && typeof ctx.getPetBounds === "function") {
+        try {
+          const pet = ctx.getPetBounds();
+          if (pet) out.pet = pet;
+        } catch {}
+      }
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(out));
     } else if (req.method === "POST" && req.url === "/world/op") {

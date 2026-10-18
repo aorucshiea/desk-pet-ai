@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 from typing import Any, Callable, Dict, Optional
 
 from .integrate import integrate
@@ -31,7 +32,9 @@ class DecisionLoop:
         self.interval_sec = interval_sec
         self._task: Optional[asyncio.Task] = None
         self._stop = False
+        self._ticks = 0
         self.last: Dict[str, Any] = {}
+        self.last_error = ""
 
     async def _run(self) -> None:
         while not self._stop:
@@ -39,16 +42,30 @@ class DecisionLoop:
                 await asyncio.sleep(self.interval_sec)
                 if self._stop:
                     break
+                self._ticks += 1
+                # 1-hour clear is enforced by the ticker (and again by
+                # format_for_prompt as a safety net).
+                self.ephemeral.maybe_reset()
+                if self._ticks % 15 == 0:
+                    self.ephemeral.refresh_dir_snapshot()
                 state = self.collect_state() or {}
+                if inspect.isawaitable(state):
+                    state = await state
                 needs = needs_decision(state)
                 result = integrate(self.registry, state, needs)
                 self.last = {"needs": needs, "result": result}
-                if result.get("status") == "ok":
-                    for t in result.get("thoughts") or []:
-                        self.ephemeral.add_thought(t, source="integration", confidence=result.get("confidence", 0))
+                voice = result.get("voice") if result.get("status") == "ok" else ""
+                if voice:
+                    # 一条心声 = 一个可按可不按的按钮。只写瞬忆，不执行动作。
+                    self.ephemeral.add_thought(
+                        voice,
+                        source=result.get("kind") or "integration",
+                        confidence=result.get("confidence", 0),
+                    )
             except asyncio.CancelledError:
                 break
-            except Exception:
+            except Exception as exc:
+                self.last_error = str(exc)
                 continue
 
     def start(self) -> None:
