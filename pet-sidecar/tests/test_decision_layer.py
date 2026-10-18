@@ -18,7 +18,7 @@ from gateway.decision.body_log import BodyLog
 from gateway.decision.dice import roll
 from gateway.decision.integrate import integrate
 from gateway.decision.loop import DecisionLoop
-from gateway.decision.meta import needs_decision
+from gateway.decision.meta import decide_thinking, needs_decision
 from gateway.decision.registry import Intuition, IntuitionRegistry
 from gateway.memory.ephemeral import EphemeralMemory
 
@@ -49,6 +49,18 @@ def test_meta_flags_tired_user():
     assert needs["boost"] == 0.9
     assert "emotion" in needs["focus"]
     assert "negative_mood" in needs["signals"]
+
+
+def test_thinking_is_downgraded_for_small_talk():
+    assert decide_thinking({"last_user_msg": "你好"})["thinking"] is False
+    assert decide_thinking({"last_user_msg": "今天天气不错"})["thinking"] is False
+
+
+def test_thinking_is_kept_for_code_and_long_questions():
+    code = "这个函数为什么报错？\n```\ndef f():\n    pass\n```"
+    assert decide_thinking({"last_user_msg": code})["thinking"] is True
+    long_question = "帮我分析一下这个架构方案，怎么设计比较合理？" + "细节" * 45
+    assert decide_thinking({"last_user_msg": long_question})["thinking"] is True
 
 
 def test_integrate_emotion_is_a_button_not_an_activity_decision():

@@ -804,6 +804,12 @@ def build_app(
                 _ephemeral_ref = EphemeralMemory(mem_ctx.theme_dir(mem_ctx.current_theme))
             if _intuition_registry_ref is None:
                 _intuition_registry_ref = IntuitionRegistry()
+                try:
+                    _intuition_registry_ref.load_custom(
+                        Path(_ephemeral_ref.memory_dir) / "intuitions.json"
+                    )
+                except Exception as exc:
+                    log.warning("custom intuitions load failed: %s", exc)
             if _body_log_ref is None:
                 _body_log_ref = BodyLog()
             if _decision_loop_ref is None:
@@ -1614,6 +1620,11 @@ def build_app(
                 _ephemeral_ref.refresh_dir_snapshot()
             if _body_log_ref is not None:
                 _body_log_ref.items.clear()
+            if _intuition_registry_ref is not None and _ephemeral_ref is not None:
+                _intuition_registry_ref.clear_custom()
+                _intuition_registry_ref.load_custom(
+                    Path(_ephemeral_ref.memory_dir) / "intuitions.json"
+                )
         except Exception:
             pass
         _pet_plugins.emit("theme_switched", theme=slug)
@@ -3063,12 +3074,19 @@ async def _world_tool(name: str, args: dict) -> str:
     return "[world] 未知工具 %s" % name
 
 
-async def _world_bodies_for_decision() -> list[dict]:
-    """Bodies + distance to the pet, for the space intuition.
+_WORLD_VIEW_CACHE: dict = {"t": 0.0, "bodies": [], "facing": "right"}
+_WORLD_VIEW_TTL = 2.0
+
+
+async def _world_bodies_for_decision(force: bool = False) -> list[dict]:
+    """Bodies + distance/bearing to the pet, cached for 2s.
 
     Best-effort: the decision loop must never block on Electron. On
     timeout/error return [] — the space intuition then contributes nothing.
     """
+    now = time.time()
+    if not force and now - float(_WORLD_VIEW_CACHE["t"]) < _WORLD_VIEW_TTL:
+        return list(_WORLD_VIEW_CACHE["bodies"])
     try:
         port = _clawd_port()
         async with httpx.AsyncClient(timeout=0.8) as client:
@@ -3078,7 +3096,10 @@ async def _world_bodies_for_decision() -> list[dict]:
             )
             data = resp.json()
         if data.get("status") == "error":
+            _WORLD_VIEW_CACHE.update({"t": now, "bodies": [], "facing": "right"})
             return []
+        from .decision.vision import visible
+        facing = data.get("facing") or "right"
         pet = data.get("pet") or {}
         px = py = None
         if pet:
@@ -3089,14 +3110,88 @@ async def _world_bodies_for_decision() -> list[dict]:
             r = b.get("rect") or {}
             left, top = float(r.get("left", 0)), float(r.get("top", 0))
             right, bottom = float(r.get("right", 0)), float(r.get("bottom", 0))
-            dist = 9999.0
+            item = {
+                "id": b.get("id"),
+                "label": b.get("label") or "",
+                "dist": 9999.0,
+                "angle": 0.0,
+                "in_fov": False,
+            }
             if px is not None and py is not None:
                 cx, cy = (left + right) / 2, (top + bottom) / 2
-                dist = ((cx - px) ** 2 + (cy - py) ** 2) ** 0.5
-            out.append({"id": b.get("id"), "label": b.get("label") or "", "dist": round(dist)})
+                item.update(visible(cx - px, cy - py, facing))
+            out.append(item)
+        _WORLD_VIEW_CACHE.update({"t": now, "bodies": out, "facing": facing})
         return out
     except Exception:
+        _WORLD_VIEW_CACHE.update({"t": now, "bodies": [], "facing": "right"})
         return []
+
+
+def _format_vision_context() -> str:
+    """Only what the pet can actually see — not the whole desktop."""
+    bodies = _WORLD_VIEW_CACHE.get("bodies") or []
+    visible_bodies = [b for b in bodies if b.get("in_fov")]
+    if not visible_bodies:
+        return ""
+    from .decision.vision import label_for_angle
+    facing = _WORLD_VIEW_CACHE.get("facing") or "right"
+    lines = ["【你的视野】你现在朝%s看。看得见：" % ("右" if facing == "right" else "左")]
+    for b in visible_bodies[:5]:
+        lines.append("- %s：%s %dpx" % (
+            b.get("label") or "刚体",
+            label_for_angle(float(b.get("angle") or 0)),
+            int(float(b.get("dist") or 0)),
+        ))
+    lines.append("（视野外的东西你看不见；想看清可以走近或转头。）")
+    return "\n".join(lines)
+
+
+def _intuition_tool(name: str, args: dict) -> str:
+    """Built-in tools for the model to grow/prune its own intuitions."""
+    reg = _intuition_registry_ref
+    if reg is None:
+        return "[intuition] 决策层没有启动，暂时不能改直觉。"
+    if name == "pet_list_intuitions":
+        items = reg.describe()
+        lines = ["当前直觉（内置不可删）："]
+        for it in items:
+            lines.append(
+                "- %s（%s，p_emit=%s，weight=%s%s）：%s" % (
+                    it["name"], it["kind"], it["p_emit"], it["weight"],
+                    "，内置" if it["builtin"] else "", it["description"],
+                )
+            )
+        return "\n".join(lines)
+    if name == "pet_add_intuition":
+        try:
+            p_emit = float(args.get("p_emit") if args.get("p_emit") is not None else 0.1)
+            weight = float(args.get("weight") if args.get("weight") is not None else 1.0)
+        except Exception:
+            return "[intuition] p_emit/weight 必须是数字。"
+        res = reg.add_custom(
+            name=str(args.get("name") or ""),
+            description=str(args.get("description") or ""),
+            code=str(args.get("code") or ""),
+            kind=str(args.get("kind") or "custom"),
+            p_emit=p_emit,
+            weight=weight,
+        )
+        if res.get("status") != "ok":
+            return "[intuition] 注册失败：%s" % res.get("message")
+        try:
+            if _ephemeral_ref is not None and _ephemeral_ref.memory_dir:
+                reg.save_custom(Path(_ephemeral_ref.memory_dir) / "intuitions.json")
+        except Exception as exc:
+            return "[intuition] 已注册，但保存失败：%s" % exc
+        return "直觉 %s 已注册。下一次决策循环就会把它纳入。" % res.get("name")
+    if name == "pet_remove_intuition":
+        target = str(args.get("name") or "").strip()
+        res = reg.remove(target)
+        if res.get("status") != "ok":
+            return "[intuition] 删除失败：%s" % res.get("message")
+        return "已删除直觉 %s。" % target
+    return "[intuition] 未知工具 %s" % name
 
 
 async def _gather_tools(mcp_manager: MCPManager, req: ChatRequest) -> Optional[list[ToolDef]]:
@@ -3147,6 +3242,46 @@ async def _gather_tools(mcp_manager: MCPManager, req: ChatRequest) -> Optional[l
             "required": ["id", "action"],
         },
     ))
+    # 自创直觉（自进化：给自己长一条新的判断方式）。
+    if _intuition_registry_ref is not None:
+        tool_defs.append(ToolDef(
+            server_name="pet-intuition",
+            name="pet_add_intuition",
+            description=(
+                "给自己写一条新的直觉：纯函数，输入 state，返回 0..1。"
+                "state 里有 last_user_msg / mood_index / idle_sec / bodies / recent_actions。"
+                "code 必须定义 `def intuition(state): ...`；不能 import、读写文件或联网。"
+                "越强的信号越容易成为一条「可选心声」，但按不按仍由你决定。最多 16 条。"
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "1-40 字，字母/数字/_/-/中文"},
+                    "description": {"type": "string", "description": "这条直觉管什么"},
+                    "code": {"type": "string", "description": "def intuition(state): ..."},
+                    "kind": {"type": "string", "description": "custom/emotion/space/habit"},
+                    "p_emit": {"type": "number", "description": "默认浮现概率 0-0.9"},
+                    "weight": {"type": "number", "description": "权重 0.1-3.0"},
+                },
+                "required": ["name", "description", "code"],
+            },
+        ))
+        tool_defs.append(ToolDef(
+            server_name="pet-intuition",
+            name="pet_list_intuitions",
+            description="列出你现在的所有直觉（内置 + 自创）及其浮现概率/权重。",
+            input_schema={"type": "object", "properties": {}},
+        ))
+        tool_defs.append(ToolDef(
+            server_name="pet-intuition",
+            name="pet_remove_intuition",
+            description="删除一条你自己创造的直觉（内置的三个不能删）。",
+            input_schema={
+                "type": "object",
+                "properties": {"name": {"type": "string"}},
+                "required": ["name"],
+            },
+        ))
     return tool_defs or None
 
 
@@ -3191,6 +3326,26 @@ async def _stream_chat_provider(
 ) -> AsyncGenerator[bytes, None]:
     """Provider-based streaming chat with MCP tool support."""
     log = get_logger()
+
+    # 元直觉的第二座位：thinking 降级。必须在 _resolve_provider 之前——
+    # LocalProvider 在构造时就吃 enable_thinking，晚了就改不动了。
+    _thinking_decision = None
+    if not req.silent and req.thinking and req.messages:
+        try:
+            from .decision.meta import decide_thinking
+            _last = req.messages[-1]
+            _c = getattr(_last, "content", "")
+            if isinstance(_c, list):
+                _c = next(
+                    (p.get("text") for p in _c if isinstance(p, dict) and p.get("type") == "text"),
+                    "",
+                )
+            _thinking_decision = decide_thinking({"last_user_msg": str(_c or "")})
+            if not _thinking_decision.get("thinking"):
+                req.thinking = False
+            log.info("thinking decision: %s", _thinking_decision)
+        except Exception as exc:
+            _note_failure("decide_thinking", exc)
 
     if not req.silent:
         bridge.new_session()
@@ -3257,6 +3412,19 @@ async def _stream_chat_provider(
         _last_user_msg = _user_text_for_log
         _last_user_ts = __import__("time").time()
 
+    # 关键词闪现（第三层，最低概率）：在瞬忆注入之前写入，本轮就能看见。
+    if _user_text_for_log and _ephemeral_ref is not None:
+        try:
+            from .memory.keyword_flash import maybe_flash
+            maybe_flash(
+                _user_text_for_log,
+                getattr(_ephemeral_ref, "memory_dir", None),
+                get_event_store(),
+                _ephemeral_ref,
+            )
+        except Exception as exc:
+            _note_failure("keyword_flash", exc)
+
     system = req.system
 
     # ── 决策层心声注入：瞬时记忆 + 身体日志（让 LLM 知情，不梦游）──
@@ -3269,6 +3437,14 @@ async def _stream_chat_provider(
             _bl_text = _body_log_ref.format_for_prompt()
             if _bl_text:
                 system = (system or "") + "\n\n" + _bl_text
+        # 视锥：只把"看得见"的刚体告诉它，而不是整张桌面。
+        try:
+            await _world_bodies_for_decision()
+            _vision_text = _format_vision_context()
+            if _vision_text:
+                system = (system or "") + "\n\n" + _vision_text
+        except Exception:
+            pass
     except Exception:
         pass
 
@@ -3544,7 +3720,11 @@ async def _stream_chat_provider(
             # model already answered.
             result = None
             _mgr = _kernel()
-            if sn == "pet-world":
+            if sn == "pet-intuition":
+                # 自创直觉（内置工具；代码走 plugin_policy 策略闸）
+                result_text = _intuition_tool(tn, args)
+                summary = result_text or f"[Tool {tn} completed]"
+            elif sn == "pet-world":
                 # 桌面刚体工具（内置，不受插件沙箱限制）
                 result_text = await _world_tool(tn, args)
                 summary = result_text or f"[Tool {tn} completed]"

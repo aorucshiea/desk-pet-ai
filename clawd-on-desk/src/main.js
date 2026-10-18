@@ -1170,6 +1170,9 @@ let _petWalkBusy = false;
 ipcMain.on("pet:pet-walk", (_event, { dx, dy } = {}) => {
   try {
     if (_petWalkBusy) return;
+    // 视锥用：模型自己走的方向就是它的朝向。
+    if (Number(dx) > 0) petFacing = "right";
+    else if (Number(dx) < 0) petFacing = "left";
     const startBounds = getPetWindowBounds();
     const wa = getNearestWorkArea(
       startBounds.x + startBounds.width / 2,
@@ -1671,6 +1674,8 @@ agentRuntime = createAgentRuntimeMain({
 });
 
 // ── HTTP server — delegated to src/server.js ──
+// 决策层视锥用：最近一次移动方向（"right" | "left"）。默认朝右。
+let petFacing = "right";
 const _serverCtx = {
   get manageClaudeHooksAutomatically() { return manageClaudeHooksAutomatically; },
   get autoStartWithClaude() { return autoStartWithClaude; },
@@ -1709,10 +1714,13 @@ const _serverCtx = {
   },
   // 桌面刚体（AI 工具 /world/bodies + /world/op 通过它访问世界几何）
   getWorldGeometry: () => _worldGeometryRef,
+  getPetFacing: () => petFacing,
   // AI 自主移动（决策层 /pet/walk）：dx, dy 像素增量，clamp 在工作区内
   walkPet: (dx, dy) => {
     try {
       if (!win || win.isDestroyed()) return { status: "error", message: "window gone" };
+      if (dx > 0) petFacing = "right";
+      else if (dx < 0) petFacing = "left";
       const b = win.getBounds();
       const wa = screen.getPrimaryDisplay().workArea;
       const nextX = Math.max(wa.x, Math.min(wa.x + wa.width - b.width, b.x + dx));

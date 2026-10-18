@@ -15,6 +15,42 @@ from typing import Any, Dict, List
 from .registry import NEGATIVE_HINTS
 
 
+# 需要"深度思考"的信号。不是所有消息都值得开 thinking——简单寒暄开
+# thinking 只会多几百毫秒、多一堆内心戏。
+DEEP_HINTS = (
+    "```", "def ", "class ", "Traceback", "报错", "error:", "stack",
+    "函数", "架构", "设计", "分析", "比较", "为什么", "怎么", "如何", "方案",
+)
+THINKING_THRESHOLD = 0.5
+
+
+def decide_thinking(state: Dict[str, Any]) -> Dict[str, Any]:
+    """元直觉的第二个座位：这条消息值不值得开深度思考。
+
+    只做"降级"——`thinking` 是用户在设置里允许的能力，元直觉可以在
+    简单消息上关掉它省时间，但不会替用户强行打开一个没开的能力。
+    """
+    msg = str(state.get("last_user_msg") or "").strip()
+    score = 0.0
+    reasons: List[str] = []
+
+    if len(msg) >= 80:
+        score += 0.35
+        reasons.append("long")
+    if any(h in msg for h in DEEP_HINTS):
+        score += 0.4
+        reasons.append("deep_hint")
+    if msg.count("?") + msg.count("？") >= 1:
+        score += 0.1
+        reasons.append("question")
+
+    return {
+        "thinking": score >= THINKING_THRESHOLD,
+        "score": round(min(1.0, score), 2),
+        "reasons": reasons,
+    }
+
+
 def needs_decision(state: Dict[str, Any]) -> Dict[str, Any]:
     """返回 {boost: float, focus: List[str], signals: List[str]}"""
     msg = str(state.get("last_user_msg") or "")
