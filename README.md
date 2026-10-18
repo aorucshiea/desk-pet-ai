@@ -1,7 +1,3 @@
-<p align="center">
-  <img src="clawd-on-desk/assets/icon.png" width="120" alt="Desk Pet AI">
-</p>
-
 <h1 align="center">Desk Pet AI</h1>
 
 <p align="center">
@@ -18,7 +14,7 @@
 > [!WARNING]
 > 早期开发中：功能和接口都会变，安装包与文档可能落后于代码。请自行承担风险。
 
-Desk Pet AI 不是给桌面换一张皮肤，而是在尝试给一个 0.9B–1B 级的小模型造一套**能长期存在的身体与潜意识**：
+Desk Pet AI 不是给桌面换一张皮肤，而是在尝试让模型拥有一套**能长期存在的身体与潜意识**：
 
 - **模型**负责说话、做决定；
 - **Python 网关**负责记忆、情绪、直觉、工具和「潜意识」；
@@ -203,7 +199,7 @@ cd pet-sidecar && uv run pytest -q
 
 ## English overview
 
-**Desk Pet AI** is a local-first desktop pet with a persistent self. A small local model (GGUF via llama.cpp, optional LoRA) does the talking; a Python gateway owns memory, emotion, intuition, tools and the "subconscious"; two shells (Electron / Tauri) draw it on your desktop.
+**Desk Pet AI** is a local-first desktop pet with a persistent self. A local model (GGUF via llama.cpp, optional LoRA) does the talking; a Python gateway owns memory, emotion, intuition, tools and the "subconscious"; two shells (Electron / Tauri) draw it on your desktop.
 
 - **Memory as self** — weighted events, decay, probabilistic recall, resonance, dreaming, and a model-owned `记忆/` folder.
 - **Emotion** — a body-emotion index plus a language-emotion layer, both feeding generation.
