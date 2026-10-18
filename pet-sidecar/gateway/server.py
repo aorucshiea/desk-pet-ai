@@ -1575,7 +1575,7 @@ def build_app(
         try:
             from .memory import sleep_compress
             _req = ChatRequest(messages=[], system=None, tools_enabled=False, silent=True)
-            _provider = _resolve_provider(registry, _req, server, server_state, log, lora_arr)
+            _provider = _resolve_provider(provider_registry, _req, server, state, log, None)
             result = await sleep_compress.compress_day(_provider, day)
             if result.get("status") == "ok":
                 try:
