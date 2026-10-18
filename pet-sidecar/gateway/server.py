@@ -1559,6 +1559,35 @@ def build_app(
             "memory_dir": str(mem_ctx.theme_dir(slug)),
         }
 
+    @app.post("/api/compress")
+    async def compress_conversation(payload: dict = None):
+        """睡眠压缩：把某天的对话日志压缩成记忆条 + 关键词。
+
+        裸模型调用（无 persona / 记忆注入）——唯一指令是压缩。
+        产物：潜意识记忆（EventStore）+ `memories/keywords.json`。
+        body: {"day": "YYYY-MM-DD"}（缺省今天）
+        """
+        day = None
+        try:
+            day = str((payload or {}).get("day") or "").strip() or None
+        except Exception:
+            day = None
+        try:
+            from .memory import sleep_compress
+            _req = ChatRequest(messages=[], system=None, tools_enabled=False, silent=True)
+            _provider = _resolve_provider(registry, _req, server, server_state, log, lora_arr)
+            result = await sleep_compress.compress_day(_provider, day)
+            if result.get("status") == "ok":
+                try:
+                    result["persisted"] = sleep_compress.persist(
+                        result["memories"], result["keywords"], event_store, day=result.get("day")
+                    )
+                except Exception as exc:
+                    result["persist_error"] = str(exc)
+            return result
+        except Exception as exc:
+            return {"status": "error", "message": str(exc)}
+
     # ── LingLing episodic memory endpoints ───────────────────────────
 
     @app.get("/api/events/context")
