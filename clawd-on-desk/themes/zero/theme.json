@@ -52,6 +52,10 @@
     "supported": false
   },
 
+  "visibleBottomRatio": 0.99,
+  "fileVisibleBottomRatio": {
+    "zero-idle.gif": 0.994
+  },
   "objectScale": {
     "widthRatio": 0.55,
     "heightRatio": 0.55,

@@ -27,6 +27,11 @@ const DEFAULTS = {
   settleEpsPx: 0.6,     // 贴地判定容差
   externalHoldMs: 500,  // 外部位置变化后的让位时间
   maxDtMs: 50,          // 保留常量供外部读取；解析路径不再用它截断
+  // 碰撞弹射：支撑面升到脚底之上超过这个距离时，不再瞬移贴住，而是给
+  // 向上冲量按抛物线弹到新支撑面（开始菜单撞猫 = 弹上去，2026-10-18）。
+  // 小于此值（任务栏弹出 30px 之类）仍按刚性顶起处理，保持跟手。
+  bounceMinPx: 60,
+  bounceFactor: 1.05,   // 速度余量：略超调后落回，更有"弹"的感觉
 };
 
 function createWorldPhysics(options) {
@@ -78,12 +83,21 @@ function createWorldPhysics(options) {
     const target = targetWinY(b, floor);
     if (target === null) return { holding: true, winY: b.y, grounded: state.grounded, landingVy: 0 };
     if (state.grounded) {
+      const cb = contentBottom(b);
+      const penetration = cb - floor; // >0 = 支撑面升到脚底之上（被撞）
+      if (g > 0 && penetration > cfg.bounceMinPx) {
+        // 被碰撞（大跨度顶起）：向上冲量 + 抛物线飞到新支撑面。
+        // 速度 = sqrt(2·g·穿透深度)（刚好到达）× 系数（略微超调后落回）。
+        const upSpeed = Math.sqrt(2 * g * penetration) * cfg.bounceFactor;
+        return { holding: false, winY: b.y, grounded: false,
+                 fall: { t0: nowT, winY0: b.y, vy0: -upSpeed }, landingVy: 0 };
+      }
       if (g > 0 && floor - (contentBottom(b)) > cfg.settleEpsPx) {
         // 支撑面下降 → 进入解析掉落
         return { holding: false, winY: b.y, grounded: false,
                  fall: { t0: nowT, winY0: b.y, vy0: 0 }, landingVy: 0 };
       }
-      // 贴住（地板抬升顶起 / 内容几何变化 reconcile）
+      // 贴住（小穿透刚性顶起 / 内容几何变化 reconcile）
       if (Math.abs(b.y - target) > cfg.settleEpsPx) {
         return { holding: false, winY: target, grounded: true, landingVy: 0 };
       }
@@ -93,12 +107,15 @@ function createWorldPhysics(options) {
       // 失重：悬浮。不进入掉落，也不强制贴地——停在原地。
       return { holding: true, winY: b.y, grounded: state.grounded, landingVy: 0 };
     }
-    // falling：参数方程 y(t) = y0 + vy0·t + ½·g·t²
+    // falling / 弹射：参数方程 y(t) = y0 + vy0·t + ½·g·t²
     const t = (nowT - state.fall.t0) / 1000;
     const winY = state.fall.winY0 + state.fall.vy0 * t + 0.5 * g * t * t;
-    if (winY >= target) {
+    const vy = state.fall.vy0 + g * t;
+    // 弹射起跳时 vy0 < 0（向上），起点在目标面下方——必须等下落阶段
+    // （vy > 0）穿过目标面才算落地，否则起跳当帧就误判落地（死循环）。
+    if (vy > 0 && winY >= target) {
       return { holding: false, winY: target, grounded: true,
-               landingVy: state.fall.vy0 + g * t };
+               landingVy: vy };
     }
     return { holding: false, winY, grounded: false, fall: state.fall, landingVy: 0 };
   }
@@ -152,6 +169,7 @@ function createWorldPhysics(options) {
     },
     stop() { if (timer) clearInterval(timer); timer = null; lastApplied = null; fall = null; },
     isRunning: () => !!timer,
+    stepNow: tick,                 // 地板变化时立即补一帧（事件驱动，少一个 tick 的延迟）
     _stepPosition: stepPosition,   // 测试钩子
     _defaults: DEFAULTS,
   };

@@ -262,6 +262,79 @@ function stopClaudeSettingsWatcher() {
   return claudeSettingsWatcher.stop();
 }
 
+function handleWorldOpPost(req, res, { ctx }) {
+  const chunks = [];
+  let size = 0;
+  req.on("data", (chunk) => {
+    size += chunk.length;
+    if (size > 8192) {
+      try { req.destroy(); } catch {}
+      return;
+    }
+    chunks.push(chunk);
+  });
+  req.on("end", () => {
+    let payload = {};
+    try {
+      payload = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+    } catch {}
+    const geo = typeof ctx.getWorldGeometry === "function" ? ctx.getWorldGeometry() : null;
+    const reply = (code, obj) => {
+      res.writeHead(code, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(obj));
+    };
+    if (!geo || typeof geo.operateBody !== "function") {
+      reply(503, { status: "error", message: "desktop physics is not running" });
+      return;
+    }
+    const id = Number(payload && payload.id);
+    const action = payload && typeof payload.action === "string" ? payload.action : "";
+    let out;
+    try {
+      out = geo.operateBody(id, action, { distance: payload && payload.distance });
+    } catch (err) {
+      out = { status: "error", message: (err && err.message) || String(err) };
+    }
+    reply(out && out.status === "ok" ? 200 : 400, out);
+  });
+}
+
+function handlePetWalkPost(req, res, { ctx }) {
+  const chunks = [];
+  let size = 0;
+  req.on("data", (chunk) => {
+    size += chunk.length;
+    if (size > 4096) {
+      try { req.destroy(); } catch {}
+      return;
+    }
+    chunks.push(chunk);
+  });
+  req.on("end", () => {
+    let payload = {};
+    try {
+      payload = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+    } catch {}
+    const reply = (code, obj) => {
+      res.writeHead(code, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(obj));
+    };
+    const move = typeof ctx.walkPet === "function" ? ctx.walkPet : null;
+    if (!move) {
+      reply(503, { status: "error", message: "walk unavailable" });
+      return;
+    }
+    let out;
+    try {
+      out = move(Number(payload && payload.dx) || 0, Number(payload && payload.dy) || 0);
+      if (!out || typeof out !== "object") out = { status: "error", message: "walk returned nothing" };
+    } catch (err) {
+      out = { status: "error", message: (err && err.message) || String(err) };
+    }
+    reply(out.status === "ok" ? 200 : 400, out);
+  });
+}
+
 function startHttpServer() {
   const loadTokenFn = ctx.loadServerToken || loadOrCreateToken;
   serverToken = loadTokenFn();
@@ -295,6 +368,20 @@ function startHttpServer() {
         ctx,
         createRequestHookRecorder,
       });
+    } else if (req.method === "GET" && req.url === "/world/bodies") {
+      // 桌面刚体列表（AI 工具 pet_world_bodies 用）
+      const geo = typeof ctx.getWorldGeometry === "function" ? ctx.getWorldGeometry() : null;
+      const out = geo && typeof geo.listBodies === "function"
+        ? geo.listBodies()
+        : { status: "error", message: "world geometry unavailable", bodies: [] };
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(out));
+    } else if (req.method === "POST" && req.url === "/world/op") {
+      // AI 操作刚体：{ id, action: "push"|"pull"|"kick"|"grab", distance? }
+      handleWorldOpPost(req, res, { ctx });
+    } else if (req.method === "POST" && req.url === "/pet/walk") {
+      // AI 自主移动：{ dx, dy }（决策层/测试用，clamp 到工作区）
+      handlePetWalkPost(req, res, { ctx });
     } else {
       res.writeHead(404);
       res.end();

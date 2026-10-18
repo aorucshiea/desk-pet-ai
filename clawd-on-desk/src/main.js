@@ -1707,12 +1707,30 @@ const _serverCtx = {
       }
     } catch {}
   },
+  // 桌面刚体（AI 工具 /world/bodies + /world/op 通过它访问世界几何）
+  getWorldGeometry: () => _worldGeometryRef,
+  // AI 自主移动（决策层 /pet/walk）：dx, dy 像素增量，clamp 在工作区内
+  walkPet: (dx, dy) => {
+    try {
+      if (!win || win.isDestroyed()) return { status: "error", message: "window gone" };
+      const b = win.getBounds();
+      const wa = screen.getPrimaryDisplay().workArea;
+      const nextX = Math.max(wa.x, Math.min(wa.x + wa.width - b.width, b.x + dx));
+      const nextY = Math.max(wa.y, Math.min(wa.y + wa.height - b.height, b.y + dy));
+      petWindowRuntime.applyPetWindowPosition(nextX, nextY);
+      return { status: "ok", x: Math.round(nextX), y: Math.round(nextY) };
+    } catch (err) {
+      return { status: "error", message: (err && err.message) || String(err) };
+    }
+  },
 };
 const _server = require("./server")(_serverCtx);
 const { startHttpServer, getHookServerPort } = _server;
 
 // ── LAN WebSocket bridge for PWA mobile clients (lazy-loaded) ──
 let _lanWss = null;
+// 桌面物理的世界几何实例（设置页的刚体管理通过这个引用访问）
+let _worldGeometryRef = null;
 if (_settingsController.get("mobilePreviewEnabled") === true) {
   const { initMobilePreviewServer } = require("./network/mobile-preview-server");
   _lanWss = initMobilePreviewServer({
@@ -3104,6 +3122,7 @@ registerSettingsIpc({
   aboutHeroSvgPath: path.join(__dirname, "..", "assets", "svg", "model-mark.svg"),
   getLanWsServer: () => _lanWss,
   getDeskPetChat: () => _petChat,
+  getWorldGeometry: () => _worldGeometryRef,
 });
 
 registerSessionIpc({
@@ -3568,17 +3587,46 @@ if (!gotTheLock) {
       if (process.env.PET_PHYSICS !== "0" && physicsEnabled) {
         const createWorldGeometry = require("./world-geometry");
         const createWorldPhysics = require("./world-physics");
-        const worldGeometry = createWorldGeometry({ screen, isWin });
+        const worldGeometry = createWorldGeometry({
+          screen,
+          isWin,
+          // 猫的窗口矩形（DIP）——刚体只在覆盖猫 x 范围内生效
+          getPetBounds: () => (win && !win.isDestroyed() ? win.getBounds() : null),
+          // 猫脚的实时位置（内容底）：从窗口上方落到刚体上时必须用实时值，
+          // 缓存 floorY 会让猫穿过刚体直接落地（2026-10-18）。
+          getPetFeet: () => {
+            if (!win || win.isDestroyed()) return null;
+            const b = win.getBounds();
+            const r = petWindowRuntime.getObjRect(b);
+            if (!r) return null;
+            return r.y + r.h * petWindowRuntime.getVisibleBottomRatio();
+          },
+          // 刚体增删后持久化到 prefs（重启后恢复）
+          onBodiesChange: (list) => {
+            try { _settingsController.applyUpdate("rigidBodies", list); } catch (_) {}
+          },
+        });
+        _worldGeometryRef = worldGeometry;
+        // 恢复上次保存的刚体（窗口按类名+标题重新绑定，图标按索引重读）
+        try {
+          const savedBodies = _settingsController.get("rigidBodies");
+          if (Array.isArray(savedBodies) && savedBodies.length) {
+            worldGeometry.restoreBodies(savedBodies);
+          }
+        } catch (_) {}
         const worldPhysics = createWorldPhysics({
           getBounds: () => (win && !win.isDestroyed() ? win.getBounds() : null),
           setPosition: (x, y) => {
             if (win && !win.isDestroyed()) petWindowRuntime.applyPetWindowPosition(x, y);
           },
           getFloorY: () => worldGeometry.getFloorY(),
-          // 视觉贴地锚点 = 角色内容矩形底（窗口四周有透明边距，贴窗口底会显得悬空）
+          // 视觉贴地锚点 = 画布底 × 可见底部比例：主题资产画布（GIF/APNG）
+          // 底部常有透明留白——cybercat 的 GIF 内容只到画布 72%，用画布底贴地
+          // 会悬空 40px+；hitBox 只覆盖上半身，也不能直接用（2026-10-18 实测）。
           getContentBottom: (b) => {
             const r = petWindowRuntime.getObjRect(b);
-            return r ? r.y + r.h : null; // null → 模块内 fallback 到窗口底
+            if (!r) return null;
+            return r.y + r.h * petWindowRuntime.getVisibleBottomRatio();
           },
           // 重力 live-read：设置页「桌面物理」改完下一 tick 生效
           getGravityMps2: () => { const v = Number(_settingsController.get("physicsGravity")); return Number.isFinite(v) ? v : 10; },
@@ -3589,7 +3637,9 @@ if (!gotTheLock) {
             () => _mini.getMiniTransitioning(),
           ],
         });
-        worldGeometry.start(() => {});
+        // 地板变化（任务栏弹出/收回）时立即补一帧，不用等下一个 16-28ms tick——
+        // 否则任务栏动画期间猫会慢半拍被盖住（2026-10-18 实测）。
+        worldGeometry.start(() => { worldPhysics.stepNow(); });
         worldPhysics.start();
         worldRuntime = { geometry: worldGeometry, physics: worldPhysics };
       }

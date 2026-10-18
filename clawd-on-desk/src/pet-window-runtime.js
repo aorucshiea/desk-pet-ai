@@ -283,6 +283,27 @@ function createPetWindowRuntime(options = {}) {
     return clipHitRectToMiniSeam(petGeometryMain.getHitRectScreen(bounds));
   }
 
+  // 主题画布（GIF/APNG）底部常有透明留白，不同状态的脚底位置还不一样
+  // （cybercat idle 0.703 / dragging 0.941）。优先按当前文件查表，
+  // 状态一换锚点就换——全局单值会让部分状态和地板/任务栏重合（2026-10-18）。
+  function getVisibleBottomRatio() {
+    const theme = getActiveTheme();
+    if (!theme) return 1;
+    const clamp = (v) => Math.min(1, Math.max(0.05, v));
+    const file = typeof petGeometryMain.getCurrentFile === "function"
+      ? petGeometryMain.getCurrentFile()
+      : null;
+    // 归一化为纯文件名（防 currentSvg 带路径前缀时查不到表）
+    const name = file ? String(file).replace(/^.*[\\/]/, "") : null;
+    const byFile = theme.fileVisibleBottomRatio;
+    if (name && byFile && typeof byFile[name] === "number" && Number.isFinite(byFile[name])) {
+      return clamp(byFile[name]);
+    }
+    const r = theme.visibleBottomRatio;
+    if (typeof r === "number" && Number.isFinite(r)) return clamp(r);
+    return 1;
+  }
+
   function getSessionHudAnchorRect(bounds) {
     return petGeometryMain.getSessionHudAnchorRect(bounds);
   }
@@ -790,6 +811,7 @@ function createPetWindowRuntime(options = {}) {
     getObjRect,
     getAssetPointerPayload,
     getHitRectScreen,
+    getVisibleBottomRatio,
     getSessionHudAnchorRect,
     getPetWindowBounds,
     applyPetWindowBounds,

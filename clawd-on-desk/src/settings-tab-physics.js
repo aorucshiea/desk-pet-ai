@@ -97,6 +97,93 @@
     ));
   }
 
+  // ── 刚体：任意桌面窗口变成猫可以站的平台（前瞻 02 · P1）──────────────
+  function renderRigidBodies(parent) {
+    const listWrap = el("div", { style: { display: "flex", flexDirection: "column", gap: "8px", marginTop: "10px" } });
+    const statusLine = el("div", { style: { fontSize: "12px", color: "var(--text-secondary)", marginTop: "8px", minHeight: "16px" } }, "");
+
+    function renderRow(body) {
+      return el("div", {
+        style: {
+          display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px",
+          padding: "8px 10px", borderRadius: "6px", border: "1px solid var(--border)",
+        },
+      },
+        el("div", { style: { minWidth: "0" } },
+          el("div", { style: { fontSize: "13px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, body.label || "—"),
+          body.rect ? el("div", { style: { fontSize: "11px", color: "var(--text-secondary)", fontFamily: "monospace" } },
+            `${Math.round(body.rect.right - body.rect.left)} × ${Math.round(body.rect.bottom - body.rect.top)}`) : null,
+        ),
+        el("button", {
+          style: { fontSize: "12px", padding: "4px 10px", cursor: "pointer", flexShrink: "0" },
+          onclick: async () => {
+            try {
+              await window.settingsAPI.removeRigidBody(body.id);
+              await refresh();
+            } catch (e) {
+              statusLine.textContent = String((e && e.message) || e);
+            }
+          },
+        }, t("physicsRigidRemove")),
+      );
+    }
+
+    async function refresh() {
+      listWrap.innerHTML = "";
+      listWrap.appendChild(el("div", {
+        style: {
+          display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px",
+          padding: "8px 10px", borderRadius: "6px", border: "1px solid var(--border)",
+        },
+      },
+        el("div", { style: { fontSize: "13px" } }, t("physicsRigidTray")),
+        el("span", { style: { fontSize: "11px", color: "var(--text-secondary)", flexShrink: "0" } }, t("physicsRigidDefault")),
+      ));
+      try {
+        const res = await window.settingsAPI.listRigidBodies();
+        const bodies = (res && res.bodies) || [];
+        if (!bodies.length) {
+          listWrap.appendChild(el("div", { style: { fontSize: "12px", color: "var(--text-secondary)", padding: "4px 2px" } }, t("physicsRigidEmpty")));
+        }
+        for (const b of bodies) listWrap.appendChild(renderRow(b));
+        if (res && res.status === "error") statusLine.textContent = res.message || "";
+      } catch (e) {
+        statusLine.textContent = String((e && e.message) || e);
+      }
+    }
+
+    const addBtn = el("button", {
+      style: { marginTop: "10px", fontSize: "13px", padding: "6px 14px", cursor: "pointer" },
+      onclick: async () => {
+        addBtn.disabled = true;
+        statusLine.textContent = t("physicsRigidAddHint");
+        try {
+          const res = await window.settingsAPI.addRigidBodyFromCursor();
+          if (res && res.status === "ok") {
+            statusLine.textContent = "";
+            await refresh();
+          } else {
+            statusLine.textContent = (res && res.message) || t("physicsRigidAddFailed");
+          }
+        } catch (e) {
+          statusLine.textContent = String((e && e.message) || e);
+        } finally {
+          addBtn.disabled = false;
+        }
+      },
+    }, t("physicsRigidAdd"));
+
+    parent.appendChild(card(
+      el("div", { style: { fontSize: "14px", fontWeight: "500" } }, t("physicsRigidTitle")),
+      el("div", { style: { fontSize: "12px", color: "var(--text-secondary)", marginTop: "4px" } }, t("physicsRigidDesc")),
+      listWrap,
+      addBtn,
+      statusLine,
+    ));
+
+    void refresh();
+  }
+
   async function render(parent) {
     cleanupTimers();
     mounted = true;
@@ -104,6 +191,7 @@
     renderHeader(parent);
     renderEnabled(parent);
     renderGravity(parent);
+    renderRigidBodies(parent);
   }
 
   function init(coreArg) {

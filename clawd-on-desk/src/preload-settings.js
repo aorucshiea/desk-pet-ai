@@ -95,6 +95,10 @@ contextBridge.exposeInMainWorld("settingsAPI", {
   enterShortcutRecording: (actionId) => ipcRenderer.invoke("settings:enterShortcutRecording", actionId),
   exitShortcutRecording: () => ipcRenderer.invoke("settings:exitShortcutRecording"),
   update: (key, value) => ipcRenderer.invoke("settings:update", { key, value }),
+  // 桌面刚体（前瞻 02 · P1）：任意窗口变刚体
+  listRigidBodies: () => ipcRenderer.invoke("settings:list-rigid-bodies"),
+  addRigidBodyFromCursor: () => ipcRenderer.invoke("settings:add-rigid-body-from-cursor"),
+  removeRigidBody: (id) => ipcRenderer.invoke("settings:remove-rigid-body", id),
   getPreviewSoundUrl: () => ipcRenderer.invoke("settings:get-preview-sound-url"),
   command: (action, payload) => ipcRenderer.invoke("settings:command", { action, payload }),
   listAgents: () => ipcRenderer.invoke("settings:list-agents"),

@@ -84,6 +84,28 @@
     }
   },
 
+  "visibleBottomRatio": 0.72,
+  "fileVisibleBottomRatio": {
+    "cybercat-annoying.gif": 0.716,
+    "cybercat-building.gif": 0.744,
+    "cybercat-carrying.gif": 0.713,
+    "cybercat-conducting.gif": 0.725,
+    "cybercat-dragging.gif": 0.941,
+    "cybercat-error.gif": 0.688,
+    "cybercat-happy.gif": 0.719,
+    "cybercat-idle.gif": 0.703,
+    "cybercat-juggling.gif": 0.697,
+    "cybercat-mini-alert.gif": 0.744,
+    "cybercat-mini-happy.gif": 0.762,
+    "cybercat-mini-idle.gif": 0.772,
+    "cybercat-mini-sleeping.gif": 0.659,
+    "cybercat-mini-working.gif": 0.775,
+    "cybercat-notification.gif": 0.709,
+    "cybercat-sleeping.gif": 0.706,
+    "cybercat-sweeping.gif": 0.731,
+    "cybercat-thinking.gif": 0.703,
+    "cybercat-working.gif": 0.731
+  },
   "objectScale": {
     "widthRatio": 0.55,
     "heightRatio": 0.55,

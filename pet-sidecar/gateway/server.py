@@ -2872,6 +2872,82 @@ def _resolve_provider(
     return _build_local_provider(server, server_state, req, lora_arr)
 
 
+# ── 桌面刚体（前瞻 02 · P1）：AI 操作推 / 拉 / 拿 / 踢 ──────────────────
+# 走 Electron 的 state server（127.0.0.1:23333-23337，x-clawd-token 鉴权）。
+_CLAWD_PORTS = [23333, 23334, 23335, 23336, 23337]
+_CLAWD_RUNTIME = Path.home() / ".clawd" / "runtime.json"
+_CLAWD_TOKEN = Path.home() / ".clawd" / "server-token"
+
+
+def _clawd_port() -> int:
+    try:
+        data = json.loads(_CLAWD_RUNTIME.read_text("utf-8"))
+        port = int(data.get("port") or 0)
+        if port in _CLAWD_PORTS:
+            return port
+    except Exception:
+        pass
+    return _CLAWD_PORTS[0]
+
+
+def _clawd_headers() -> dict:
+    try:
+        token = _CLAWD_TOKEN.read_text("utf-8").strip()
+    except Exception:
+        token = ""
+    return {"Content-Type": "application/json", "x-clawd-token": token}
+
+
+async def _world_tool(name: str, args: dict) -> str:
+    """执行桌面刚体工具（pet_world_bodies / pet_world_operate）。"""
+    port = _clawd_port()
+    headers = _clawd_headers()
+    try:
+        async with httpx.AsyncClient(timeout=2.5) as client:
+            if name == "pet_world_bodies":
+                resp = await client.get("http://127.0.0.1:%d/world/bodies" % port, headers=headers)
+                data = resp.json()
+                bodies = data.get("bodies") or []
+                if not bodies:
+                    return "现在桌面上还没有刚体（用户还没添加窗口/桌面图标）。"
+                lines = ["当前刚体："]
+                for b in bodies:
+                    r = b.get("rect") or {}
+                    lines.append(
+                        "- id=%s %s 位置(x=%s, y=%s, %sx%s)"
+                        % (
+                            b.get("id"),
+                            b.get("label", ""),
+                            round(r.get("left", 0)),
+                            round(r.get("top", 0)),
+                            round((r.get("right") or 0) - (r.get("left") or 0)),
+                            round((r.get("bottom") or 0) - (r.get("top") or 0)),
+                        )
+                    )
+                return "\n".join(lines)
+            if name == "pet_world_operate":
+                body_id = int(args.get("id") or 0)
+                action = str(args.get("action") or "")
+                payload = {"id": body_id, "action": action}
+                if args.get("distance") is not None:
+                    payload["distance"] = args.get("distance")
+                resp = await client.post(
+                    "http://127.0.0.1:%d/world/op" % port, json=payload, headers=headers
+                )
+                data = resp.json()
+                if data.get("status") == "ok":
+                    to = data.get("to") or {}
+                    return "动作 %s 完成，刚体移动到 (x=%s, y=%s)" % (
+                        action,
+                        round(to.get("x", 0)),
+                        round(to.get("y", 0)),
+                    )
+                return "[world] 操作失败：%s" % data.get("message", "unknown")
+    except Exception as exc:
+        return "[world] 连接桌宠失败：%s" % exc
+    return "[world] 未知工具 %s" % name
+
+
 async def _gather_tools(mcp_manager: MCPManager, req: ChatRequest) -> Optional[list[ToolDef]]:
     """Gather MCP tool definitions if tools are enabled. Plugin tools
     (petplugins container — the model's self-authored organs) join the
@@ -2896,6 +2972,30 @@ async def _gather_tools(mcp_manager: MCPManager, req: ChatRequest) -> Optional[l
             ))
     except Exception as exc:
         _note_failure("gather_plugin_tools", exc)
+    # 桌面刚体（内置工具，不走插件沙箱）：推 / 拉 / 拿 / 踢。
+    tool_defs.append(ToolDef(
+        server_name="pet-world",
+        name="pet_world_bodies",
+        description="列出桌面刚体（用户添加的窗口/桌面图标，猫可以站在上面），返回 id、名字和位置。",
+        input_schema={"type": "object", "properties": {}},
+    ))
+    tool_defs.append(ToolDef(
+        server_name="pet-world",
+        name="pet_world_operate",
+        description=(
+            "操作一个桌面刚体：push 推开 / pull 拉近 / kick 踢飞 / "
+            "grab 拎起来（移到猫头顶上方）。id 从 pet_world_bodies 获取。"
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "id": {"type": "integer", "description": "刚体 id"},
+                "action": {"type": "string", "enum": ["push", "pull", "kick", "grab"]},
+                "distance": {"type": "integer", "description": "可选：位移像素 40-250"},
+            },
+            "required": ["id", "action"],
+        },
+    ))
     return tool_defs or None
 
 
@@ -2963,6 +3063,14 @@ async def _stream_chat_provider(
         _proactive_streak += 1
     else:
         _proactive_streak = 0
+    # 本轮用户消息（对话日志用；工具循环会往 messages 追加系统消息，必须在开头捕获）
+    _user_text_for_log = ""
+    if messages:
+        _m0 = messages[-1]
+        _c0 = _m0.get("content") if isinstance(_m0, dict) else None
+        if isinstance(_c0, str):
+            _user_text_for_log = _c0
+
     system = req.system
 
     # ── LingLing: inject episodic memory + mood + resonance ──────────
@@ -3022,6 +3130,13 @@ async def _stream_chat_provider(
                 " apply(ctx)，用 ctx.tool() 注册新工具），写完立即热加载生效——"
                 "这是你给自己进化出新器官的方式。当前插件："
                 + (", ".join(p["name"] for p in plugins_desc) or "（只有内置 forge）")
+            )
+            body_lines.append(
+                "【你的世界】桌面上有「刚体」——用户添加的窗口和桌面图标，你可以站在它们上面。"
+                "你也可以亲手摆弄这些小东西：pet_world_bodies 看看有哪些，"
+                "pet_world_operate 能 push（推开）/ pull（拉近）/ kick（踢飞）/ grab（拎起来），"
+                "像小孩推积木一样。但它们也是用户正在用的东西——动作要轻、要有分寸，"
+                "别把窗口推到用户找不到的地方；用户没说想玩的时候，看着就好。"
             )
         system = (system or "") + "\n\n" + "\n".join(body_lines)
 
@@ -3220,7 +3335,11 @@ async def _stream_chat_provider(
             # model already answered.
             result = None
             _mgr = _kernel()
-            if _mgr is not None and (sn == "pet" or tn in _mgr.all_tools()):
+            if sn == "pet-world":
+                # 桌面刚体工具（内置，不受插件沙箱限制）
+                result_text = await _world_tool(tn, args)
+                summary = result_text or f"[Tool {tn} completed]"
+            elif _mgr is not None and (sn == "pet" or tn in _mgr.all_tools()):
                 # plugin tool (自进化器官) — executed by the container
                 result_text = await _mgr.call_tool(tn, args)
                 summary = result_text or f"[Tool {tn} completed]"
@@ -3320,6 +3439,16 @@ async def _stream_chat_provider(
             _combined = " ".join(_parts)
             if _combined.strip():
                 _extraction_hook(_combined)
+            # ── 对话日志：睡眠压缩的原始输入（2026-10-19）──
+            try:
+                from .memory.conversation_log import append_turn as _append_turn
+                _reply_log = " ".join(p.strip() for p in _parts if p.strip()).strip()
+                if _user_text_for_log:
+                    _append_turn("user", _user_text_for_log)
+                if _reply_log:
+                    _append_turn("assistant", _reply_log)
+            except Exception as _log_exc:
+                _note_failure("conversation_log", _log_exc)
         except Exception as exc:
             log.warning("gateway-side extraction failed: %s", exc)
 

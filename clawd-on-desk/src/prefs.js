@@ -187,6 +187,9 @@ const SCHEMA = {
     default: 10,
     validate: (v) => Number.isFinite(v) && v >= 0 && v <= 1000,  // m/s²
   },
+  // 桌面刚体（持久化）：{ kind:"window", cls, title } | { kind:"icon", index }
+  // 重启后按类名/标题（窗口）或图标索引（桌面图标）重新绑定。
+  rigidBodies: { type: "array", default: [] },
   // Text-window zoom (bubbles, HUD, dashboard, settings, resume input). The
   // pet itself scales via `size` and is never zoomed. `textScale` is the
   // global default; `textScaleByDisplay` overrides it per display id (the

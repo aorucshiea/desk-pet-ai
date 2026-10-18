@@ -293,6 +293,7 @@ function registerSettingsIpc(options = {}) {
     message: "Quick Commands are unavailable",
   }));
   const now = options.now || (() => Date.now());
+  const getWorldGeometry = options.getWorldGeometry || (() => null);
   const aboutHeroSvgPath = options.aboutHeroSvgPath
     || path.join(__dirname, "..", "assets", "svg", "model-mark.svg");
   const disposers = [];
@@ -313,6 +314,37 @@ function registerSettingsIpc(options = {}) {
   function getDialogParent(event) {
     return getSettingsDialogParent(event, { BrowserWindow, getSettingsWindow });
   }
+
+  // ── 桌面刚体（前瞻 02 · P1：任意桌面元素变刚体）────────────────────
+  handle("settings:list-rigid-bodies", () => {
+    const geo = getWorldGeometry();
+    if (!geo || typeof geo.listBodies !== "function") {
+      return { status: "error", message: "desktop physics is not running", bodies: [] };
+    }
+    return geo.listBodies();
+  });
+
+  handle("settings:add-rigid-body-from-cursor", async () => {
+    const geo = getWorldGeometry();
+    if (!geo || typeof geo.pickFromCursor !== "function") {
+      return { status: "error", message: "desktop physics is not running" };
+    }
+    // 给用户 3 秒把鼠标移到目标窗口上（设置窗口不隐藏，光标自己去目标）
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+    try {
+      return geo.pickFromCursor();
+    } catch (err) {
+      return { status: "error", message: (err && err.message) || String(err) };
+    }
+  });
+
+  handle("settings:remove-rigid-body", (_event, id) => {
+    const geo = getWorldGeometry();
+    if (!geo || typeof geo.removeBody !== "function") {
+      return { status: "error", message: "desktop physics is not running" };
+    }
+    return geo.removeBody(id);
+  });
 
   handle("settings:get-snapshot", () => settingsController.getSnapshot());
   handle("settings:update", (_event, payload) => {

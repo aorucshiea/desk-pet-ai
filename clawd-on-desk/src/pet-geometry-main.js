@@ -88,6 +88,8 @@ function createPetGeometryMain(options = {}) {
     getAssetPointerPayload,
     getHitRectScreen,
     getSessionHudAnchorRect,
+    // 当前渲染文件（相对名，如 "cybercat-idle.gif"）——供按文件的可见底部查表
+    getCurrentFile: () => getCurrentFile(getActiveTheme()),
   };
 }
 
