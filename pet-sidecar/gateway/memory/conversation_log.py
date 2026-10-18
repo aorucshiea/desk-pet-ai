@@ -14,19 +14,43 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
 MAX_CHARS = 4000
+_DAY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
-def _default_memory_dir() -> Path:
-    return Path(os.path.expandvars(r"%APPDATA%\deskpt\memories"))
+def default_memory_dir() -> Path:
+    """Platform-aware memory root.
+
+    The Electron host always injects PET_MEMORY_DIR; this fallback is for
+    direct CLI runs. It must NOT hardcode ``%APPDATA%``: os.path.expandvars
+    does not expand ``%VAR%`` on POSIX, which used to create a literal
+    ``%APPDATA%`` directory on macOS/Linux.
+    """
+    env = os.environ.get("PET_MEMORY_DIR", "").strip()
+    if env:
+        return Path(env).expanduser()
+    if os.name == "nt":
+        base = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
+        return Path(base) / "deskpt" / "memories"
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "deskpt" / "memories"
+    base = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
+    return Path(base) / "deskpt" / "memories"
+
+
+def valid_day(day: str) -> bool:
+    """Only accept YYYY-MM-DD before building a path from it."""
+    return bool(day) and bool(_DAY_RE.match(day))
 
 
 def _conversation_dir(memory_dir: Optional[Path] = None) -> Path:
-    base = Path(memory_dir) if memory_dir else _default_memory_dir()
+    base = Path(memory_dir) if memory_dir else default_memory_dir()
     return base / "conversations"
 
 
@@ -52,7 +76,13 @@ def append_turn(role: str, content: str, memory_dir: Optional[Path] = None) -> b
 
 
 def read_day(day: str, memory_dir: Optional[Path] = None) -> List[dict]:
-    """读取某一天（YYYY-MM-DD）的对话记录。"""
+    """读取某一天（YYYY-MM-DD）的对话记录。
+
+    ``day`` may come from an HTTP body (/api/compress), so reject anything
+    that is not a literal date before joining it into a path.
+    """
+    if not valid_day(day):
+        return []
     try:
         path = _conversation_dir(memory_dir) / f"{day}.jsonl"
         if not path.exists():

@@ -10,15 +10,12 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 from datetime import date
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from . import conversation_log
-
-DEFAULT_MEMORY_DIR = Path(os.path.expandvars(r"%APPDATA%\deskpt\memories"))
 
 COMPRESS_INSTRUCTION = (
     "这是你今天的全部对话记录。\n"
@@ -53,6 +50,14 @@ async def compress_day(
 ) -> Dict[str, Any]:
     """读某天对话 → 裸模型压缩 → 返回记忆条 + 关键词（不落盘）。"""
     day = day or date.today().isoformat()
+    if not conversation_log.valid_day(day):
+        return {
+            "status": "error",
+            "day": day,
+            "message": "invalid day (expected YYYY-MM-DD)",
+            "memories": [],
+            "keywords": [],
+        }
     text = conversation_log.format_day(day, memory_dir)
     if not text.strip():
         return {"status": "empty", "day": day, "memories": [], "keywords": []}
@@ -144,7 +149,7 @@ def persist(
 
     kw_written = False
     try:
-        base = Path(memory_dir) if memory_dir else DEFAULT_MEMORY_DIR
+        base = Path(memory_dir) if memory_dir else conversation_log.default_memory_dir()
         base.mkdir(parents=True, exist_ok=True)
         kw_path = base / "keywords.json"
         old: List[str] = []

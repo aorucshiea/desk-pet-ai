@@ -91,7 +91,11 @@ def test_module_accessors_degrade_without_a_booted_container(no_container):
     assert server_mod._organ_service("impulse", sentinel) is sentinel
 
     defs = _gather(_FakeMcp(), _Req())
-    assert defs is None, "no container => no plugin tools, and no exception"
+    # Built-in pet-world tools are intentionally always present; the
+    # invariant is that a missing container contributes no *plugin* tools.
+    assert defs is not None
+    assert {d.server_name for d in defs} == {"pet-world"}
+    assert {d.name for d in defs} == {"pet_world_bodies", "pet_world_operate"}
 
 
 def test_gather_tools_exposes_plugin_tools_once_the_container_is_mirrored(tmp_path, no_container):

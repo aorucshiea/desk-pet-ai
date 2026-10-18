@@ -226,7 +226,7 @@ class SidecarUpdater:
         if sys_name == "Darwin":
             return f"llama-{tag}-bin-macos-{arch}.tar.gz"
         if sys_name == "Linux":
-            suffix = "-vulkan" if vulkan else ""
+            suffix = "-vulkan" if self._backend == "vulkan" else ""
             return f"llama-{tag}-bin-ubuntu{suffix}-{arch}.tar.gz"
         logger.warning("Unsupported host for engine update: %s/%s", sys_name, machine)
         return None
@@ -558,7 +558,22 @@ def _safe_tar_extract(archive: Path, dest: Path) -> None:
             tf.extractall(dest, filter="data")
             return
         except TypeError:
-            pass
+            pass  # filter= not supported on this interpreter — use the hand guard below
+        except Exception as exc:
+            # Python's data filter raises FilterError subclasses (3.12+ and
+            # patched 3.11). Normalise them to the RuntimeError contract the
+            # callers/tests already rely on instead of leaking tarfile types.
+            if exc.__class__.__name__ in (
+                "AbsolutePathError",
+                "AbsoluteLinkError",
+                "OutsideDestinationError",
+                "LinkOutsideDestinationError",
+                "SpecialFileError",
+            ):
+                raise RuntimeError(
+                    f"tar entry escapes extract dir or is a link: {exc}"
+                ) from exc
+            raise
         dest_resolved = dest.resolve()
         for member in tf.getmembers():
             name = member.name.replace("\\", "/")

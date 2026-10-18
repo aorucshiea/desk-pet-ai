@@ -157,6 +157,15 @@ _PROACTIVE_PROMPT_PREFIX = "[系统提示"
 # chat stream (reader) — module scope because _stream_chat_provider sits
 # outside build_app's closure (the event_store NameError lesson).
 _somatic_buffer = _somatic_module.SensationBuffer()
+
+# ── 决策层（2026-10-19）：瞬时记忆 / 直觉注册表 / 身体日志 / 决策循环 ──
+# 模块级引用：lifespan 里创建，_stream_chat_provider 里注入 system。
+_ephemeral_ref = None
+_intuition_registry_ref = None
+_body_log_ref = None
+_decision_loop_ref = None
+_last_user_msg = ""
+_last_user_ts = 0.0
 from . import screen_click
 from .screen_capture import capture as screen_capture
 from .think_filter import ThinkBlockFilter, ControlTagFilter, ToolNarrationFilter
@@ -783,6 +792,43 @@ def build_app(
         else:
             log.info("model not present at startup; waiting for /api/load-model")
         bridge.post("idle", title="DeskPet 桌宠")
+        # ── 决策层启动：瞬时记忆 + 直觉循环（不阻塞启动）──
+        try:
+            global _ephemeral_ref, _intuition_registry_ref, _body_log_ref, _decision_loop_ref
+            from .memory.ephemeral import EphemeralMemory
+            from .decision.registry import IntuitionRegistry
+            from .decision.body_log import BodyLog
+            from .decision.loop import DecisionLoop
+
+            if _ephemeral_ref is None:
+                _ephemeral_ref = EphemeralMemory()
+            if _intuition_registry_ref is None:
+                _intuition_registry_ref = IntuitionRegistry()
+            if _body_log_ref is None:
+                _body_log_ref = BodyLog()
+            if _decision_loop_ref is None:
+                def _collect_decision_state():
+                    import time as _t
+                    try:
+                        mi = float(mood_store.emotion_index) if mood_store is not None else 0.0
+                    except Exception:
+                        mi = 0.0
+                    hour = _t.localtime().tm_hour
+                    return {
+                        "last_user_msg": _last_user_msg,
+                        "mood_index": mi,
+                        "idle_sec": max(0.0, _t.time() - _last_user_ts) if _last_user_ts else 0.0,
+                        "bodies": [],
+                        "recent_actions": len(getattr(_body_log_ref, "items", []) or []),
+                        "time_of_day": "深夜" if 0 <= hour < 6 else "",
+                    }
+                _decision_loop_ref = DecisionLoop(
+                    _intuition_registry_ref, _ephemeral_ref, _collect_decision_state
+                )
+                _decision_loop_ref.start()
+            log.info("decision layer started (ephemeral + intuitions + loop)")
+        except Exception as exc:
+            log.warning("decision layer start failed: %s", exc)
         # Load MCP config on startup
         try:
             await mcp_manager.load_config()
@@ -881,6 +927,12 @@ def build_app(
             yield
         finally:
             bridge.post("sleeping")
+            # 决策循环停止（"睡觉"时潜意识停工）
+            try:
+                if _decision_loop_ref is not None:
+                    await _decision_loop_ref.stop()
+            except Exception:
+                pass
             # Organs are plugins now — unwind the container instead of
             # cancelling individual tasks (their disposers stop threads
             # and cancel scheduled tasks in reverse order).
@@ -1573,15 +1625,22 @@ def build_app(
         except Exception:
             day = None
         try:
-            from .memory import sleep_compress
+            from .memory import conversation_log, sleep_compress
+            # Same theme-scoped root as events.json: compressing one body's
+            # day into another body's soul would split the self.
+            memory_dir = mem_ctx.theme_dir(mem_ctx.current_theme)
             _req = ChatRequest(messages=[], system=None, tools_enabled=False, silent=True)
             _provider = _resolve_provider(provider_registry, _req, server, state, log, None)
-            result = await sleep_compress.compress_day(_provider, day)
+            result = await sleep_compress.compress_day(_provider, day, memory_dir=memory_dir)
             if result.get("status") == "ok":
                 try:
                     result["persisted"] = sleep_compress.persist(
-                        result["memories"], result["keywords"], event_store, day=result.get("day")
+                        result["memories"], result["keywords"], event_store,
+                        memory_dir=memory_dir, day=result.get("day"),
                     )
+                    # Drop raw logs older than the retention window only after
+                    # a successful compression (prune() was previously dead).
+                    result["pruned"] = conversation_log.prune(7, memory_dir=memory_dir)
                 except Exception as exc:
                     result["persist_error"] = str(exc)
             return result
@@ -2484,15 +2543,20 @@ def build_app(
         )
 
         lora_arr = _lora_arr_for(req)
+        # The raw conversation log belongs to the current theme's soul, so
+        # sleep compression and events.json share one memory root.
+        conversation_dir = mem_ctx.theme_dir(mem_ctx.current_theme)
         if req.stream:
             return StreamingResponse(
                 _stream_chat_provider(
                     provider_registry, mcp_manager, bridge, req, server, state, mood_store, lora_arr,
+                    conversation_dir,
                 ),
                 media_type="text/event-stream",
             )
         return JSONResponse(await _blocking_chat_provider(
             provider_registry, mcp_manager, bridge, req, server, state, mood_store, lora_arr,
+            conversation_dir,
         ))
 
     @app.post("/api/debug/chat")
@@ -2936,6 +3000,8 @@ async def _world_tool(name: str, args: dict) -> str:
             if name == "pet_world_bodies":
                 resp = await client.get("http://127.0.0.1:%d/world/bodies" % port, headers=headers)
                 data = resp.json()
+                if data.get("status") == "error":
+                    return "桌面物理现在不可用：%s" % (data.get("message") or "unknown")
                 bodies = data.get("bodies") or []
                 if not bodies:
                     return "现在桌面上还没有刚体（用户还没添加窗口/桌面图标）。"
@@ -2971,7 +3037,10 @@ async def _world_tool(name: str, args: dict) -> str:
                         round(to.get("x", 0)),
                         round(to.get("y", 0)),
                     )
-                return "[world] 操作失败：%s" % data.get("message", "unknown")
+                _msg = str(data.get("message") or "unknown")
+                if "physics is not running" in _msg or "unavailable" in _msg:
+                    return "桌面物理现在不可用：%s" % _msg
+                return "[world] 操作失败：%s" % _msg
     except Exception as exc:
         return "[world] 连接桌宠失败：%s" % exc
     return "[world] 未知工具 %s" % name
@@ -3028,6 +3097,34 @@ async def _gather_tools(mcp_manager: MCPManager, req: ChatRequest) -> Optional[l
     return tool_defs or None
 
 
+def _should_log_conversation(req: ChatRequest, conversation_dir: Optional[Path]) -> bool:
+    """True only for a real user turn.
+
+    Narration (``silent``), debug chat and empty requests share the same
+    streaming path. They must never enter ``conversations/*.jsonl`` —
+    sleep compression treats that file as *the user's* day, and a narrator
+    prompt logged as "user" would poison the memory it is supposed to feed.
+    """
+    if conversation_dir is None or getattr(req, "silent", False):
+        return False
+    messages = getattr(req, "messages", None) or []
+    if not messages:
+        return False
+    last = messages[-1]
+    role = last.get("role") if isinstance(last, dict) else getattr(last, "role", None)
+    if role != "user":
+        return False
+    # Proactive wake-ups are renderer-synthesised "[系统提示：…]" user turns,
+    # not something the user said. Logging them would fabricate a day.
+    content = last.get("content") if isinstance(last, dict) else getattr(last, "content", None)
+    if isinstance(content, list):
+        content = next(
+            (p.get("text") for p in content if isinstance(p, dict) and p.get("type") == "text"),
+            "",
+        )
+    return not str(content or "").lstrip().startswith(_PROACTIVE_PROMPT_PREFIX)
+
+
 async def _stream_chat_provider(
     registry: ProviderRegistry,
     mcp_manager: MCPManager,
@@ -3037,6 +3134,7 @@ async def _stream_chat_provider(
     server_state: dict,
     mood_store: Optional[MoodStore] = None,
     lora_arr: Optional[list[dict]] = None,
+    conversation_dir: Optional[Path] = None,
 ) -> AsyncGenerator[bytes, None]:
     """Provider-based streaming chat with MCP tool support."""
     log = get_logger()
@@ -3100,7 +3198,26 @@ async def _stream_chat_provider(
         if isinstance(_c0, str):
             _user_text_for_log = _c0
 
+    # 决策层状态：最近用户消息 + 时间戳（元直觉/习惯直觉用）
+    global _last_user_msg, _last_user_ts
+    if _user_text_for_log:
+        _last_user_msg = _user_text_for_log
+        _last_user_ts = __import__("time").time()
+
     system = req.system
+
+    # ── 决策层心声注入：瞬时记忆 + 身体日志（让 LLM 知情，不梦游）──
+    try:
+        if _ephemeral_ref is not None:
+            _eph_text = _ephemeral_ref.format_for_prompt()
+            if _eph_text:
+                system = (system or "") + "\n\n" + _eph_text
+        if _body_log_ref is not None:
+            _bl_text = _body_log_ref.format_for_prompt()
+            if _bl_text:
+                system = (system or "") + "\n\n" + _bl_text
+    except Exception:
+        pass
 
     # ── LingLing: inject episodic memory + mood + resonance ──────────
     try:
@@ -3460,26 +3577,32 @@ async def _stream_chat_provider(
     # generator gets GeneratorExit at the next yield, so this is the last
     # guaranteed chance to persist memories. The renderer's later POST
     # /api/events/extract is an idempotent no-op for the same text.
+    _parts = list(accumulated_full_text)
+    if full_text.strip():
+        _parts.append(full_text)
+    _combined = " ".join(_parts)
+
     if _extraction_hook is not None:
         try:
-            _parts = list(accumulated_full_text)
-            if full_text.strip():
-                _parts.append(full_text)
-            _combined = " ".join(_parts)
             if _combined.strip():
                 _extraction_hook(_combined)
-            # ── 对话日志：睡眠压缩的原始输入（2026-10-19）──
-            try:
-                from .memory.conversation_log import append_turn as _append_turn
-                _reply_log = " ".join(p.strip() for p in _parts if p.strip()).strip()
-                if _user_text_for_log:
-                    _append_turn("user", _user_text_for_log)
-                if _reply_log:
-                    _append_turn("assistant", _reply_log)
-            except Exception as _log_exc:
-                _note_failure("conversation_log", _log_exc)
         except Exception as exc:
             log.warning("gateway-side extraction failed: %s", exc)
+
+    # ── 对话日志：睡眠压缩的原始输入（2026-10-19）──
+    # Independent of extraction: a failing MEM hook must not drop the raw
+    # day. Only real user turns are logged (see _should_log_conversation) —
+    # narrator/debug requests share this stream and would poison the log.
+    try:
+        if _should_log_conversation(req, conversation_dir):
+            from .memory.conversation_log import append_turn as _append_turn
+            _reply_log = " ".join(p.strip() for p in _parts if p.strip()).strip()
+            if _user_text_for_log:
+                _append_turn("user", _user_text_for_log, memory_dir=conversation_dir)
+            if _reply_log:
+                _append_turn("assistant", _reply_log, memory_dir=conversation_dir)
+    except Exception as _log_exc:
+        _note_failure("conversation_log", _log_exc)
 
     _tail_from_think = ""
     for ev in think_filter.flush():
@@ -3561,11 +3684,13 @@ async def _blocking_chat_provider(
     server_state: dict,
     mood_store: Optional[MoodStore] = None,
     lora_arr: Optional[list[dict]] = None,
+    conversation_dir: Optional[Path] = None,
 ) -> dict:
     """Non-streaming provider-based chat. Accumulates the stream into a response."""
     collector: list[str] = []
     async for sse_bytes in _stream_chat_provider(
         registry, mcp_manager, bridge, req, server, server_state, mood_store, lora_arr,
+        conversation_dir,
     ):
         # Parse SSE to collect content
         line = sse_bytes.decode("utf-8", "ignore")

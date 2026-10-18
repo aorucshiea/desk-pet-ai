@@ -84,6 +84,10 @@ function createWorldGeometry(options = {}) {
         // 桌面图标（Explorer 的 SysListView32 项）——跨进程读 LVM_GETITEMRECT
         FindWindowExW: user32.func("FindWindowExW", "void*", ["void*", "void*", "str16", "str16"]),
         SendMessageW: user32.func("SendMessageW", "intptr_t", ["void*", "uint32", "uintptr_t", "void*"]),
+        // Cross-process LVM_* messages to Explorer must never block forever:
+        // a hung Explorer would freeze the Electron main process (and with it
+        // the pet, tray and hook server). SMTO_ABORTIFHUNG + 50ms bound.
+        SendMessageTimeoutW: user32.func("SendMessageTimeoutW", "intptr_t", ["void*", "uint32", "uintptr_t", "void*", "uint32", "uint32", "void*"]),
         ClientToScreen: user32.func("ClientToScreen", "bool", ["void*", "void*"]),
         OpenProcess: kernel32.func("OpenProcess", "void*", ["uint32", "bool", "uint32"]),
         VirtualAllocEx: kernel32.func("VirtualAllocEx", "void*", ["void*", "void*", "uintptr_t", "uint32", "uint32"]),
@@ -401,22 +405,38 @@ function createWorldGeometry(options = {}) {
     }
   }
 
+  // LVM_GETITEMCOUNT / LVM_GETITEMRECT are synchronous cross-process
+  // messages into Explorer. Use the timeout variant so a busy Explorer
+  // cannot hang the main process; returns null on timeout.
+  function sendExplorerMessage(hwnd, msg, wParam, lParam) {
+    if (!fns || typeof fns.SendMessageTimeoutW !== "function") return null;
+    const resultBuf = Buffer.alloc(8);
+    const ok = fns.SendMessageTimeoutW(hwnd, msg, wParam, lParam, 0x0002 /* SMTO_ABORTIFHUNG */, 50, resultBuf);
+    if (!ok) return null;
+    return resultBuf.readUInt32LE(0);
+  }
+
   function readDesktopIconRects() {
     const lv = findDesktopListView();
     if (!lv) return [];
+    let hProc = null;
+    let remote = null;
     try {
       const pidBuf = Buffer.alloc(4);
       fns.GetWindowThreadProcessId(lv, pidBuf);
-      const hProc = fns.OpenProcess(0x0008 | 0x0010 | 0x0020, false, pidBuf.readUInt32LE(0));
+      hProc = fns.OpenProcess(0x0008 | 0x0010 | 0x0020, false, pidBuf.readUInt32LE(0));
       if (!hProc) return [];
-      const remote = fns.VirtualAllocEx(hProc, null, 64, 0x1000, 0x04);
-      if (!remote) { fns.CloseHandle(hProc); return []; }
-      const count = Math.min(Number(fns.SendMessageW(lv, 0x1004, 0, null)), 200); // LVM_GETITEMCOUNT
+      remote = fns.VirtualAllocEx(hProc, null, 64, 0x1000, 0x04);
+      if (!remote) return [];
+      const countRaw = sendExplorerMessage(lv, 0x1004, 0, null); // LVM_GETITEMCOUNT
+      if (countRaw == null) return [];
+      const count = Math.min(Number(countRaw), 200);
       const scale = scaleFactor();
       const out = [];
       const readBuf = Buffer.alloc(8);
       for (let i = 0; i < count; i++) {
-        fns.SendMessageW(lv, 0x100E, i, remote); // LVM_GETITEMRECT (LVIR_BOUNDS)
+        const rectOk = sendExplorerMessage(lv, 0x100E, i, remote); // LVM_GETITEMRECT (LVIR_BOUNDS)
+        if (rectOk == null || rectOk === 0) continue;
         const local = Buffer.alloc(16);
         if (!fns.ReadProcessMemory(hProc, remote, local, 16, readBuf)) continue;
         if (readBuf.readUInt32LE(0) !== 16) continue;
@@ -441,11 +461,12 @@ function createWorldGeometry(options = {}) {
           },
         });
       }
-      fns.VirtualFreeEx(hProc, remote, 0, 0x8000);
-      fns.CloseHandle(hProc);
       return out;
     } catch (_) {
       return [];
+    } finally {
+      if (remote && hProc) { try { fns.VirtualFreeEx(hProc, remote, 0, 0x8000); } catch (_) {} }
+      if (hProc) { try { fns.CloseHandle(hProc); } catch (_) {} }
     }
   }
 
