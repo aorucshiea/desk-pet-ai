@@ -453,6 +453,24 @@ function _isScreenRequest(text) {
   return _SCREEN_REQUEST_KEYWORDS.some(function(kw) { return t.indexOf(kw) !== -1; });
 }
 
+// True when the active provider points at a loopback inference server
+// (LM Studio / llama.cpp / Ollama). Such endpoints get a tool-free, smaller
+// prompt: see the prompt-budget comments in fetchSkillsContext().
+function _isLocalProviderPrefs(providerPrefs) {
+  const id = providerPrefs && providerPrefs.defaultProvider;
+  if (!id || id === "local") return false; // built-in llama.cpp keeps tools
+  const cfg = (providerPrefs.modelProviders || []).find(function(p) {
+    return p && p.provider === id;
+  });
+  const url = String((cfg && cfg.baseUrl) || "");
+  try {
+    const host = new URL(url).hostname.toLowerCase().replace(/^\[|\]$/g, "");
+    return host === "127.0.0.1" || host === "localhost" || host === "::1" || host === "0.0.0.0";
+  } catch {
+    return false;
+  }
+}
+
 // Heuristic to detect whether the current provider+model supports vision
 // (i.e. can process image_url content blocks). Used to decide whether to
 // inject rawScreenshotBase64 alongside the OmniParser text results.
@@ -1338,6 +1356,7 @@ window.__getChatHistory = () => curHistory();
 // calls within a session don't re-fetch.
 let _skillsContext = null;       // cached skills+mcp+persona block (slow-changing)
 let _skillsContextAt = 0;
+let _skillsContextKey = "";      // "tools" | "notools" — prompt shape varies
 const SKILLS_CONTEXT_TTL = 60000; // refresh every 60s
 
 // Phase 2: session-level provider overrides (reset on page refresh)
@@ -1362,29 +1381,68 @@ async function _fetchMemoryBlock() {
   } catch { return ""; }
 }
 
-async function fetchSkillsContext() {
+async function fetchSkillsContext(userText, opts) {
+  const allowTools = !(opts && opts.allowTools === false);
   // Memory block is always fetched fresh (write-on-invalidate, must reflect
   // the latest memory tool write within the same session).
   const memoryBlock = await _fetchMemoryBlock();
 
+  const cacheKey = allowTools ? "tools" : "notools";
   const age = Date.now() - _skillsContextAt;
   let baseCtx;
-  if (_skillsContextAt > 0 && age < SKILLS_CONTEXT_TTL && _skillsContext !== null) {
+  if (_skillsContextAt > 0 && age < SKILLS_CONTEXT_TTL && _skillsContext !== null && _skillsContextKey === cacheKey) {
     baseCtx = _skillsContext;   // skills+mcp+persona cache hit
   } else {
-    baseCtx = await _buildSkillsContextBase();
+    baseCtx = await _buildSkillsContextBase({ allowTools });
     _skillsContext = baseCtx;
+    _skillsContextKey = cacheKey;
     _skillsContextAt = Date.now();
   }
-  // Prepend the fresh memory block every time — memory is high-priority context.
-  return memoryBlock + baseCtx;
+
+  let ctxText = memoryBlock + baseCtx;
+
+  // The screen-observe skill body is ~5k chars of OCR/click workflow. It is
+  // the single largest block in the system prompt, and a local 2B model pays
+  // for every token of it on every turn. Only load it when this turn is
+  // actually about the screen (the renderer has already captured a frame in
+  // that case), keep the rest of the prefix byte-identical so llama.cpp /
+  // LM Studio can reuse its prompt cache.
+  const wantsScreen =
+    !!_pendingScreenContext ||
+    (typeof _isScreenRequest === "function" && _isScreenRequest(String(userText || "")));
+  if (wantsScreen) {
+    ctxText += await _fetchScreenSkillBlock();
+  }
+
+  return ctxText;
 }
 
-// Build the slow-changing part of the system prompt: skills + screen skill +
-// MCP tools + persona identity + emotion/next-chat instructions. Cached by
-// fetchSkillsContext() with a 60s TTL; memory is layered on separately so it
-// can refresh on every call without re-fetching the slow parts.
-async function _buildSkillsContextBase() {
+// Lazily fetch + memoise the screen skill body. Static file on disk; one
+// HTTP call per app session is enough.
+let _screenSkillBlock = null;
+async function _fetchScreenSkillBlock() {
+  if (_screenSkillBlock !== null) return _screenSkillBlock;
+  try {
+    if (window.pet && typeof window.pet.getSkill === "function") {
+      const data = await window.pet.getSkill("screen-observe");
+      const body = data && data.skill && data.skill.body;
+      _screenSkillBlock = body ? ("\n\n" + body) : "";
+    } else {
+      _screenSkillBlock = "";
+    }
+  } catch {
+    _screenSkillBlock = "";
+  }
+  return _screenSkillBlock;
+}
+
+// Build the slow-changing part of the system prompt: skills + optional MCP
+// tools + persona identity + emotion/next-chat instructions. Cached by
+// fetchSkillsContext() with a 60s TTL; memory and the screen skill body are
+// layered on separately so they can refresh without re-fetching the slow
+// parts.
+async function _buildSkillsContextBase(opts) {
+  const allowTools = !(opts && opts.allowTools === false);
   try {
     if (window.pet && typeof window.pet.listSkills === "function") {
       const data = await window.pet.listSkills();
@@ -1395,19 +1453,14 @@ async function _buildSkillsContextBase() {
         ctx += `\n\n<available_skills>\n${lines.join("\n")}\n</available_skills>\n\nYou may use /skill <name> to load a skill's detailed instructions.`;
       }
 
-      // Auto-load built-in screen-observe skill so the AI always has its
-      // full instructions without requiring an explicit /skill command.
-      if (window.pet && typeof window.pet.getSkill === "function") {
-        try {
-          const screenSkill = await window.pet.getSkill("screen-observe");
-          if (screenSkill && screenSkill.skill && screenSkill.skill.body) {
-            ctx += "\n\n" + screenSkill.skill.body;
-          }
-        } catch {}
-      }
+      // The screen-observe skill body is loaded per-turn by
+      // fetchSkillsContext() only when the turn is about the screen — see
+      // the prompt-budget comment there.
 
-      // Phase 2: inject available MCP tools so the model knows to use [MCP:] format
-      if (window.pet && typeof window.pet.mcpListServers === "function") {
+      // Phase 2: inject available MCP tools so the model knows to use [MCP:] format.
+      // Skipped for loopback endpoints: the schemas are thousands of tokens and
+      // a 2B model will call a tool instead of answering "你好".
+      if (allowTools && window.pet && typeof window.pet.mcpListServers === "function") {
         try {
           const mcp = await window.pet.mcpListServers();
           const tools = Array.isArray(mcp && mcp.tools) ? mcp.tools : [];
@@ -1676,6 +1729,16 @@ async function submit(text) {
   let sawReply = false;
   let typer = null;
 
+  // A cold local model can spend a minute or two prefilling the persona
+  // before its first token. The bubble hides after 350 ms so the pet can
+  // act — without this hint the app looks frozen. Re-show it with a
+  // "thinking" label only if the model still hasn't produced anything.
+  const slowHint = setTimeout(() => {
+    if (!sawThink && !sawReply) {
+      void showThinking(t("chatThinkingDefault"));
+    }
+  }, 15000);
+
   // Re-measure + auto-scroll the active streaming pane on every painted char.
   function onTick() {
     measureAndShow({ animate: false });
@@ -1715,9 +1778,30 @@ async function submit(text) {
     }
   }
 
+  // Phase 2: attach provider routing preferences. Fetched BEFORE the
+  // system prompt is built: a loopback endpoint (LM Studio / llama.cpp /
+  // Ollama) gets a tool-free prompt — 30+ JSON schemas are thousands of
+  // tokens and a 2B model calls one on "你好", doubling cold prefill.
+  let providerPrefs = { defaultProvider: "local", modelProviders: [] };
+  try {
+    if (window.pet && typeof window.pet.getProviderPrefs === "function") {
+      providerPrefs = (await window.pet.getProviderPrefs()) || providerPrefs;
+    }
+  } catch {}
+  // Session overrides take priority (set by /model commands)
+  if (_sessionProvider !== null) providerPrefs.defaultProvider = _sessionProvider;
+  const activeProvCfg = (providerPrefs.modelProviders || []).find(function(p) {
+    return p && p.provider === providerPrefs.defaultProvider;
+  });
+  const localEndpoint = _isLocalProviderPrefs(providerPrefs);
+  // Loopback endpoints default to a tool-free prompt. "toolsEnabled": true
+  // in ~/.pet/providers.json is the explicit opt-in (same flag the gateway
+  // reads), so a capable local model can still get the tool instructions.
+  const allowTools = !localEndpoint || !!(activeProvCfg && activeProvCfg.toolsEnabled === true);
+
   // Inject available skills into the system prompt so the model knows
   // what skills are at its disposal.
-  const skillsContext = await fetchSkillsContext();
+  const skillsContext = await fetchSkillsContext(text, { allowTools });
   const body = {
     messages: messagesToSend,
     stream: true,
@@ -1732,24 +1816,9 @@ async function submit(text) {
     body.system = skillsContext;
   }
 
-  // Phase 2: attach provider routing preferences. Declared BEFORE the
-  // screen-context block below — that block reads providerPrefs via
-  // _providerSupportsVision(providerPrefs), and a `let` declared only
-  // further down would sit in the temporal dead zone and throw a
-  // ReferenceError whenever a screen observation was pending, crashing
-  // every "look at my screen" request.
-  let providerPrefs = { defaultProvider: "local", modelProviders: [] };
-  try {
-    if (window.pet && typeof window.pet.getProviderPrefs === "function") {
-      providerPrefs = (await window.pet.getProviderPrefs()) || providerPrefs;
-    }
-  } catch {}
-  // Session overrides take priority (set by /model commands)
-  if (_sessionProvider !== null) providerPrefs.defaultProvider = _sessionProvider;
   if (providerPrefs.defaultProvider && providerPrefs.defaultProvider !== "local") {
     body.model_provider = providerPrefs.defaultProvider;
-    const provCfg = (providerPrefs.modelProviders || []).find(function(p) { return p.provider === providerPrefs.defaultProvider; });
-    if (provCfg && provCfg.contextWindow) body.context_window = Number(provCfg.contextWindow);
+    if (activeProvCfg && activeProvCfg.contextWindow) body.context_window = Number(activeProvCfg.contextWindow);
   }
 
   // Inject pending screen observation context (set by submitProactive).
@@ -1819,6 +1888,7 @@ async function submit(text) {
         if (obj.event === "think" && effectiveThinking) {
           if (!sawThink) {
             sawThink = true;
+            clearTimeout(slowHint);
             await showThink();
             thinkEl = document.getElementById("think-text");
             typer = new Typewriter(thinkEl, { onChange: onTick });
@@ -1830,6 +1900,7 @@ async function submit(text) {
           // typewriter, then transition to a fresh reply bubble.
           if (!sawReply) {
             sawReply = true;
+            clearTimeout(slowHint);
             if (typer) await typer.drain();
             if (sawThink && phase === "think-stream") {
               await fadeOutAndHide(220);
@@ -1865,6 +1936,7 @@ async function submit(text) {
       }
     }
 
+    clearTimeout(slowHint);
     if (typer) await typer.drain();
 
     // LingLing: keep the raw stream (incl. the <<<MEM>>>…<<<MEMEND>>> block
@@ -1939,6 +2011,7 @@ async function submit(text) {
     scheduleProactiveChat();
 
   } catch (err) {
+    clearTimeout(slowHint);
     if (typer) typer.stop();
     if (err.name === "AbortError") return;
     await showError(err.message || String(err));

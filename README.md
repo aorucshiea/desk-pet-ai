@@ -106,6 +106,12 @@ cd desk-pet-ai
 2. 或把 `.gguf` 放进 `models/`，在 **设置 → 模型** 里选择；
 3. 本地模型是可选项，不是启动前提。
 
+> **本地小模型第一次回复慢，不是卡死。** 网关要把人设 + 记忆 + 上下文整段做预填充（prefill），
+> 这段耗时取决于模型和显存/CPU 的预填充速度，**和 LM Studio 里把 context 调大基本无关**。
+> 网关对 loopback 端点（LM Studio / Ollama / llama.cpp）默认关闭工具调用、把输出预算降到 768，
+> 并给到 300 秒超时；要恢复工具调用，在 `~/.pet/providers.json` 对应 provider 上加
+> `"toolsEnabled": true`。日志里的 `prompt budget` / `first token after` 两行可以直接看出慢在哪。
+
 端口：网关 `18765`、llama-server `18766`、coding-agent hook 服务 `23333–23337`。
 
 ### 打包

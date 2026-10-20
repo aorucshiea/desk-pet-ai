@@ -17,7 +17,7 @@ from typing import Optional
 from ..llama_client import LlamaServer
 from .base import BaseProvider
 from .local import LocalProvider
-from .openai import OpenAIProvider
+from .openai import OpenAIProvider, is_local_url
 from .anthropic import AnthropicProvider
 
 
@@ -84,11 +84,15 @@ def create_providers(
         if not api_key:
             continue  # skip providers without API key
 
+        local_endpoint = is_local_url(base_url)
         openai = OpenAIProvider(
             api_key=api_key,
             base_url=base_url,
             model=model,
             name=name,
+            timeout=300.0 if local_endpoint else 60.0,
+            is_local=local_endpoint,
+            allow_tools=bool(cfg.get("toolsEnabled", not local_endpoint)),
         )
         registry.register(openai)
 

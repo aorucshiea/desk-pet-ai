@@ -8,8 +8,10 @@ calling format.
 from __future__ import annotations
 
 import json
+import time
 import uuid
 from typing import Any, AsyncGenerator, Optional
+from urllib.parse import urlparse
 
 import httpx
 
@@ -23,6 +25,21 @@ from .base import (
     error_event,
     tool_call_event,
 )
+
+# Hosts that mean "this endpoint runs on the user's machine". Local
+# inference engines (LM Studio, llama.cpp, Ollama, vLLM, …) are slow to
+# prefill a long prompt and must not be treated like a cloud API when we
+# pick an output budget or an HTTP timeout.
+_LOCAL_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", "0.0.0.0"})
+
+
+def is_local_url(base_url: str) -> bool:
+    """True when *base_url* points at a loopback endpoint."""
+    try:
+        host = (urlparse(str(base_url or "")).hostname or "").strip("[]").lower()
+    except Exception:
+        return False
+    return host in _LOCAL_HOSTS
 
 
 class OpenAIProvider(BaseProvider):
@@ -39,6 +56,8 @@ class OpenAIProvider(BaseProvider):
         thinking: Optional[bool] = None,
         reasoning_effort: Optional[str] = None,
         context_window: Optional[int] = None,
+        is_local: Optional[bool] = None,
+        allow_tools: bool = True,
     ) -> None:
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
@@ -48,6 +67,8 @@ class OpenAIProvider(BaseProvider):
         self._thinking = thinking  # None=default, True=enabled, False=disabled
         self._reasoning_effort = reasoning_effort  # None=default, "low"/"medium"/"high"
         self._context_window = context_window
+        self._is_local = is_local_url(base_url) if is_local is None else bool(is_local)
+        self._allow_tools = bool(allow_tools)
         self._log = get_logger()
         self._client: Optional[httpx.AsyncClient] = None
         # Set to True after the first HTTP 400 "Unsupported parameter: thinking"
@@ -57,6 +78,23 @@ class OpenAIProvider(BaseProvider):
     @property
     def name(self) -> str:
         return self._name
+
+    @property
+    def is_local(self) -> bool:
+        """True for loopback inference servers (LM Studio, llama.cpp, Ollama…)."""
+        return self._is_local
+
+    @property
+    def allow_tools(self) -> bool:
+        """Whether native tool calls are advertised to this provider.
+
+        Local endpoints default to False: 30+ tool schemas are thousands of
+        tokens of prompt, and a 2B model will happily call ``pet_mood_now``
+        on a plain "你好" — each tool round-trip re-prefills the whole
+        prompt. Users who run a capable local model can set
+        ``"toolsEnabled": true`` in ~/.pet/providers.json.
+        """
+        return self._allow_tools
 
     @property
     def supports_function_calling(self) -> bool:
@@ -72,7 +110,15 @@ class OpenAIProvider(BaseProvider):
             self._client = httpx.AsyncClient(
                 base_url=self._base_url,
                 headers=headers,
-                timeout=httpx.Timeout(self._timeout),
+                # read=timeout is per streamed chunk, so a slow local prefill
+                # gets its full budget; connect stays short so a closed LM
+                # Studio fails fast instead of waiting the whole 300 s.
+                timeout=httpx.Timeout(
+                    connect=5.0 if self._is_local else 10.0,
+                    read=self._timeout,
+                    write=30.0,
+                    pool=5.0,
+                ),
             )
         return self._client
 
@@ -120,6 +166,8 @@ class OpenAIProvider(BaseProvider):
 
         # Track if we already retried without thinking in this call
         retried_without_thinking = False
+        started = time.monotonic()
+        first_token_logged = False
 
         while True:
             try:
@@ -165,6 +213,18 @@ class OpenAIProvider(BaseProvider):
                         # Handle content (including reasoning_content from thinking models)
                         content = delta.get("content")
                         reasoning = delta.get("reasoning_content")
+                        if self._is_local and not first_token_logged and (reasoning or content):
+                            first_token_logged = True
+                            # The first token is the whole UX for a local model:
+                            # prompt prefill dominates wall-clock time, and a
+                            # silent wait looks like a hang. Keep this line
+                            # greppable ("first token") for bug reports.
+                            self._log.info(
+                                "provider %s first token after %.1fs (max_tokens=%s)",
+                                self._name,
+                                time.monotonic() - started,
+                                body.get("max_tokens"),
+                            )
                         if reasoning:
                             # Yield as a "think" event so the renderer shows
                             # it with the same淡化 styling as DeskPet5's
@@ -220,6 +280,12 @@ class OpenAIProvider(BaseProvider):
                 break
 
             except httpx.TimeoutException:
+                self._log.warning(
+                    "provider %s timed out after %.0fs (max_tokens=%s)",
+                    self._name,
+                    self._timeout,
+                    body.get("max_tokens"),
+                )
                 yield error_event("OpenAI API request timed out")
                 return
             except Exception as exc:

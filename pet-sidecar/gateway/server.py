@@ -39,6 +39,7 @@ from .providers import ProviderRegistry, create_providers
 from .providers.anthropic import AnthropicProvider
 from .providers.base import ToolDef, parse_mcp_calls
 from .providers.local import LocalProvider
+from .providers.openai import is_local_url
 from .skills.skill_routes import register_skill_routes
 from .omniparser_manager import OmniParserManager
 from .memory import MemoryStore, EventStore, MoodStore
@@ -245,6 +246,38 @@ def _effective_max_new_tokens(req: ChatRequest) -> int:
     if req.thinking:
         return min(MAX_NEW_TOKENS_CAP, max(base, THINKING_MIN_MAX_NEW_TOKENS))
     return base
+
+
+def _output_budget(provider, req: ChatRequest) -> int:
+    """Output-token budget for one provider.
+
+    Cloud APIs keep a generous 8192 floor (tool-call turns + long replies).
+    Local OpenAI-compatible engines (LM Studio / llama.cpp / Ollama) must
+    NOT get that floor: LM Studio JIT-loads the model with
+    ``prompt_tokens + max_tokens`` of context, so an 8192 output budget on
+    top of a 10k-token pet prompt balloons the KV cache, slows prefill and
+    makes a 2B model look "stuck". The renderer already asks for a sane
+    budget (768, or 1280 with thinking); use it as-is.
+    """
+    effective = _effective_max_new_tokens(req)
+    if getattr(provider, "is_local", False) or provider.name == "local":
+        return effective
+    return max(effective, 8192)
+
+
+def _estimate_tokens(text: str) -> int:
+    """Very rough token estimate (CJK ~1/char, other ~4 chars/token)."""
+    if not text:
+        return 0
+    cjk = 0
+    other = 0
+    for ch in text:
+        cp = ord(ch)
+        if 0x3000 <= cp <= 0x9FFF or 0xAC00 <= cp <= 0xD7A3 or 0xFF00 <= cp <= 0xFFEF:
+            cjk += 1
+        else:
+            other += 1
+    return cjk + (other + 3) // 4
 
 
 # ── Emotion index → temperature (情绪指数温度调控) ─────────────────────
@@ -1050,6 +1083,11 @@ def build_app(
                 thinking = cfg.get("thinking")
                 reasoning_effort = cfg.get("reasoningEffort") or cfg.get("reasoning_effort")
                 context_window = cfg.get("contextWindow")
+                # Local engines (LM Studio / llama.cpp / Ollama) prefill on
+                # the user's own CPU/GPU: 10k tokens can take a minute or
+                # more before the first token. A cloud-sized 60 s timeout
+                # turns every cold start into a false "timeout" error.
+                _is_local = is_local_url(base_url)
                 if "anthropic.com" in str(base_url).lower():
                     from .providers.anthropic import AnthropicProvider
                     p = AnthropicProvider(
@@ -1062,6 +1100,13 @@ def build_app(
                         thinking=thinking if thinking is not None else None,
                         reasoning_effort=reasoning_effort,
                         context_window=int(context_window) if context_window else None,
+                        timeout=300.0 if _is_local else 60.0,
+                        is_local=_is_local,
+                        # Tool schemas are thousands of prompt tokens and a
+                        # small local model calls them on greetings. Off by
+                        # default for loopback endpoints; opt back in with
+                        # "toolsEnabled": true in ~/.pet/providers.json.
+                        allow_tools=bool(cfg.get("toolsEnabled", not _is_local)),
                     )
                 provider_registry.register(p)
                 log.info("Provider loaded: %s (model=%s)", provider_id, model)
@@ -3353,7 +3398,15 @@ async def _stream_chat_provider(
 
     provider = _resolve_provider(registry, req, server, server_state, log, lora_arr)
 
-    tools_list = await _gather_tools(mcp_manager, req)
+    # Tools are the single biggest optional block in a local-model prompt:
+    # 30+ JSON schemas, plus an extra model round-trip whenever the model
+    # decides to call one. A 2B model calls pet_mood_now on "你好" — that
+    # doubles cold prefill. Local endpoints default to tool-free chat;
+    # "toolsEnabled": true in providers.json restores them.
+    _tools_allowed = bool(getattr(provider, "allow_tools", True))
+    if req.tools_enabled and not _tools_allowed:
+        log.info("provider %s: tools disabled for this local endpoint (toolsEnabled=false)", provider.name)
+    tools_list = await _gather_tools(mcp_manager, req) if (req.tools_enabled and _tools_allowed) else []
 
     # Build reverse mapping: prefixed_name → (server_name, tool_name)
     _tool_map: dict[str, tuple[str, str]] = {}
@@ -3496,7 +3549,7 @@ async def _stream_chat_provider(
             "输出 [WALK_DESKTOP] 会跳到另一个虚拟桌面。"
             "这些标签会被身体执行，不会显示给用户。"
         ]
-        if req.tools_enabled:
+        if req.tools_enabled and _tools_allowed:
             _mgr = _kernel()
             plugins_desc = _mgr.describe() if _mgr else []
             body_lines.append(
@@ -3514,6 +3567,14 @@ async def _stream_chat_provider(
                 "别把窗口推到用户找不到的地方；用户没说想玩的时候，看着就好。"
             )
         system = (system or "") + "\n\n" + "\n".join(body_lines)
+        if not _tools_allowed:
+            # The persona still mentions memory/recall tools. Without native
+            # tools a 2B model will happily print "[MCP:...]" as text — which
+            # nothing executes and the user sees as garbage. Say it plainly.
+            system += (
+                "\n\n【这一轮没有工具】不要输出 [MCP:...] 或 [builtin/...] 标记，"
+                "直接用文字回答。记忆块 <<<MEM>>> 仍然照常输出。"
+            )
 
         # 3. Resonance: check if the user's latest message triggers stored events
         if active_event_store is not None and messages:
@@ -3577,6 +3638,32 @@ async def _stream_chat_provider(
         now = datetime.now(timezone.utc).strftime("%Y年%m月%d日 %H:%M:%S")
         return _NOW_ANCHOR_RE.sub(f"（现在是{now}。", sys_text, count=1)
 
+    # Diagnostic: prompt size vs. budget. A cold local prefill of the full
+    # persona/skill block can take minutes, and the old log only showed a
+    # 300-char preview — useless when a 2B model "suddenly stops". This is
+    # the line to ask for in a bug report.
+    try:
+        _ctx_window = getattr(provider, "_context_window", None) or req.context_window
+        _msg_chars = sum(len(json.dumps(m, ensure_ascii=False)) for m in messages)
+        _msg_tokens = sum(_estimate_tokens(str(m.get("content", ""))) for m in messages)
+        _tool_chars = sum(len(str(getattr(t, "description", "") or "")) for t in (tools_list or []))
+        log.info(
+            "prompt budget | provider=%s local=%s system_chars=%d message_count=%d chars_total=%d "
+            "~tokens=%d max_tokens=%d tools=%d tool_chars=%d ctx=%s",
+            provider.name,
+            bool(getattr(provider, "is_local", provider.name == "local")),
+            len(system or ""),
+            len(messages),
+            len(system or "") + _msg_chars,
+            _estimate_tokens(system or "") + _msg_tokens,
+            _effective_max_new_tokens(req),
+            len(tools_list or []),
+            _tool_chars,
+            _ctx_window or "auto",
+        )
+    except Exception as exc:
+        log.debug("prompt budget log failed: %s", exc)
+
     # One syntax-correction retry per turn: quantized models mangle the
     # tool-call syntax (dropped "MCP:" prefix, quotes instead of {}).
     _tool_syntax_retry_done = False
@@ -3595,10 +3682,7 @@ async def _stream_chat_provider(
         pending_tool_calls: list[dict] = []
 
         # Determine parameters based on provider type
-        effective_max = _effective_max_new_tokens(req)
-        # API providers (not local) need >=8192 for tool calls + long replies
-        if provider.name != "local":
-            effective_max = max(effective_max, 8192)
+        effective_max = _output_budget(provider, req)
         # Live now-anchor: refreshed right before the model speaks (every
         # iteration), so after long reasoning / tool calls the model still
         # knows what time it is right now.
@@ -3641,6 +3725,7 @@ async def _stream_chat_provider(
                     pending_tool_calls.append(event)
                     tool_occurred = True
                 elif event["type"] == "error":
+                    log.warning("provider %s error: %s", provider.name, event["message"])
                     yield _sse({"event": "error", "message": event["message"]})
                     if not req.silent:
                         bridge.post("error")
@@ -3658,7 +3743,7 @@ async def _stream_chat_provider(
         # providers as a fallback — cloud models (DeepSeek, Qwen API)
         # often output tool calls as text instead of using the API's
         # native function-calling mechanism.
-        if not pending_tool_calls:
+        if not pending_tool_calls and _tools_allowed:
             mcp_calls = parse_mcp_calls(full_text)
             if mcp_calls and mcp_manager:
                 tool_occurred = True
