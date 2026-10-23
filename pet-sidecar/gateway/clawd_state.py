@@ -23,6 +23,21 @@ import httpx
 
 CLAWD_PORTS = [23333, 23334, 23335, 23336, 23337]
 RUNTIME_FILE = Path.home() / ".clawd" / "runtime.json"
+# B-5 hardening made the clawd server require the shared secret
+# (x-clawd-token, ~/.clawd/server-token). Without this header every
+# gateway state push was rejected with `reason: token` — the pet never
+# saw thinking/working/idle from the chat loop (only hook-driven states
+# worked). The Electron hook client (hooks/server-config.js
+# withAuthHeader) sends this header on every candidate port; do the same.
+TOKEN_FILE = Path.home() / ".clawd" / "server-token"
+TOKEN_HEADER = "x-clawd-token"
+
+
+def _read_clawd_token() -> str:
+    try:
+        return TOKEN_FILE.read_text("utf-8").strip()
+    except Exception:
+        return ""
 
 # We borrow the claude-code agent_id so the existing animation map kicks in
 # without modifying the desktop pet's agent registry.
@@ -56,6 +71,7 @@ class ClawdBridge:
         self._port: Optional[int] = None
         self._cwd = os.getcwd()
         self._client = httpx.Client(timeout=0.4)
+        self._token = ""
 
     def new_session(self) -> None:
         with self._lock:
@@ -87,27 +103,42 @@ class ClawdBridge:
 
         payload = json.dumps(body).encode("utf-8")
         for port in order:
-            try:
-                resp = self._client.post(
-                    f"http://127.0.0.1:{port}/state",
-                    content=payload,
-                    headers={"Content-Type": "application/json"},
-                )
-                # Claim a port ONLY when it's really us: the
-                # x-clawd-server marker, or a 2xx (the desk-pet HTTP
-                # server answers known /state routes with 204/200).
-                # Anything else — Cherry Studio's Express 404, an
-                # unrelated service's 405, a 400 from an unknown state —
-                # is NOT our pet; keep probing the other ports.
-                if resp.headers.get("x-clawd-server") == "clawd-on-desk" or 200 <= resp.status_code < 300:
-                    self._port = port
+            if not self._token:
+                # lazy-load; the file is (re)written by the Electron boot
+                self._token = _read_clawd_token()
+            for attempt in (1, 2):
+                try:
+                    resp = self._client.post(
+                        f"http://127.0.0.1:{port}/state",
+                        content=payload,
+                        headers={
+                            "Content-Type": "application/json",
+                            TOKEN_HEADER: self._token,
+                        },
+                    )
+                    # Claim a port ONLY when it's really us: the
+                    # x-clawd-server marker, or a 2xx (the desk-pet HTTP
+                    # server answers known /state routes with 204/200).
+                    # Anything else — Cherry Studio's Express 404, an
+                    # unrelated service's 405, a 400 from an unknown state —
+                    # is NOT our pet; keep probing the other ports.
+                    if resp.headers.get("x-clawd-server") == "clawd-on-desk" or 200 <= resp.status_code < 300:
+                        self._port = port
+                        if self.debug:
+                            print(f"[clawd] {state} -> :{port} ({resp.status_code})")
+                        return
+                    if resp.status_code == 401 and attempt == 1:
+                        # Stale token (the pet rewrote the file after we
+                        # cached it): re-read once and retry this port.
+                        fresh = _read_clawd_token()
+                        if fresh and fresh != self._token:
+                            self._token = fresh
+                            continue
+                except Exception as exc:
                     if self.debug:
-                        print(f"[clawd] {state} -> :{port} ({resp.status_code})")
-                    return
-            except Exception as exc:
-                if self.debug:
-                    print(f"[clawd] :{port} failed: {exc}")
-                continue
+                        print(f"[clawd] :{port} failed: {exc}")
+                    break
+            continue
         if self.debug:
             print(f"[clawd] no server reachable; dropped state={state}")
 
