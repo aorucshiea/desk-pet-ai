@@ -3064,6 +3064,7 @@ def _clawd_headers() -> dict:
 # 模型只负责「选哪个」（id）；位移算术由网关做好交给壳的 /pet/walk 执行
 # （walkPet 用 DIP 并 clamp 到工作区，与 /world/bodies 的 rect 同单位）。
 _WALK_BESIDE_GAP = 28.0  # 停在刚体侧边的留白（DIP）
+_LAST_WORLD_WA: dict = {"rect": None}  # scout 最近一次拿到的工作区
 
 
 def _walk_to_delta(pet: dict, body: dict, stand: bool = False, gap: float = _WALK_BESIDE_GAP) -> tuple[float, float] | None:
@@ -3128,16 +3129,27 @@ def _format_windows_scout(windows: list, pet: dict, facing: str) -> str:
         w["_view"] = _window_view(pet, w.get("rect") or {}, facing)
     windows.sort(key=lambda w: (0 if w["_view"]["in_view"] else 1, w["_view"]["dist"]))
     lines = ["你环顾四周，看到了这些窗户（可以自己挑一扇收养成刚体）："]
+    wa = None
+    try:
+        wa = _LAST_WORLD_WA.get("rect")
+    except Exception:
+        pass
     for w in windows[:12]:
         v = w["_view"]
+        r = w.get("rect") or {}
+        maximized = False
+        if wa:
+            maximized = (float(r.get("top", 0)) <= float(wa.get("y", 0)) + 1
+                         and float(r.get("right", 0)) - float(r.get("left", 0)) >= float(wa.get("width", 1e9)) * 0.95)
         lines.append(
-            "- hwnd=%s 「%s」 %s %dpx%s%s"
+            "- hwnd=%s 「%s」 %s %dpx%s%s%s"
             % (
                 w.get("hwnd"),
                 (w.get("title") or "").strip() or "（无标题）",
                 label_for_angle(v["angle"]),
                 int(v["dist"]),
                 "（已是刚体）" if w.get("already") else "",
+                "（最大化，站不上去）" if maximized else "",
                 "" if v["in_view"] else "（视野边缘之外）",
             )
         )
@@ -3195,6 +3207,7 @@ async def _world_tool(name: str, args: dict) -> str:
                 data = resp.json()
                 if data.get("status") == "error":
                     return "看不了窗户：%s" % (data.get("message") or "unknown")
+                _LAST_WORLD_WA["rect"] = data.get("wa")
                 return _format_windows_scout(
                     data.get("windows") or [],
                     data.get("pet") or {},
@@ -3243,6 +3256,16 @@ async def _world_tool(name: str, args: dict) -> str:
                     return "没有 id=%s 的刚体（先 pet_world_bodies 看看有哪些）。" % body_id
                 if not pet:
                     return "拿不到自己的位置，走不动。"
+                if stand:
+                    # 最大化窗户顶边在屏幕外：物理上站不上去（会被物理引擎
+                    # 弹回地面），诚实拒绝而不是静默钳制。
+                    try:
+                        wa_top = float((data.get("wa") or {}).get("y", 0))
+                        ph = float(pet.get("height", 0))
+                        if float(chosen["rect"]["top"]) - ph / 2 < wa_top:
+                            return "「%s」是铺满屏幕的最大化窗户，顶边在屏幕外，站不上去——走到旁边（stand=false）或者换一扇吧。" % (chosen.get("label") or "刚体")
+                    except (KeyError, TypeError, ValueError):
+                        pass
                 delta = _walk_to_delta(pet, chosen, stand=stand)
                 if delta is None:
                     return "这个刚体的几何信息不可用。"
@@ -3796,7 +3819,10 @@ async def _stream_chat_provider(
                 "看看有哪些窗户（带方向和距离），pet_world_adopt 把你选中的一扇收养成刚体，"
                 "pet_world_walk_to 走到你选中的刚体旁边（stand=true 站上去），"
                 "pet_world_operate 能 push（推开）/ pull（拉近）/ kick（踢飞）/ grab（拎起来）"
-                "你选中的刚体。收养要节制：挑你真想互动的那扇就好，别把用户的每扇窗户都变成"
+                "你选中的刚体。另外你随时可以直接输出 [WALK:dx,dy] 自由走动——不需要任何"
+                "刚体目标，想转身看看、从高处下来、或者随便溜达一步都是它。"
+                "铺满屏幕的最大化窗户站不上去（顶边在屏幕外），别挑它站着。"
+                "收养要节制：挑你真想互动的那扇就好，别把用户的每扇窗户都变成"
                 "刚体；推拉要有分寸，别把窗口推到用户找不到的地方；用户没说想玩的时候，看着就好。"
             )
         system = (system or "") + "\n\n" + "\n".join(body_lines)

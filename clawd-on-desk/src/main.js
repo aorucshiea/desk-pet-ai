@@ -1718,6 +1718,8 @@ const _serverCtx = {
   // 猫自己的屏幕位置（DIP）——/world/bodies 附带给网关，
   // pet_world_walk_to 靠它算「走到选中的刚体旁边」的位移
   getPetBounds: () => (win && !win.isDestroyed() ? win.getBounds() : null),
+  // 工作区（DIP）——网关用它判断"刚体顶边是否在屏幕外"（最大化窗户站不上去）
+  getWorkArea: () => screen.getPrimaryDisplay().workArea,
   // AI 自主移动（决策层 /pet/walk）：dx, dy 像素增量，clamp 在工作区内
   walkPet: (dx, dy) => {
     try {
@@ -1728,7 +1730,24 @@ const _serverCtx = {
       const wa = screen.getPrimaryDisplay().workArea;
       const nextX = Math.max(wa.x, Math.min(wa.x + wa.width - b.width, b.x + dx));
       const nextY = Math.max(wa.y, Math.min(wa.y + wa.height - b.height, b.y + dy));
-      petWindowRuntime.applyPetWindowPosition(nextX, nextY);
+      // 步进行走而非瞬移——站上高窗顶时瞬移看起来像"飞"（实测反馈）。
+      // 与 pet:pet-walk 同一套步进节奏；回复的是终点（ HTTP 调用方要的是
+      // 位置事实，动画在后台 ~1s 内完成）。
+      const totalX = nextX - b.x;
+      const totalY = nextY - b.y;
+      const steps = Math.max(1, Math.min(60, Math.round((Math.abs(totalX) + Math.abs(totalY)) / 24)));
+      let step = 0;
+      const walkTimer = setInterval(() => {
+        step += 1;
+        const f = step / steps;
+        try {
+          petWindowRuntime.applyPetWindowPosition(
+            Math.round(b.x + totalX * f),
+            Math.round(b.y + totalY * f),
+          );
+        } catch (_) {}
+        if (step >= steps) clearInterval(walkTimer);
+      }, 28);
       return { status: "ok", x: Math.round(nextX), y: Math.round(nextY) };
     } catch (err) {
       return { status: "error", message: (err && err.message) || String(err) };

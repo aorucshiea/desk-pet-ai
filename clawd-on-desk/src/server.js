@@ -410,6 +410,7 @@ function startHttpServer() {
             if (pet) out.pet = pet;
           }
           if (typeof ctx.getPetFacing === "function") out.facing = ctx.getPetFacing();
+          if (typeof ctx.getWorkArea === "function") out.wa = ctx.getWorkArea();
         } catch {}
       }
       res.writeHead(200, { "Content-Type": "application/json" });
@@ -427,6 +428,7 @@ function startHttpServer() {
             if (pet) wout.pet = pet;
           }
           if (typeof ctx.getPetFacing === "function") wout.facing = ctx.getPetFacing();
+          if (typeof ctx.getWorkArea === "function") wout.wa = ctx.getWorkArea();
         } catch {}
       }
       res.writeHead(200, { "Content-Type": "application/json" });

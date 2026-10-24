@@ -28,6 +28,13 @@ def bearing(dx: float, dy: float, facing: Optional[str]) -> float:
     return math.degrees(math.atan2(cross, dot))
 
 
+# 贴身的东西不受视锥角限制：正下方/贴着身体的物体是"感觉到"的
+# （本体感觉/触觉），不是"看到"的——站在一个刚体顶上时，那个刚体
+# 就在脚下 ~30px、方位角 90°，按纯视锥判定会变成"视野外"，模型
+# 就再也找不到自己脚下踩着的东西了（实测发生）。
+TOUCH_RANGE_PX = 60.0
+
+
 def visible(
     dx: float,
     dy: float,
@@ -37,14 +44,21 @@ def visible(
 ) -> Dict[str, Any]:
     dist = math.hypot(dx, dy)
     angle = bearing(dx, dy, facing)
+    in_fov = dist <= max_dist and abs(angle) <= half_deg
+    if not in_fov and dist <= TOUCH_RANGE_PX:
+        in_fov = True  # touch/proprioception beat the cone
     return {
         "dist": round(dist, 1),
         "angle": round(angle, 1),
-        "in_fov": dist <= max_dist and abs(angle) <= half_deg,
+        "in_fov": in_fov,
     }
 
 
 def label_for_angle(angle: float) -> str:
     if abs(angle) <= 10:
         return "正前方"
+    if abs(angle) >= 170:
+        return "身后"
+    if 80 <= abs(angle) <= 100:
+        return "脚下" if angle > 0 else "头顶"
     return "右前" if angle > 0 else "左前"
