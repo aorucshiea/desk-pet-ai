@@ -429,6 +429,7 @@ let _nextChatSeconds = 0;
 // a tag" — both leave _nextChatSeconds=0, but only the former should stop
 // proactive chat. Reset at the top of submit() each turn.
 let _nextChatExplicit = false;
+let _innerTurn = false;
 let _proactiveTimer = null;
 let _lastUserActivity = Date.now();
 let _lastProactivePrompt = "";   // dedupe so we don't fire the same prompt twice
@@ -1583,6 +1584,9 @@ async function submit(text) {
   // Fresh turn — the model hasn't (yet) emitted a [NEXT_CHAT] tag for
   // THIS reply. Set true when the `next_chat` SSE event arrives.
   _nextChatExplicit = false;
+  // 心声轮：模型选择了"在心里想"（[INNER:…]）——这一轮用户什么都
+  // 不该看到。流结束后静默收起气泡。
+  _innerTurn = false;
 
   // Try command intents first. If matched, render the result as the
   // assistant turn and skip the model call entirely.
@@ -1932,12 +1936,25 @@ async function submit(text) {
           _nextChatSeconds = Number(obj.seconds) || 0;
           _nextChatExplicit = true;
           if (_nextChatSeconds > 0) scheduleProactiveChat();
+        } else if (obj.event === "inner") {
+          // 心声：模型这一轮选择"在心里想"而不是开口。网关没有发任何
+          // 内容 delta（内容已写进它自己的瞬时记忆）——用户什么都不该看到，
+          // 气泡静默关闭，不显示任何输出或思考过程。
+          _innerTurn = true;
         }
       }
     }
 
     clearTimeout(slowHint);
     if (typer) await typer.drain();
+
+    // 心声轮提前退出：模型选择"在心里想"，内容被网关截走写进了它的
+    // 瞬时记忆——这里没有任何可见内容，也不该有。静默收起气泡，
+    // 不写可见历史，不显示空回复。（服务端照常做记忆/情绪提取。）
+    if (_innerTurn) {
+      await hideBubble({ fade: true });
+      return;
+    }
 
     // LingLing: keep the raw stream (incl. the <<<MEM>>>…<<<MEMEND>>> block
     // and control tags) for server-side event/mood extraction, BEFORE the

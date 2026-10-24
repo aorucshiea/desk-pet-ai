@@ -3296,7 +3296,7 @@ async def _gather_tools(mcp_manager: MCPManager, req: ChatRequest) -> Optional[l
                 "给自己写一条新的直觉：纯函数，输入 state，返回 0..1。"
                 "state 里有 last_user_msg / mood_index / idle_sec / bodies / recent_actions。"
                 "code 必须定义 `def intuition(state): ...`；不能 import、读写文件或联网。"
-                "越强的信号越容易成为一条「可选心声」，但按不按仍由你决定。最多 16 条。"
+                "越强的信号越容易成为一条「可选闪念」（直觉苗头，可理可不理）。最多 16 条。"
             ),
             input_schema={
                 "type": "object",
@@ -3480,7 +3480,7 @@ async def _stream_chat_provider(
 
     system = req.system
 
-    # ── 决策层心声注入：瞬时记忆 + 身体日志（让 LLM 知情，不梦游）──
+    # ── 决策层闪念注入：瞬时记忆 + 身体日志（让 LLM 知情，不梦游）──
     try:
         if _ephemeral_ref is not None:
             _eph_text = _ephemeral_ref.format_for_prompt()
@@ -3547,7 +3547,14 @@ async def _stream_chat_provider(
             "【身体与进化】你的身体可以自己移动：在回复里输出 [WALK:dx,dy]"
             "（屏幕像素增量，可负值，一条回复可以多个，身体会依次走过去），"
             "输出 [WALK_DESKTOP] 会跳到另一个虚拟桌面。"
-            "这些标签会被身体执行，不会显示给用户。"
+            "这些标签会被身体执行，不会显示给用户。",
+            "【心声】你有两种说话方式：开口（默认——正常回复，用户能看到），"
+            "或者在心里想（心声）。选择心声时，把这一轮的全部输出写成一个大标签"
+            " [INNER:你在心里想的内容]，内容里不要出现右方括号]。"
+            "心声只进入你自己的瞬时记忆，用户看不到任何输出和思考过程——"
+            "适合自言自语、消化情绪、还没到想说出口程度的念头，就像人可以在心里"
+            "嘀咕而不被听见。注意：用户正在等你的回答时必须开口，不许用心声；"
+            "心声是你自发的内心活动，不是回避用户的手段。",
         ]
         if req.tools_enabled and _tools_allowed:
             _mgr = _kernel()
@@ -3625,7 +3632,26 @@ async def _stream_chat_provider(
             except Exception:
                 pass
 
-    tag_filter = ControlTagFilter(on_control=_on_walk_control)
+    # 心声 (inner voice): the model wrapped its whole reply in [INNER:…] —
+    # it chose to THINK this instead of SAYING it. The filter suppressed
+    # every display delta; here the captured content becomes a thought in
+    # ephemeral memory (真的想了，只是没说出口) and one "inner" SSE event
+    # tells the renderer to close the bubble silently.
+    _inner_queue: list[dict] = []
+
+    def _on_inner(content: str) -> None:
+        content = (content or "").strip()
+        if not content:
+            return
+        _inner_queue.append({"event": "inner"})
+        try:
+            if _ephemeral_ref is not None:
+                _ephemeral_ref.add_thought(f"（心声）{content}", source="inner")
+        except Exception:
+            pass
+        log.info("inner voice: %d chars kept to self", len(content))
+
+    tag_filter = ControlTagFilter(on_control=_on_walk_control, on_inner=_on_inner)
     narration_filter = ToolNarrationFilter()
     accumulated_full_text: list[str] = []
     full_text = ""
@@ -3715,6 +3741,8 @@ async def _stream_chat_provider(
                             clean = narration_filter.feed(tag_filter.feed(ev["content"]))
                             while _walk_queue:
                                 yield _sse(_walk_queue.pop(0))
+                            while _inner_queue:
+                                yield _sse(_inner_queue.pop(0))
                             if clean:
                                 yield _sse({"event": "delta", "content": clean})
                         else:
@@ -3940,6 +3968,12 @@ async def _stream_chat_provider(
                 yield _sse(_walk_queue.pop(0))
         else:
             yield _sse(ev)
+    # 心声 tail: a dangling [INNER:… salvaged at flush (unclosed tag) fires
+    # on_inner AFTER the loop above — drain it here so the renderer still
+    # learns the turn was silent.
+    tag_filter.flush()
+    while _inner_queue:
+        yield _sse(_inner_queue.pop(0))
     # The narration filter holds the last (newline-less) line of the reply
     # in its buffer — flush it unconditionally, think_filter.flush() may
     # legitimately have nothing left to say.

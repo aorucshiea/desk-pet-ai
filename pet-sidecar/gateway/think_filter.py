@@ -103,24 +103,40 @@ class ThinkBlockFilter:
 # `[`-prefix tail that might still grow into a tag (max tag length is
 # short, so the hold is tiny). WALK tags are additionally surfaced to the
 # caller via on_control so the stream loop can emit body-command events.
+#
+# [INNER:…] is a different beast: 心声 — the model's own choice of output
+# mode. When the model wraps its WHOLE reply in [INNER:…], the content is
+# not for the user at all (自己在心里想): it must never leak a single
+# delta to the renderer. Because the tag's inner text can span the entire
+# reply across many deltas, the existing hold-back logic carries it (a
+# growing "[INNER:…" prefix candidate is held; on ']' the complete tag is
+# stripped wholesale). The captured content is surfaced via on_inner so
+# the stream loop can write it to ephemeral memory (瞬忆) instead.
 
 _CTRL_TAG_RE = re.compile(
-    r"\[\s*(?:EMOTION|NEXT_CHAT|WALK_DESKTOP|WALK)\s*[^\]]*\]",
+    r"\[\s*(?:EMOTION|NEXT_CHAT|WALK_DESKTOP|WALK|INNER)\s*[^\]]*\]",
     re.IGNORECASE,
 )
 # The longest possible tag prefix we must hold before deciding it is not a
 # tag: "[WALK_DESKTOP" → 13 chars. Holding 16 covers whitespace variants.
 _CTRL_MAX_HOLD = 16
-_CTRL_PREFIXES = ("[EMOTION:", "[NEXT_CHAT:", "[WALK:", "[WALK_DESKTOP")
+_CTRL_PREFIXES = ("[EMOTION:", "[NEXT_CHAT:", "[WALK:", "[WALK_DESKTOP", "[INNER:")
 _WALK_RE = re.compile(r"\[\s*WALK\s*:\s*(-?\d+)\s*,\s*(-?\d+)\s*\]", re.IGNORECASE)
+_INNER_RE = re.compile(r"\[\s*INNER\s*:\s*([^\]]*)\]", re.IGNORECASE)
+_DANGLING_INNER_RE = re.compile(r"^\s*\[\s*INNER\s*:\s*(.*)$", re.IGNORECASE | re.DOTALL)
 
 
 class ControlTagFilter:
-    """Stateful stripper for [EMOTION:…] / [NEXT_CHAT:…] / [WALK…] tokens."""
+    """Stateful stripper for [EMOTION:…] / [NEXT_CHAT:…] / [WALK…] / [INNER…] tokens."""
 
-    def __init__(self, on_control: Callable[[str, int | None, int | None], None] | None = None) -> None:
+    def __init__(
+        self,
+        on_control: Callable[[str, int | None, int | None], None] | None = None,
+        on_inner: Callable[[str], None] | None = None,
+    ) -> None:
         self._buf = ""
         self._on_control = on_control
+        self._on_inner = on_inner
 
     def feed(self, piece: str) -> str:
         """Append a delta; return the safe-to-emit text with tags removed."""
@@ -132,6 +148,12 @@ class ControlTagFilter:
                 self._on_control("walk", int(m.group(1)), int(m.group(2)))
             if re.search(r"\[\s*WALK_DESKTOP\s*\]", self._buf, re.IGNORECASE):
                 self._on_control("walk_desktop", None, None)
+        # 心声: a complete [INNER:…] was captured — hand the content to the
+        # caller (ephemeral-memory write) BEFORE the wholesale strip below
+        # removes the tag (and everything inside it) from display.
+        if self._on_inner is not None:
+            for m in _INNER_RE.finditer(self._buf):
+                self._on_inner(m.group(1).strip())
         self._buf = _CTRL_TAG_RE.sub("", self._buf)
         # Hold back a trailing '[' fragment that may yet grow into a tag.
         # Search the WHOLE buffer (tags up to ~30 chars exceed any fixed
@@ -155,6 +177,16 @@ class ControlTagFilter:
 
     def flush(self) -> str:
         """Stream end: emit and strip whatever remains."""
+        # 心声 with an unclosed tag (quantized models drop the closing ']'):
+        # salvage the content to on_inner and suppress the raw text — a
+        # dangling "[INNER:…" must never leak into the display stream.
+        m = _DANGLING_INNER_RE.match(self._buf)
+        if m:
+            content = m.group(1).strip().rstrip("]").strip()
+            if content and self._on_inner is not None:
+                self._on_inner(content)
+            self._buf = ""
+            return ""
         out = _CTRL_TAG_RE.sub("", self._buf)
         self._buf = ""
         return out

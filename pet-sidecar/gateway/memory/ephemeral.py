@@ -151,7 +151,7 @@ class EphemeralMemory:
             parts = []
             for t in self.thoughts:
                 parts.append(f"{t['text']}（{self._age(t['t'])}）")
-            lines.append("- 心声（可按可不按）：" + " · ".join(parts))
+            lines.append("- 闪念（直觉苗头，可理可不理）：" + " · ".join(parts))
         if self.recalls:
             parts = []
             for r in self.recalls:
