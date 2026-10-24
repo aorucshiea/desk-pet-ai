@@ -136,7 +136,7 @@ def test_ephemeral_prompt_frames_voice_as_optional_button():
 
     text = eph.format_for_prompt()
     assert "不是命令" in text
-    assert "可按可不按" in text
+    assert "可理可不理" in text  # 心声改名闪念后的新措辞
     assert "有点在意用户现在的状态" in text
 
 
