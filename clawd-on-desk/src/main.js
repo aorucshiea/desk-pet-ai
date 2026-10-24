@@ -1715,6 +1715,9 @@ const _serverCtx = {
   // 桌面刚体（AI 工具 /world/bodies + /world/op 通过它访问世界几何）
   getWorldGeometry: () => _worldGeometryRef,
   getPetFacing: () => petFacing,
+  // 猫自己的屏幕位置（DIP）——/world/bodies 附带给网关，
+  // pet_world_walk_to 靠它算「走到选中的刚体旁边」的位移
+  getPetBounds: () => (win && !win.isDestroyed() ? win.getBounds() : null),
   // AI 自主移动（决策层 /pet/walk）：dx, dy 像素增量，clamp 在工作区内
   walkPet: (dx, dy) => {
     try {

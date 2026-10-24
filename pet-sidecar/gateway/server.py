@@ -3059,35 +3059,131 @@ def _clawd_headers() -> dict:
     return {"Content-Type": "application/json", "x-clawd-token": token}
 
 
+# ── 刚体选择：走到自己选中的刚体旁边 / 站上去 ──────────────────────────
+# 模型只负责「选哪个」（id）；位移算术由网关做好交给壳的 /pet/walk 执行
+# （walkPet 用 DIP 并 clamp 到工作区，与 /world/bodies 的 rect 同单位）。
+_WALK_BESIDE_GAP = 28.0  # 停在刚体侧边的留白（DIP）
+
+
+def _walk_to_delta(pet: dict, body: dict, stand: bool = False, gap: float = _WALK_BESIDE_GAP) -> tuple[float, float] | None:
+    """Compute the (dx, dy) DIP delta that walks the pet to a chosen body.
+
+    ``pet``: {x, y, width, height} window bounds; ``body``: {rect:{left,
+    top, right, bottom}}. Beside-mode stops next to the body's near edge on
+    the pet's current side, vertically aligned to the body's ground line;
+    stand-mode centers the pet over the body top (physics settles it).
+    Returns None when the geometry is unusable.
+    """
+    try:
+        pw, ph = float(pet["width"]), float(pet["height"])
+        pcx = float(pet["x"]) + pw / 2
+        pcy = float(pet["y"]) + ph / 2
+        r = body["rect"]
+        left, top = float(r["left"]), float(r["top"])
+        right, bottom = float(r["right"]), float(r["bottom"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    bcx = (left + right) / 2
+    if stand:
+        tx = bcx
+        ty = top - ph / 2  # pet bottom lands on the body's top surface
+    else:
+        side = -1 if pcx < bcx else 1  # approach from wherever the pet already is
+        tx = (left - gap - pw / 2) if side < 0 else (right + gap + pw / 2)
+        ty = bottom - ph / 2  # stand on the body's ground line
+    return (tx - pcx, ty - pcy)
+
+
+def _format_bodies_choice(items: list, facing: str) -> str:
+    """Vision-aware rigid-body listing for the model to CHOOSE from.
+
+    Only what the pet can actually see (视锥 ±30°/400px, same rule the
+    subconscious uses); the rest is summarized as a count so the model
+    never picks a body it cannot perceive.
+    """
+    from .decision.vision import label_for_angle
+    vis = sorted(
+        (b for b in items if b.get("in_fov")),
+        key=lambda b: float(b.get("dist") or 1e9),
+    )
+    hidden = len(items) - len(vis)
+    if not vis:
+        if hidden:
+            return "视野内没有刚体（还有 %d 个在视野外——走近或转身才能看到）。" % hidden
+        return "现在桌面上还没有刚体（用户还没添加窗口/桌面图标）。"
+    lines = ["视野内的刚体（按远近，可以自己挑）："]
+    for b in vis:
+        lines.append(
+            "- id=%s 「%s」 %s %dpx"
+            % (
+                b.get("id"),
+                b.get("label") or "刚体",
+                label_for_angle(float(b.get("angle") or 0)),
+                int(float(b.get("dist") or 0)),
+            )
+        )
+    if hidden:
+        lines.append("（另有 %d 个在视野外，你看不见。）" % hidden)
+    return "\n".join(lines)
+
+
 async def _world_tool(name: str, args: dict) -> str:
-    """执行桌面刚体工具（pet_world_bodies / pet_world_operate）。"""
+    """执行桌面刚体工具（pet_world_bodies / pet_world_walk_to / pet_world_operate）。"""
     port = _clawd_port()
     headers = _clawd_headers()
     try:
         async with httpx.AsyncClient(timeout=2.5) as client:
             if name == "pet_world_bodies":
+                # 视锥内的选择列表（与潜意识同一条可见性规则）：
+                # 模型只能从它看得见的刚体里挑。
+                items = await _world_bodies_for_decision(force=True)
+                facing = str(_WORLD_VIEW_CACHE.get("facing") or "right")
+                return _format_bodies_choice(items, facing)
+            if name == "pet_world_walk_to":
+                body_id = int(args.get("id") or 0)
+                stand = bool(args.get("stand"))
                 resp = await client.get("http://127.0.0.1:%d/world/bodies" % port, headers=headers)
                 data = resp.json()
                 if data.get("status") == "error":
                     return "桌面物理现在不可用：%s" % (data.get("message") or "unknown")
-                bodies = data.get("bodies") or []
-                if not bodies:
-                    return "现在桌面上还没有刚体（用户还没添加窗口/桌面图标）。"
-                lines = ["当前刚体："]
-                for b in bodies:
-                    r = b.get("rect") or {}
-                    lines.append(
-                        "- id=%s %s 位置(x=%s, y=%s, %sx%s)"
-                        % (
-                            b.get("id"),
-                            b.get("label", ""),
-                            round(r.get("left", 0)),
-                            round(r.get("top", 0)),
-                            round((r.get("right") or 0) - (r.get("left") or 0)),
-                            round((r.get("bottom") or 0) - (r.get("top") or 0)),
-                        )
+                pet = data.get("pet") or {}
+                chosen = next(
+                    (b for b in (data.get("bodies") or []) if int(b.get("id") or -1) == body_id),
+                    None,
+                )
+                if chosen is None:
+                    return "没有 id=%s 的刚体（先 pet_world_bodies 看看有哪些）。" % body_id
+                if not pet:
+                    return "拿不到自己的位置，走不动。"
+                delta = _walk_to_delta(pet, chosen, stand=stand)
+                if delta is None:
+                    return "这个刚体的几何信息不可用。"
+                dx, dy = (round(delta[0]), round(delta[1]))
+                if dx == 0 and dy == 0:
+                    return "已经在「%s」%s了。" % (chosen.get("label") or "刚体", "上面" if stand else "旁边")
+                wresp = await client.post(
+                    "http://127.0.0.1:%d/pet/walk" % port,
+                    json={"dx": dx, "dy": dy},
+                    headers=headers,
+                )
+                wdata = wresp.json()
+                if wdata.get("status") == "ok":
+                    try:
+                        if _body_log_ref is not None:
+                            _body_log_ref.append(
+                                "walk_to",
+                                "id=%s stand=%s -> (%s, %s)" % (body_id, stand, wdata.get("x"), wdata.get("y")),
+                                source="intent",
+                            )
+                    except Exception:
+                        pass
+                    return "走到了「%s」%s（现在的位置 x=%s, y=%s）。" % (
+                        chosen.get("label") or "刚体",
+                        "上面" if stand else "旁边",
+                        wdata.get("x"),
+                        wdata.get("y"),
                     )
-                return "\n".join(lines)
+                return "[world] 走不过去：%s" % (wdata.get("message") or "unknown")
             if name == "pet_world_operate":
                 body_id = int(args.get("id") or 0)
                 action = str(args.get("action") or "")
@@ -3267,8 +3363,24 @@ async def _gather_tools(mcp_manager: MCPManager, req: ChatRequest) -> Optional[l
     tool_defs.append(ToolDef(
         server_name="pet-world",
         name="pet_world_bodies",
-        description="列出桌面刚体（用户添加的窗口/桌面图标，猫可以站在上面），返回 id、名字和位置。",
+        description="列出视野内的桌面刚体（窗口/桌面图标，猫可以站在上面）：id、名字、方向和距离。视野外的看不见。",
         input_schema={"type": "object", "properties": {}},
+    ))
+    tool_defs.append(ToolDef(
+        server_name="pet-world",
+        name="pet_world_walk_to",
+        description=(
+            "走到你自己选中的刚体旁边（stand=true 则站到它上面）。"
+            "位移由身体自动完成，你只需要选 id。"
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "id": {"type": "integer", "description": "刚体 id（从 pet_world_bodies 选）"},
+                "stand": {"type": "boolean", "description": "true=站到刚体上面，默认走到旁边"},
+            },
+            "required": ["id"],
+        },
     ))
     tool_defs.append(ToolDef(
         server_name="pet-world",
@@ -3568,16 +3680,18 @@ async def _stream_chat_provider(
             )
             body_lines.append(
                 "【你的世界】桌面上有「刚体」——用户添加的窗口和桌面图标，你可以站在它们上面。"
-                "你也可以亲手摆弄这些小东西：pet_world_bodies 看看有哪些，"
-                "pet_world_operate 能 push（推开）/ pull（拉近）/ kick（踢飞）/ grab（拎起来），"
-                "像小孩推积木一样。但它们也是用户正在用的东西——动作要轻、要有分寸，"
+                "你可以自己挑选目标：pet_world_bodies 列出视野内的刚体（带方向和距离，"
+                "视野外的你看不见），pet_world_walk_to 走到你选中的那个旁边"
+                "（stand=true 站上去），pet_world_operate 能 push（推开）/ pull（拉近）/ "
+                "kick（踢飞）/ grab（拎起来）你选中的刚体——像小孩推积木一样。"
+                "但它们也是用户正在用的东西——动作要轻、要有分寸，"
                 "别把窗口推到用户找不到的地方；用户没说想玩的时候，看着就好。"
             )
         system = (system or "") + "\n\n" + "\n".join(body_lines)
-        if not _tools_allowed:
-            # The persona still mentions memory/recall tools. Without native
-            # tools a 2B model will happily print "[MCP:...]" as text — which
-            # nothing executes and the user sees as garbage. Say it plainly.
+        if not _tools_allowed and not tools_list:
+            # No tool definitions survived (including core tools): the
+            # persona still mentions memory/recall tools, so do not let the
+            # model emit markers that nothing can execute.
             system += (
                 "\n\n【这一轮没有工具】不要输出 [MCP:...] 或 [builtin/...] 标记，"
                 "直接用文字回答。记忆块 <<<MEM>>> 仍然照常输出。"
