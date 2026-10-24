@@ -299,6 +299,33 @@ function handleWorldOpPost(req, res, { ctx }) {
   });
 }
 
+function handleWorldAddPost(req, res, { ctx }) {
+  const chunks = [];
+  req.on("data", (chunk) => chunks.push(chunk));
+  req.on("end", () => {
+    let payload = {};
+    try {
+      payload = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+    } catch {}
+    const reply = (code, obj) => {
+      res.writeHead(code, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(obj));
+    };
+    const geo = typeof ctx.getWorldGeometry === "function" ? ctx.getWorldGeometry() : null;
+    if (!geo || typeof geo.addBodyFromHwnd !== "function") {
+      reply(503, { status: "error", message: "world geometry unavailable" });
+      return;
+    }
+    let out;
+    try {
+      out = geo.addBodyFromHwnd(payload && payload.hwnd);
+    } catch (err) {
+      out = { status: "error", message: (err && err.message) || String(err) };
+    }
+    reply(out.status === "ok" ? 200 : 400, out);
+  });
+}
+
 function handlePetWalkPost(req, res, { ctx }) {
   const chunks = [];
   let size = 0;
@@ -387,6 +414,26 @@ function startHttpServer() {
       }
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(out));
+    } else if (req.method === "GET" && req.url === "/world/windows") {
+      // AI 自主收养刚体第一步：从自己的视角看桌面上的候选窗户
+      const geo = typeof ctx.getWorldGeometry === "function" ? ctx.getWorldGeometry() : null;
+      const wout = geo && typeof geo.listWindows === "function"
+        ? geo.listWindows()
+        : { status: "error", message: "world geometry unavailable", windows: [] };
+      if (wout && wout.status === "ok") {
+        try {
+          if (typeof ctx.getPetBounds === "function") {
+            const pet = ctx.getPetBounds();
+            if (pet) wout.pet = pet;
+          }
+          if (typeof ctx.getPetFacing === "function") wout.facing = ctx.getPetFacing();
+        } catch {}
+      }
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(wout));
+    } else if (req.method === "POST" && req.url === "/world/add") {
+      // AI 自主收养刚体第二步：{ hwnd } → 注册成刚体（宠物自己选的窗户）
+      handleWorldAddPost(req, res, { ctx });
     } else if (req.method === "POST" && req.url === "/world/op") {
       // AI 操作刚体：{ id, action: "push"|"pull"|"kick"|"grab", distance? }
       handleWorldOpPost(req, res, { ctx });

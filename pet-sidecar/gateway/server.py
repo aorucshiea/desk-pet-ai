@@ -12,6 +12,7 @@ import asyncio
 import hashlib
 import hmac
 import json
+import math
 import os
 import platform
 import re
@@ -3094,6 +3095,56 @@ def _walk_to_delta(pet: dict, body: dict, stand: bool = False, gap: float = _WAL
     return (tx - pcx, ty - pcy)
 
 
+def _window_view(pet: dict, rect: dict, facing: str = "right") -> dict:
+    """The pet's OWN perspective on a desktop window: nearest-edge distance
+    + bearing (relative to facing), and whether any part of it is inside the
+    vision cone. Pure math so the scout tool's view matches「只看见看得见的」.
+    """
+    try:
+        pcx = float(pet["x"]) + float(pet["width"]) / 2
+        pcy = float(pet["y"]) + float(pet["height"]) / 2
+        left, top = float(rect["left"]), float(rect["top"])
+        right, bottom = float(rect["right"]), float(rect["bottom"])
+    except (KeyError, TypeError, ValueError):
+        return {"dist": 9999.0, "angle": 0.0, "in_view": False}
+    # nearest point of the rect to the pet's center (windows are big; the
+    # pet "sees" a window when any part of it is close and in front)
+    nx = min(max(pcx, left), right)
+    ny = min(max(pcy, top), bottom)
+    dx, dy = nx - pcx, ny - pcy
+    dist = math.hypot(dx, dy)
+    from .decision.vision import visible
+    vis = visible(dx, dy, facing) if dx or dy else {"angle": 0.0, "in_fov": True}
+    return {"dist": round(dist, 1), "angle": float(vis.get("angle", 0.0)), "in_view": bool(vis.get("in_fov"))}
+
+
+def _format_windows_scout(windows: list, pet: dict, facing: str) -> str:
+    """Candidate-window listing from the pet's own viewpoint, for it to pick
+    one to ADOPT as a rigid body (pet_world_scout → pet_world_adopt)."""
+    from .decision.vision import label_for_angle
+    if not windows:
+        return "桌面上没有可以收养的窗户。"
+    for w in windows:
+        w["_view"] = _window_view(pet, w.get("rect") or {}, facing)
+    windows.sort(key=lambda w: (0 if w["_view"]["in_view"] else 1, w["_view"]["dist"]))
+    lines = ["你环顾四周，看到了这些窗户（可以自己挑一扇收养成刚体）："]
+    for w in windows[:12]:
+        v = w["_view"]
+        lines.append(
+            "- hwnd=%s 「%s」 %s %dpx%s%s"
+            % (
+                w.get("hwnd"),
+                (w.get("title") or "").strip() or "（无标题）",
+                label_for_angle(v["angle"]),
+                int(v["dist"]),
+                "（已是刚体）" if w.get("already") else "",
+                "" if v["in_view"] else "（视野边缘之外）",
+            )
+        )
+    lines.append("用 pet_world_adopt 收养你选中的那扇（传它的 hwnd）。")
+    return "\n".join(lines)
+
+
 def _format_bodies_choice(items: list, facing: str) -> str:
     """Vision-aware rigid-body listing for the model to CHOOSE from.
 
@@ -3139,6 +3190,43 @@ async def _world_tool(name: str, args: dict) -> str:
                 items = await _world_bodies_for_decision(force=True)
                 facing = str(_WORLD_VIEW_CACHE.get("facing") or "right")
                 return _format_bodies_choice(items, facing)
+            if name == "pet_world_scout":
+                resp = await client.get("http://127.0.0.1:%d/world/windows" % port, headers=headers)
+                data = resp.json()
+                if data.get("status") == "error":
+                    return "看不了窗户：%s" % (data.get("message") or "unknown")
+                return _format_windows_scout(
+                    data.get("windows") or [],
+                    data.get("pet") or {},
+                    str(data.get("facing") or "right"),
+                )
+            if name == "pet_world_adopt":
+                hwnd = str(args.get("hwnd") or "").strip()
+                if not hwnd:
+                    return "要传 hwnd（从 pet_world_scout 里选）。"
+                resp = await client.post(
+                    "http://127.0.0.1:%d/world/add" % port,
+                    json={"hwnd": hwnd},
+                    headers=headers,
+                )
+                data = resp.json()
+                if data.get("status") == "ok":
+                    b = data.get("body") or {}
+                    try:
+                        if _body_log_ref is not None:
+                            _body_log_ref.append(
+                                "adopt", "hwnd=%s label=%s" % (hwnd, b.get("label") or "?"), source="intent"
+                            )
+                    except Exception:
+                        pass
+                    return "收养成功：「%s」现在是刚体 id=%s，可以走过去或站上去了。" % (
+                        b.get("label") or "窗户",
+                        b.get("id"),
+                    )
+                _msg = str(data.get("message") or "unknown")
+                if "already" in _msg:
+                    return "这扇窗户已经是刚体了。"
+                return "[world] 收养失败：%s" % _msg
             if name == "pet_world_walk_to":
                 body_id = int(args.get("id") or 0)
                 stand = bool(args.get("stand"))
@@ -3365,6 +3453,30 @@ async def _gather_tools(mcp_manager: MCPManager, req: ChatRequest) -> Optional[l
         name="pet_world_bodies",
         description="列出视野内的桌面刚体（窗口/桌面图标，猫可以站在上面）：id、名字、方向和距离。视野外的看不见。",
         input_schema={"type": "object", "properties": {}},
+    ))
+    tool_defs.append(ToolDef(
+        server_name="pet-world",
+        name="pet_world_scout",
+        description=(
+            "从你自己的视角环顾桌面：看到哪些窗户（方向+距离+标题），"
+            "可以从中挑一扇收养成刚体。"
+        ),
+        input_schema={"type": "object", "properties": {}},
+    ))
+    tool_defs.append(ToolDef(
+        server_name="pet-world",
+        name="pet_world_adopt",
+        description=(
+            "把你选中的窗户收养成刚体（之后就能走过去、站上去、推拉它）。"
+            "hwnd 从 pet_world_scout 的结果里选。"
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "hwnd": {"type": "string", "description": "pet_world_scout 返回的窗口 hwnd"},
+            },
+            "required": ["hwnd"],
+        },
     ))
     tool_defs.append(ToolDef(
         server_name="pet-world",
@@ -3679,13 +3791,13 @@ async def _stream_chat_provider(
                 + (", ".join(p["name"] for p in plugins_desc) or "（只有内置 forge）")
             )
             body_lines.append(
-                "【你的世界】桌面上有「刚体」——用户添加的窗口和桌面图标，你可以站在它们上面。"
-                "你可以自己挑选目标：pet_world_bodies 列出视野内的刚体（带方向和距离，"
-                "视野外的你看不见），pet_world_walk_to 走到你选中的那个旁边"
-                "（stand=true 站上去），pet_world_operate 能 push（推开）/ pull（拉近）/ "
-                "kick（踢飞）/ grab（拎起来）你选中的刚体——像小孩推积木一样。"
-                "但它们也是用户正在用的东西——动作要轻、要有分寸，"
-                "别把窗口推到用户找不到的地方；用户没说想玩的时候，看着就好。"
+                "【你的世界】桌面上有「刚体」——窗户和桌面图标变成的、你可以站在上面的东西。"
+                "现在没人添加也没关系，你可以自己动手：pet_world_scout 从你自己的视角环顾四周"
+                "看看有哪些窗户（带方向和距离），pet_world_adopt 把你选中的一扇收养成刚体，"
+                "pet_world_walk_to 走到你选中的刚体旁边（stand=true 站上去），"
+                "pet_world_operate 能 push（推开）/ pull（拉近）/ kick（踢飞）/ grab（拎起来）"
+                "你选中的刚体。收养要节制：挑你真想互动的那扇就好，别把用户的每扇窗户都变成"
+                "刚体；推拉要有分寸，别把窗口推到用户找不到的地方；用户没说想玩的时候，看着就好。"
             )
         system = (system or "") + "\n\n" + "\n".join(body_lines)
         if not _tools_allowed and not tools_list:

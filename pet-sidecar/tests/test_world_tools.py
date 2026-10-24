@@ -6,7 +6,12 @@
 
 from __future__ import annotations
 
-from gateway.server import _format_bodies_choice, _walk_to_delta
+from gateway.server import (
+    _format_bodies_choice,
+    _format_windows_scout,
+    _walk_to_delta,
+    _window_view,
+)
 
 
 PET = {"x": 100, "y": 400, "width": 120, "height": 120}   # 中心 (160, 460)
@@ -79,3 +84,66 @@ def test_direction_words_from_angle():
     text = _format_bodies_choice(_items(), "right")
     # angle≈0 的应该带「正前方」或类似方位词（vision.label_for_angle 的输出）
     assert "px" in text
+
+
+# ── _window_view：自身视角看窗户（最近边距离 + 方位 + 视锥内） ──────
+WPET = {"x": 620, "y": 830, "width": 60, "height": 60}  # 中心 (650, 860)
+
+
+def test_window_view_nearby_in_front():
+    # 窗户正右方水平：最近点 (700, 860) → dist=50, dy=0 → 视锥正中
+    v = _window_view(WPET, {"left": 700, "top": 100, "right": 1200, "bottom": 880}, "right")
+    assert v["dist"] == 50.0
+    assert abs(v["angle"]) < 0.5236   # ±30°内
+    assert v["in_view"] is True
+
+
+def test_window_view_diagonal_out_of_cone():
+    # 最近点在对角线上（dx=50, dy=-100 → 63°仰角）→ 视锥外
+    v = _window_view(WPET, {"left": 700, "top": 100, "right": 1200, "bottom": 760}, "right")
+    assert v["dist"] == 111.8
+    assert v["in_view"] is False
+
+
+def test_window_view_behind_is_not_visible():
+    # 窗户在正左后方
+    v = _window_view(WPET, {"left": 100, "top": 800, "right": 300, "bottom": 900}, "right")
+    assert v["in_view"] is False
+
+
+def test_window_view_far_edge_out_of_range():
+    # 视线方向正确但最近边 450px > 400 视距
+    v = _window_view(WPET, {"left": 1100, "top": 850, "right": 1400, "bottom": 870}, "right")
+    assert v["dist"] == 450.0
+    assert v["in_view"] is False
+
+
+def test_window_view_overlapping_window_is_in_view():
+    # 巨大的全屏窗户罩住猫 —— 最近点就是猫自己 → 距离 0，可见
+    v = _window_view(WPET, {"left": 0, "top": 0, "right": 1440, "bottom": 900}, "right")
+    assert v["dist"] == 0.0 and v["in_view"] is True
+
+
+def test_window_view_bad_geometry():
+    assert _window_view({}, {"left": 0})["in_view"] is False
+
+
+# ── _format_windows_scout：收养候选列表 ────────────────────────────
+def _wins():
+    return [
+        {"hwnd": "111", "title": "ZCode", "rect": {"left": 700, "top": 100, "right": 1200, "bottom": 760}},
+        {"hwnd": "222", "title": "记事本", "rect": {"left": 100, "top": 800, "right": 300, "bottom": 900}},
+        {"hwnd": "333", "title": "LM Studio", "rect": {"left": 0, "top": 0, "right": 1440, "bottom": 900}, "already": True},
+    ]
+
+
+def test_scout_lists_in_view_first_with_direction():
+    text = _format_windows_scout(_wins(), WPET, "right")
+    assert "hwnd=333" in text and "已是刚体" in text
+    assert "hwnd=111" in text          # 右前方的窗户在列
+    assert "hwnd=222" in text          # 后方的也列（标注视野外）
+    assert "pet_world_adopt" in text   # 告诉它怎么收养
+
+
+def test_scout_empty():
+    assert "没有可以收养的窗户" in _format_windows_scout([], WPET, "right")

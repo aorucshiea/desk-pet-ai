@@ -76,6 +76,12 @@ function createWorldGeometry(options = {}) {
         WindowFromPoint: user32.func("WindowFromPoint", "void*", [POINT]),
         GetAncestor: user32.func("GetAncestor", "void*", ["void*", "uint"]),
         IsWindow: user32.func("IsWindow", "bool", ["void*"]),
+        IsWindowVisible: user32.func("IsWindowVisible", "bool", ["void*"]),
+        // 顶层窗口链遍历（Z 序）——不用 EnumWindows 回调：koffi 回调在
+        // Electron 主进程触发 V8 fatal (IsOnCentralStack)，链式遍历全是
+        // 普通同步调用，同样拿全顶层窗口。
+        GetTopWindow: user32.func("GetTopWindow", "void*", ["void*"]),
+        GetWindow: user32.func("GetWindow", "void*", ["void*", "uint"]),
         GetClassNameW: user32.func("GetClassNameW", "int", ["void*", "void*", "int"]),
         GetWindowTextW: user32.func("GetWindowTextW", "int", ["void*", "void*", "int"]),
         GetWindowThreadProcessId: user32.func("GetWindowThreadProcessId", "uint32", ["void*", "void*"]),
@@ -485,21 +491,14 @@ function createWorldGeometry(options = {}) {
     return { status: "ok", body: publicBody(body) };
   }
 
-  function pickFromCursor() {
-    if (!fns) return { status: "error", message: "rigid bodies are only supported on Windows" };
-    const pt = {};
-    if (!fns.GetCursorPos(pt)) return { status: "error", message: "cannot read cursor position" };
-    let hwnd = fns.WindowFromPoint(pt);
-    if (!hwnd) return { status: "error", message: "no window under cursor" };
-    // 桌面（Progman/WorkerW/SysListView32）→ 拾取光标下的桌面图标
-    const rawCls = readWStr(fns.GetClassNameW, hwnd, 256);
-    if (rawCls === "SysListView32" || rawCls === "Progman" || rawCls === "WorkerW") {
-      return addDesktopIconAt(toDip(pt.x), toDip(pt.y));
+  // ── AI 自主收养刚体：枚举候选窗口 + 按句柄注册 ──────────────────────
+  // 与 pickFromCursor 同一套校验（排除自己/太小/桌面/任务栏/全屏宿主），
+  // 只是"哪个窗口"由宠物自己选（pet_world_scout 看视角 → pet_world_adopt
+  // 收养），不再依赖用户的光标。
+  function tryAdoptWindowBody(hwnd) {
+    if (!fns || !hwnd || !fns.IsWindow(hwnd)) {
+      return { status: "error", message: "window is gone" };
     }
-    const root = fns.GetAncestor(hwnd, 2 /* GA_ROOT */);
-    if (root) hwnd = root;
-
-    // 排除桌宠自己的窗口
     try {
       const pidBuf = Buffer.alloc(4);
       fns.GetWindowThreadProcessId(hwnd, pidBuf);
@@ -507,7 +506,6 @@ function createWorldGeometry(options = {}) {
         return { status: "error", message: "cannot use the pet's own window" };
       }
     } catch (_) {}
-
     const key = hwndKey(hwnd);
     if (bodies.some((b) => b.key === key)) {
       return { status: "error", message: "already a rigid body" };
@@ -519,13 +517,9 @@ function createWorldGeometry(options = {}) {
     }
     const cls = readWStr(fns.GetClassNameW, hwnd, 256);
     const title = readWStr(fns.GetWindowTextW, hwnd, 512);
-    // 桌面/任务栏不能当刚体：桌面是全屏窗口（顶面 y=0，会把猫吸到屏幕顶），
-    // 任务栏本来就是内置刚体。
     if (cls === "Progman" || cls === "WorkerW" || cls === "Shell_TrayWnd") {
       return { status: "error", message: "desktop/taskbar windows cannot be added" };
     }
-    // 全屏 UWP 宿主（开始菜单的隐藏 CoreWindow）不能当刚体——会把猫吸到
-    // 屏幕顶。真实的开始菜单面板（非全屏的 "Search" 窗口）允许拾取。
     if (cls === "Windows.UI.Core.CoreWindow") {
       const display = screen.getPrimaryDisplay();
       if ((rect.right - rect.left) >= display.bounds.width * 0.9) {
@@ -545,6 +539,79 @@ function createWorldGeometry(options = {}) {
     bodies.push(body);
     notifyBodiesChanged();
     return { status: "ok", body: publicBody(body) };
+  }
+
+  function listWindows() {
+    if (!fns) return { status: "error", message: "rigid bodies are only supported on Windows", windows: [] };
+    const out = [];
+    const seen = new Set();
+    const GW_HWNDNEXT = 2;
+    let hwnd = fns.GetTopWindow(null);
+    let guard = 0;
+    while (hwnd && guard++ < 2000) {
+      try {
+        if (fns.IsWindowVisible(hwnd)) {
+          const root = fns.GetAncestor(hwnd, 2 /* GA_ROOT */);
+          const top = root || hwnd;
+          const key = hwndKey(top);
+          if (!seen.has(key)) {
+            seen.add(key);
+            const title = readWStr(fns.GetWindowTextW, top, 512);
+            const pidBuf = Buffer.alloc(4);
+            fns.GetWindowThreadProcessId(top, pidBuf);
+            const own = pidBuf.readUInt32LE(0) === process.pid;
+            const rect = readWindowRectDip(top);
+            const cls = rect ? readWStr(fns.GetClassNameW, top, 256) : "";
+            const display = screen.getPrimaryDisplay();
+            const adoptable = (
+              title
+              && !own
+              && rect
+              && rect.right - rect.left >= 8
+              && rect.bottom - rect.top >= 8
+              && cls !== "Progman" && cls !== "WorkerW" && cls !== "Shell_TrayWnd"
+              && !(cls === "Windows.UI.Core.CoreWindow"
+                   && (rect.right - rect.left) >= display.bounds.width * 0.9)
+            );
+            if (adoptable) {
+              out.push({
+                hwnd: key, // hwndKey = 十进制地址串；pet_world_adopt 原样回传
+                title: title.slice(0, 60),
+                rect,
+                already: bodies.some((b) => b.key === key),
+              });
+            }
+          }
+        }
+      } catch (_) {}
+      hwnd = fns.GetWindow(hwnd, GW_HWNDNEXT);
+    }
+    return { status: "ok", windows: out };
+  }
+
+  function addBodyFromHwnd(hwndToken) {
+    if (!fns) return { status: "error", message: "rigid bodies are only supported on Windows" };
+    const num = Number(String(hwndToken).trim());
+    if (!Number.isFinite(num) || num <= 0) {
+      return { status: "error", message: "invalid hwnd token" };
+    }
+    return tryAdoptWindowBody(num);
+  }
+
+  function pickFromCursor() {
+    if (!fns) return { status: "error", message: "rigid bodies are only supported on Windows" };
+    const pt = {};
+    if (!fns.GetCursorPos(pt)) return { status: "error", message: "cannot read cursor position" };
+    let hwnd = fns.WindowFromPoint(pt);
+    if (!hwnd) return { status: "error", message: "no window under cursor" };
+    // 桌面（Progman/WorkerW/SysListView32）→ 拾取光标下的桌面图标
+    const rawCls = readWStr(fns.GetClassNameW, hwnd, 256);
+    if (rawCls === "SysListView32" || rawCls === "Progman" || rawCls === "WorkerW") {
+      return addDesktopIconAt(toDip(pt.x), toDip(pt.y));
+    }
+    const root = fns.GetAncestor(hwnd, 2 /* GA_ROOT */);
+    if (root) hwnd = root;
+    return tryAdoptWindowBody(hwnd);
   }
 
   // ── AI 操作刚体：推 / 拉 / 拿 / 踢（移动真实窗口，带缓动）─────────────
@@ -644,6 +711,8 @@ function createWorldGeometry(options = {}) {
     isTaskbarPopped: () => taskbarPopped === true,
     listBodies,
     pickFromCursor,
+    listWindows,
+    addBodyFromHwnd,
     removeBody,
     restoreBodies,
     serializeBodies,
