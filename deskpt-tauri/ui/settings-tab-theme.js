@@ -2,7 +2,7 @@
 
 (function initSettingsTabTheme(root) {
   const PREVIEW_TARGET_CONTENT_RATIO = 0.55;
-  const BUILTIN_THEME_PRIORITY = ["cybercat", "hamster"];
+  const BUILTIN_THEME_PRIORITY = ["mochi"];
 
   let state = null;
   let runtime = null;

@@ -120,7 +120,7 @@ fn spawn_sidecar() -> Result<(), String> {
             })
             .unwrap_or_default()
     });
-    let theme = std::env::var("DESKPT_THEME").unwrap_or_else(|_| "cybercat".to_string());
+    let theme = std::env::var("DESKPT_THEME").unwrap_or_else(|_| "mochi".to_string());
     // LoRA adapter dir + real log FILES (Settings → 打开日志目录 / Upload
     // LoRA need both; the Electron host pointed the gateway the same way)
     let adapter_dir = app_data_dir().join("adapters");
@@ -1509,7 +1509,7 @@ async fn memory_view() -> serde_json::Value {
         }
         // events count from the theme's events.json (same dir the spawned
         // gateway uses)
-        let theme = std::env::var("DESKPT_THEME").unwrap_or_else(|_| "cybercat".to_string());
+        let theme = std::env::var("DESKPT_THEME").unwrap_or_else(|_| "mochi".to_string());
         let events_file = std::env::var("DESKPT_MEMORY_DIR")
             .map(PathBuf::from)
             .or_else(|_| {

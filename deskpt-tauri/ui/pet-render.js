@@ -1,5 +1,5 @@
 // pet-render.js — mini state engine driven by the ORIGINAL theme.json.
-// Displays the same cybercat GIF assets the Electron shell shows: idle,
+// Displays the same theme GIF assets the Electron shell shows: idle,
 // drag reaction, poke/annoyed reactions. Layout constants come from the
 // theme's objectScale (same ratios the original renderer applies).
 (async function () {
@@ -7,17 +7,17 @@
   const pet = document.getElementById("pet");
   const frame = document.getElementById("frame");
 
-  const theme = await fetch("themes/cybercat/theme.json").then((r) => r.json());
+  const theme = await fetch("themes/mochi/theme.json").then((r) => r.json());
   const scaleCfg = theme.objectScale || {};
-  const ASSETS = "themes/cybercat/assets/";
+  const ASSETS = "themes/mochi/assets/";
 
   // State → asset file (subset of the original state machine; the visual
   // identity is the same assets).
   const STATE_FILE = {
-    idle: "cybercat-idle.gif",
-    walking: (theme.reactions && theme.reactions.drag) ? theme.reactions.drag.file : "cybercat-dragging.gif",
-    dragging: theme.reactions && theme.reactions.drag ? theme.reactions.drag.file : "cybercat-dragging.gif",
-    annoyed: theme.reactions && theme.reactions.annoyed ? theme.reactions.annoyed.file : "cybercat-annoying.gif",
+    idle: "mochi-idle.gif",
+    walking: (theme.reactions && theme.reactions.drag) ? theme.reactions.drag.file : "mochi-dragging.gif",
+    dragging: theme.reactions && theme.reactions.drag ? theme.reactions.drag.file : "mochi-dragging.gif",
+    annoyed: theme.reactions && theme.reactions.annoyed ? theme.reactions.annoyed.file : "mochi-annoyed.gif",
   };
   const REACTION_MS = (theme.reactions && theme.reactions.annoyed && theme.reactions.annoyed.duration) || 3500;
 

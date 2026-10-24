@@ -19,7 +19,7 @@ describe("visible margin envelopes", () => {
   const bounds = { x: 0, y: 0, width: 280, height: 280 };
 
   it("prefers layout.marginBox over contentBox when present", () => {
-    const cloudling = themeLoader.loadTheme("cloudling");
+    const cloudling = themeLoader.loadTheme("mochi");  // 夹具已换 mochi
     assert.deepStrictEqual(getThemeMarginBox(cloudling), cloudling.layout.marginBox);
 
     const idleFile = cloudling.states.idle[0];
@@ -35,21 +35,21 @@ describe("visible margin envelopes", () => {
   });
 
   it("collects a non-mini envelope file set", () => {
-    const cloudling = themeLoader.loadTheme("cloudling");
+    const cloudling = themeLoader.loadTheme("mochi");  // 夹具已换 mochi
     const files = collectThemeEnvelopeFiles(cloudling);
 
-    assert.ok(files.includes("cloudling-typing.svg"));
-    assert.ok(files.includes("cloudling-idle-reading.svg"));
-    assert.ok(!files.includes("cloudling-mini-idle.svg"));
+    assert.ok(files.includes("mochi-working.gif"));
+    assert.ok(files.includes("mochi-sweeping.gif"));
+    assert.ok(!files.includes("mochi-mini-idle.gif"));
     assert.ok(!files.some((file) => file.startsWith("mini-")));
   });
 
   it("uses the minimum top and bottom margins across a theme envelope", () => {
-    const calico = themeLoader.loadTheme("calico");
-    const files = collectThemeEnvelopeFiles(calico);
+    const cloudling = themeLoader.loadTheme("mochi");
+    const files = collectThemeEnvelopeFiles(cloudling);
     const expected = files.reduce((acc, file) => {
-      const rect = hitGeometry.getContentRectScreen(calico, bounds, null, file, {
-        box: calico.layout.contentBox,
+      const rect = hitGeometry.getContentRectScreen(cloudling, bounds, null, file, {
+        box: cloudling.layout.contentBox,
       });
       if (!rect) return acc;
       return {
@@ -58,18 +58,34 @@ describe("visible margin envelopes", () => {
       };
     }, { top: Infinity, bottom: Infinity });
 
-    const stable = computeStableVisibleContentMargins(calico, bounds);
+    const stable = computeStableVisibleContentMargins(cloudling, bounds, { box: cloudling.layout.contentBox });
     assert.deepStrictEqual(stable, expected);
 
-    const idleRect = hitGeometry.getContentRectScreen(calico, bounds, "idle", calico.states.idle[0], {
-      box: calico.layout.contentBox,
+    // mochi 的几何是均匀的（同一套 contentBox）；用合成变体注入每文件差异，
+    // 验证 min-envelope 确实取的是所有文件的最小边距（算法意图不变）。
+    const variant = structuredClone(cloudling);
+    variant.objectScale = { ...variant.objectScale, fileOffsets: { "mochi-juggling.gif": { x: 0, y: 18 } } };
+    const variantFiles = collectThemeEnvelopeFiles(variant);
+    const shifted = variantFiles.reduce((acc, file) => {
+      const rect = hitGeometry.getContentRectScreen(variant, bounds, null, file, {
+        box: variant.layout.contentBox,
+      });
+      if (!rect) return acc;
+      return {
+        top: Math.min(acc.top, Math.max(0, Math.round(rect.top - bounds.y))),
+        bottom: Math.min(acc.bottom, Math.max(0, Math.round(bounds.y + bounds.height - rect.bottom))),
+      };
+    }, { top: Infinity, bottom: Infinity });
+    const variantStable = computeStableVisibleContentMargins(variant, bounds, { box: variant.layout.contentBox });
+    assert.deepStrictEqual(variantStable, shifted);
+    const idleRect = hitGeometry.getContentRectScreen(cloudling, bounds, "idle", cloudling.states.idle[0], {
+      box: cloudling.layout.contentBox,
     });
-    assert.ok(stable.top < Math.round(idleRect.top - bounds.y));
-    assert.ok(stable.bottom <= Math.round(bounds.y + bounds.height - idleRect.bottom));
+    assert.ok(variantStable.top < Math.round(idleRect.top - bounds.y));
   });
 
   it("builds the theme anchor from marginBox and the idle file", () => {
-    const cloudling = themeLoader.loadTheme("cloudling");
+    const cloudling = themeLoader.loadTheme("mochi");  // 夹具已换 mochi
     const expected = hitGeometry.getContentRectScreen(cloudling, bounds, "idle", cloudling.states.idle[0], {
       box: cloudling.layout.marginBox,
     });
@@ -78,35 +94,35 @@ describe("visible margin envelopes", () => {
   });
 
 
-  it("keeps a stable theme anchor for calico even though per-state hit bottoms differ", () => {
-    const calico = themeLoader.loadTheme("calico");
-    const anchor = computeThemeAnchorRect(calico, bounds);
+  it("keeps a stable theme anchor even though per-state hit bottoms differ", () => {
+    const mochi = themeLoader.loadTheme("mochi");
+    const anchor = computeThemeAnchorRect(mochi, bounds);
     const thinkingHit = hitGeometry.getHitRectScreen(
-      calico,
+      mochi,
       bounds,
       "thinking",
-      "calico-thinking.apng",
-      calico.hitBoxes.default
+      "mochi-thinking.gif",
+      mochi.hitBoxes.default
     );
     const notificationHit = hitGeometry.getHitRectScreen(
-      calico,
+      mochi,
       bounds,
       "notification",
-      "calico-notification.apng",
-      calico.hitBoxes.wide
+      "mochi-notification.gif",
+      mochi.hitBoxes.wide
     );
 
     assert.notStrictEqual(Math.round(thinkingHit.bottom), Math.round(notificationHit.bottom));
     assert.deepStrictEqual(
       anchor,
-      hitGeometry.getContentRectScreen(calico, bounds, "idle", calico.states.idle[0], {
-        box: calico.layout.contentBox,
+      hitGeometry.getContentRectScreen(mochi, bounds, "idle", mochi.states.idle[0], {
+        box: mochi.layout.marginBox,
       })
     );
   });
 
   it("returns null for the theme anchor when the theme has no layout", () => {
-    const theme = structuredClone(themeLoader.loadTheme("cloudling"));
+    const theme = structuredClone(themeLoader.loadTheme("mochi"));
     delete theme.layout;
     assert.strictEqual(computeThemeAnchorRect(theme, bounds), null);
   });

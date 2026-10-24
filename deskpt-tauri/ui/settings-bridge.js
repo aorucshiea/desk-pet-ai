@@ -50,7 +50,7 @@
   const SNAPSHOT_DEFAULTS = {
     version: 3,
     lang: "system",
-    theme: "cybercat",
+    theme: "mochi",
     size: "P:54",
     hideBubbles: false,
     permissionBubblesEnabled: true,
@@ -240,7 +240,7 @@
 
     // ── theme tab (visual only — theme FILES are shared, switching not ported) ──
     listThemes: () => Promise.resolve([
-      { id: "cybercat", name: "Cybercat", builtIn: true, active: true },
+      { id: "mochi", name: "Mochi 麻薯猫", builtIn: true, active: true },
       { id: "calico", name: "Calico", builtIn: true, active: false },
       { id: "cloudling", name: "Cloudling", builtIn: true, active: false },
       { id: "hamster", name: "Hamster", builtIn: true, active: false },

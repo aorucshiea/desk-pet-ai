@@ -19,6 +19,14 @@ https://github.com/OpenBMB/Desk Pet-Desk-Pet.
 
 ---
 
+## Bundled themes
+
+The original release shipped five animation themes (`calico`, `cloudling`,
+`cybercat`, `hamster`, `zero`) from the upstream Desk Pet project. They have
+been **removed** from this repository. The default theme `mochi` (麻薯猫) is
+original, programmatically generated pixel art — see
+`clawd-on-desk/scripts/gen-mochi-theme.py`; no upstream art is included.
+
 ## Third-party components
 
 ### llama.cpp

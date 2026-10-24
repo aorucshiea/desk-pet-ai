@@ -4,7 +4,7 @@
   // Renderer context (nodeIntegration: false) reads the shared constant
   // from default-theme.js; the literal fallback keeps isolated tests working.
   const { DEFAULT_THEME_ID } = (typeof globalThis !== "undefined" && globalThis.ClawdDefaultTheme)
-    || { DEFAULT_THEME_ID: "cybercat" };
+    || { DEFAULT_THEME_ID: "mochi" };
   const ANIM_MAP_ROWS = [
     { stateKey: "error", labelKey: "animMapErrorLabel", descKey: "animMapErrorDesc" },
     { stateKey: "notification", labelKey: "animMapNotificationLabel", descKey: "animMapNotificationDesc" },

@@ -8,13 +8,17 @@ const path = require("node:path");
 // Load default theme for test ctx
 const themeLoader = require("../src/theme-loader");
 themeLoader.init(path.join(__dirname, "..", "src"));
-const _defaultTheme = themeLoader.loadTheme("cloudling");
+const _defaultTheme = themeLoader.loadTheme("mochi");
 _defaultTheme.timings.yawnDuration = 3000;
 _defaultTheme.timings.collapseDuration = 0;
 _defaultTheme.timings.wakeDuration = 1500;
 _defaultTheme.timings.dndSleepTransitionSvg = null;
 _defaultTheme.timings.dndSleepTransitionDuration = 0;
-const _calicoTheme = themeLoader.loadTheme("calico");
+const _calicoTheme = structuredClone(_defaultTheme);  // 第二主题夹具：官方主题已移除
+_calicoTheme.states.idle = ["mochi-mini-idle.gif"];    // 热切换可辨识
+_calicoTheme.timings.wakeDuration = 5800;
+_calicoTheme.timings.dndSkipYawn = true;  // 原 calico 的免打扰跳过哈欠行为
+_calicoTheme.timings.collapseDuration = 5200;
 const { createTranslator } = require("../src/i18n");
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -186,7 +190,7 @@ describe("resolveDisplayState()", () => {
 
     api.setUpdateVisualState("checking");
     assert.strictEqual(api.resolveDisplayState(), "thinking");
-    assert.strictEqual(api.getSvgOverride("thinking"), "cloudling-thinking.svg");
+    assert.strictEqual(api.getSvgOverride("thinking"), "mochi-thinking.gif");
 
     api.setUpdateVisualState("available");
     assert.strictEqual(api.resolveDisplayState(), "notification");
@@ -202,7 +206,7 @@ describe("resolveDisplayState()", () => {
 
     api.setUpdateVisualState("checking");
     assert.strictEqual(api.resolveDisplayState(), "thinking");
-    assert.strictEqual(api.getSvgOverride("thinking"), "calico-thinking.apng");
+    assert.strictEqual(api.getSvgOverride("thinking"), "mochi-thinking.gif");
 
     api.setUpdateVisualState("available");
     assert.strictEqual(api.resolveDisplayState(), "notification");
@@ -218,15 +222,15 @@ describe("resolveDisplayState()", () => {
     api = require("../src/state")(ctx);
 
     api.setUpdateVisualState("checking");
-    assert.strictEqual(api.getSvgOverride("thinking"), "cloudling-thinking.svg");
+    assert.strictEqual(api.getSvgOverride("thinking"), "mochi-thinking.gif");
 
     ctx.theme = _calicoTheme;
     api.refreshTheme();
-    assert.strictEqual(api.getSvgOverride("thinking"), "calico-thinking.apng");
+    assert.strictEqual(api.getSvgOverride("thinking"), "mochi-thinking.gif");
 
     ctx.theme = _defaultTheme;
     api.refreshTheme();
-    assert.strictEqual(api.getSvgOverride("thinking"), "cloudling-thinking.svg");
+    assert.strictEqual(api.getSvgOverride("thinking"), "mochi-thinking.gif");
   });
 
   it("update overlay does not override higher-priority agent states", () => {
@@ -274,7 +278,7 @@ describe("resolveDisplayState()", () => {
   it("update overlay wins when no sessions exist", () => {
     api.setUpdateVisualState("checking");
     assert.strictEqual(api.resolveDisplayState(), "thinking");
-    assert.strictEqual(api.getSvgOverride("thinking"), "cloudling-thinking.svg");
+    assert.strictEqual(api.getSvgOverride("thinking"), "mochi-thinking.gif");
     api.setUpdateVisualState("available");
     assert.strictEqual(api.resolveDisplayState(), "notification");
     api.setUpdateVisualState(null);
@@ -368,35 +372,35 @@ describe("working sub-animations", () => {
 
   it("1 working session → typing SVG", () => {
     api.sessions.set("s1", rawSession("working"));
-    assert.strictEqual(api.getSvgOverride("working"), "cloudling-typing.svg");
+    assert.strictEqual(api.getSvgOverride("working"), "mochi-working.gif");
   });
 
   it("2 working sessions → headphones groove SVG", () => {
     api.sessions.set("s1", rawSession("working"));
     api.sessions.set("s2", rawSession("working"));
-    assert.strictEqual(api.getSvgOverride("working"), "cloudling-juggling.svg");
+    assert.strictEqual(api.getSvgOverride("working"), "mochi-juggling.gif");
   });
 
   it("3+ working sessions → building SVG", () => {
     api.sessions.set("s1", rawSession("working"));
     api.sessions.set("s2", rawSession("thinking"));
     api.sessions.set("s3", rawSession("working"));
-    assert.strictEqual(api.getSvgOverride("working"), "cloudling-building.svg");
+    assert.strictEqual(api.getSvgOverride("working"), "mochi-carrying.gif");
   });
 
   it("1 juggling session → headphones groove SVG", () => {
     api.sessions.set("s1", rawSession("juggling"));
-    assert.strictEqual(api.getSvgOverride("juggling"), "cloudling-juggling.svg");
+    assert.strictEqual(api.getSvgOverride("juggling"), "mochi-working.gif");
   });
 
   it("2+ juggling sessions → three-ball juggling SVG", () => {
     api.sessions.set("s1", rawSession("juggling"));
     api.sessions.set("s2", rawSession("juggling"));
-    assert.strictEqual(api.getSvgOverride("juggling"), "cloudling-conducting.svg");
+    assert.strictEqual(api.getSvgOverride("juggling"), "mochi-juggling.gif");
   });
 
   it("idle → follow SVG", () => {
-    assert.strictEqual(api.getSvgOverride("idle"), "cloudling-idle.svg");
+    assert.strictEqual(api.getSvgOverride("idle"), "mochi-idle.gif");
   });
 });
 
@@ -408,10 +412,10 @@ describe("hitbox selection", () => {
   it("uses a file-specific hitbox for the displayed SVG", () => {
     const theme = cloneTheme(_defaultTheme);
     const fileBox = { x: 10, y: 11, w: 12, h: 13 };
-    theme.fileHitBoxes = { "cloudling-typing.svg": fileBox };
+    theme.fileHitBoxes = { "mochi-working.gif": fileBox };
     api = require("../src/state")(makeCtx({ theme }));
 
-    api.applyState("working", "cloudling-typing.svg");
+    api.applyState("working", "mochi-working.gif");
 
     assert.deepStrictEqual(api.getCurrentHitBox(), fileBox);
   });
@@ -421,10 +425,10 @@ describe("hitbox selection", () => {
     theme.fileHitBoxes = {};
     api = require("../src/state")(makeCtx({ theme }));
 
-    api.applyState("error", "cloudling-error.svg");
+    api.applyState("error", "mochi-error.gif");
     assert.deepStrictEqual(api.getCurrentHitBox(), theme.hitBoxes.wide);
 
-    api.applyState("working", "cloudling-typing.svg");
+    api.applyState("working", "mochi-working.gif");
     assert.deepStrictEqual(api.getCurrentHitBox(), theme.hitBoxes.default);
   });
 });
@@ -448,7 +452,7 @@ describe("visual fallback resolution", () => {
   it("keeps the logical state while resolving visuals through fallbackTo", () => {
     api.applyState("error");
     assert.strictEqual(api.getCurrentState(), "error");
-    assert.strictEqual(api.getCurrentSvg(), "cloudling-attention.svg");
+    assert.strictEqual(api.getCurrentSvg(), "mochi-attention.gif");
 
     mock.timers.tick(5000);
     assert.strictEqual(api.getCurrentState(), "idle");
@@ -600,7 +604,7 @@ describe("wake poll behavior", () => {
     fakeCursor.x = 200;
     mock.timers.tick(200);
     assert.strictEqual(api.getCurrentState(), "idle");
-    assert.strictEqual(api.getCurrentSvg(), "cloudling-idle.svg");
+    assert.strictEqual(api.getCurrentSvg(), "mochi-idle.gif");
   });
 
   it("dozing + still > DEEP_SLEEP_TIMEOUT → collapsing", () => {
@@ -2778,12 +2782,12 @@ describe("refreshTheme()", () => {
   });
 
   it("updates idle svg and DND sleep path after hot theme switch", () => {
-    assert.strictEqual(api.getSvgOverride("idle"), "cloudling-idle.svg");
+    assert.strictEqual(api.getSvgOverride("idle"), "mochi-idle.gif");
 
     ctx.theme = _calicoTheme;
     api.refreshTheme();
 
-    assert.strictEqual(api.getSvgOverride("idle"), "calico-idle-follow.svg");
+    assert.strictEqual(api.getSvgOverride("idle"), "mochi-mini-idle.gif");
     api.enableDoNotDisturb();
     assert.strictEqual(api.getCurrentState(), "collapsing");
     mock.timers.tick(5200);

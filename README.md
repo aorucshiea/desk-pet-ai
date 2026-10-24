@@ -21,9 +21,9 @@ Desk Pet AI 不是给桌面换一张皮肤，而是在尝试让模型拥有一�
 - **两个壳**（Electron / Tauri）负责把它画在桌面上，让它能走、能推、能看。
 
 <p align="center">
-  <img src="clawd-on-desk/themes/cybercat/assets/cybercat-idle.gif" width="220" alt="cybercat">
+  <img src="clawd-on-desk/themes/mochi/assets/mochi-idle.gif" width="220" alt="mochi">
   <br>
-  <sub>内置主题 cybercat · 另有 calico / cloudling / hamster / zero</sub>
+  <sub>默认主题 mochi（麻薯猫）——程序化生成的原创像素画，见 scripts/gen-mochi-theme.py</sub>
 </p>
 
 ## 它特别在哪
@@ -33,7 +33,7 @@ Desk Pet AI 不是给桌面换一张皮肤，而是在尝试让模型拥有一�
 | **记忆即自我** | 事件有权重、会衰减、会被概率性想起、会在梦里被压缩；模型还能自己维护一个「记忆」文件夹，分类结构由它决定。 |
 | **情绪不是表情包** | 身体情绪（自评 → 情绪指数 → 温度/闪现频率）与语言情绪（允许情绪进入措辞本身）分开处理。 |
 | **潜意识是插件内核** | 衰减、回忆、共鸣、体感、说话冲动、梦境都是可热插拔的「器官」；模型能用 `pet_forge_plugin` 给自己长新器官。 |
-| **心声是一个按钮** | 直觉默认低概率冒头，元直觉只调「要不要更活跃」，整合层给出一条**可按可不按**的念头；动作和措辞始终由模型自己决定。 |
+| **心声是一种输出方式** | 模型自己选择开口说话，还是用 `[INNER:…]` 在心里想（内容只进它自己的瞬时记忆，用户什么都看不到）；直觉冒出的「闪念」只是可理可不理的苗头，动作和措辞始终由模型决定。 |
 | **桌面是物理世界** | 任务栏、窗口、桌面图标都可以是刚体；猫会掉落、被顶起、站在图标上，也能推/拉/踢/拎起窗口（Windows 优先）。 |
 | **只看见看得见的** | 朝向前方 ±30°、400px 内的刚体才进入「视野」；视野外的它不知道。 |
 | **自进化** | 器官、技能、直觉都能由模型自己写、热加载、失败回滚——「一切皆插件」的工程化版本。 |
@@ -149,7 +149,7 @@ desk-pet-ai/
 - 本地/云端对话、流式输出、工具循环、loRA 人格
 - 事件记忆、衰减、概率回忆、共鸣、梦境、核心记忆、「记忆」文件夹
 - 身体情绪 + 语言情绪提示词、情绪指数调制温度/闪现
-- 瞬时记忆、直觉注册表、元直觉、骰子、整合层、心声、身体日志
+- 瞬时记忆、直觉注册表、元直觉、骰子、整合层、闪念、心声（[INNER:] 内心独白）、身体日志
 - 桌面物理：任务栏跟随、窗口/桌面图标刚体、AI 推拉踢拎、视锥
 - 器官插件热加载、模型自创器官、自创直觉、skills / MCP
 - 屏幕观察、OmniParser、Holo GUI agent（默认关闭、需授权）
@@ -196,10 +196,9 @@ cd pet-sidecar && uv run pytest -q
 
 ## 许可证与致谢
 
-- 本项目与 `clawd-on-desk/` 均以 **[AGPL-3.0-only](./LICENSE)** 发布。
-- Electron 壳 fork 自 [`rullerzhou-afk/clawd-on-desk`](https://github.com/rullerzhou-afk/clawd-on-desk)（上游 commit `5b1f003`）。
-- 推理基于 [`llama.cpp`](https://github.com/ggml-org/llama.cpp)；模型权重来自 OpenBMB / DeskPet 系列，权重许可以其发布页为准。
-- LoRA 适配器使用 NekoQA-30K 数据集训练；第三方资产与许可见 [`NOTICE.md`](./NOTICE.md)。
+- 本项目以 **[AGPL-3.0-only](./LICENSE)** 发布；含第三方组件与上游归属，详见 [`NOTICE.md`](./NOTICE.md)。
+- 推理基于 [`llama.cpp`](https://github.com/ggml-org/llama.cpp)。
+- 默认主题 mochi 为本项目原创程序化生成美术（`clawd-on-desk/scripts/gen-mochi-theme.py`）。
 
 ---
 
@@ -209,7 +208,7 @@ cd pet-sidecar && uv run pytest -q
 
 - **Memory as self** — weighted events, decay, probabilistic recall, resonance, dreaming, and a model-owned `记忆/` folder.
 - **Emotion** — a body-emotion index plus a language-emotion layer, both feeding generation.
-- **Subconscious** — hot-swappable organ plugins; intuitions, meta-intuition, dice and a body log produce an *optional* inner voice, never a command.
+- **Subconscious** — hot-swappable organ plugins; intuitions, meta-intuition, dice and a body log surface optional hunches, never commands. The model can also choose to *think instead of speak* (`[INNER:…]`) — kept to itself, invisible to the user.
 - **Desktop physics** — taskbar / windows / desktop icons as rigid bodies; the pet can fall, be lifted, and push/pull/kick/grab windows (Windows-first).
 - **Vision cone** — only bodies within ±30° and 400 px are "visible".
 - **Self-evolution** — the model can write new organs and intuitions, hot-reload them, and roll back on failure.
@@ -217,7 +216,7 @@ cd pet-sidecar && uv run pytest -q
 
 Quick start: Windows `.\deskpt-dev.ps1`; macOS/Linux `./go.sh`. See the Chinese sections above for details.
 
-License: [AGPL-3.0-only](./LICENSE). Forked from `rullerzhou-afk/clawd-on-desk`; inference powered by `llama.cpp`.
+License: [AGPL-3.0-only](./LICENSE); third-party attributions in [NOTICE.md](./NOTICE.md). Inference powered by [`llama.cpp`](https://github.com/ggml-org/llama.cpp).
 
 ---
 

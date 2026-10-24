@@ -10,7 +10,7 @@
 - `pet-chat.html` + `pet-chat-renderer.js` + i18n —— 聊天气泡，
   像素级同款（tail、ask/speak/think 状态、流式打字机、思考折叠、自适应尺寸）
 - `context-menu.html` —— 右键菜单（同款玻璃拟态样式 + 完整菜单项）
-- `themes/cybercat/` —— 像素机器猫 GIF 资产 + theme.json（idle/拖拽/戳
+- `themes/mochi/` —— 麻薯猫 GIF 资产（原创） + theme.json（idle/拖拽/戳
   的反应动画全用原版文件，布局公式照抄 renderer.js 的 objectScale）
 
 Rust 侧实现这些页面依赖的桥：
@@ -102,5 +102,5 @@ cargo build --release   # 发布（约 11MB，含 7.8MB 主题 GIF）
 ```
 
 环境变量：`DESKPT_GATEWAY_DIR`（网关目录）、`DESKPT_MEMORY_DIR`（记忆目录）、
-`DESKPT_MODEL_DIR`（本地模型）、`DESKPT_THEME`（默认 cybercat）、
+`DESKPT_MODEL_DIR`（本地模型）、`DESKPT_THEME`（默认 mochi）、
 `DESKPT_LANG`（默认 zh）。
