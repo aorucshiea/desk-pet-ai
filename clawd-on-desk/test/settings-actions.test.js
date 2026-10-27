@@ -854,6 +854,12 @@ describe("hook commands", () => {
   it("cleanupIntegrations disables all managed agents before running cleanup", async () => {
     const calls = [];
     const snapshot = prefs.getDefaults();
+    // Seed installed/enabled integrations so cleanup still exercises every
+    // disable/uninstall side effect despite the fork's all-off defaults.
+    for (const agentId of MANAGED_CLEANUP_AGENT_IDS) {
+      snapshot.agents[agentId].integrationInstalled = true;
+      snapshot.agents[agentId].enabled = true;
+    }
     snapshot.dismissedAgentInstallHints = { hermes: true };
     snapshot.dismissedAgentCleanupHints = { "qwen-code": true, hermes: true };
     assert.ok(
@@ -896,8 +902,11 @@ describe("hook commands", () => {
 describe("doctor repair commands", () => {
   it("repairs an enabled auto-managed agent through repairIntegrationForAgent without committing prefs", async () => {
     const calls = [];
+    const snapshot = prefs.getDefaults();
+    snapshot.agents.codex.integrationInstalled = true;
+    snapshot.agents.codex.enabled = true;
     const r = await commandRegistry.repairAgentIntegration({ agentId: "codex" }, {
-      snapshot: prefs.getDefaults(),
+      snapshot,
       repairIntegrationForAgent: (agentId, options) => calls.push({ agentId, options }),
     });
 
@@ -908,11 +917,14 @@ describe("doctor repair commands", () => {
 
   it("passes explicit Codex feature-force consent and surfaces repair failures", async () => {
     const calls = [];
+    const snapshot = prefs.getDefaults();
+    snapshot.agents.codex.integrationInstalled = true;
+    snapshot.agents.codex.enabled = true;
     const r = await commandRegistry.repairAgentIntegration({
       agentId: "codex",
       forceCodexHooksFeature: true,
     }, {
-      snapshot: prefs.getDefaults(),
+      snapshot,
       repairIntegrationForAgent: (agentId, options) => {
         calls.push({ agentId, options });
         return { status: "error", message: "hooks is still false" };
@@ -943,7 +955,7 @@ describe("doctor repair commands", () => {
 
   it("does not repair disabled agents", async () => {
     const snapshot = prefs.getDefaults();
-    snapshot.agents.codex = { ...snapshot.agents.codex, enabled: false };
+    snapshot.agents.codex = { ...snapshot.agents.codex, integrationInstalled: true, enabled: false };
     const calls = [];
 
     const r = await commandRegistry.repairAgentIntegration({ agentId: "codex" }, {
@@ -958,8 +970,11 @@ describe("doctor repair commands", () => {
 
   it("does not repair Claude hooks while automatic management is disabled", async () => {
     const calls = [];
+    const snapshot = { ...prefs.getDefaults(), manageClaudeHooksAutomatically: false };
+    snapshot.agents["claude-code"].integrationInstalled = true;
+    snapshot.agents["claude-code"].enabled = true;
     const r = await commandRegistry.repairAgentIntegration({ agentId: "claude-code" }, {
-      snapshot: { ...prefs.getDefaults(), manageClaudeHooksAutomatically: false },
+      snapshot,
       repairIntegrationForAgent: (agentId) => calls.push(agentId),
     });
 

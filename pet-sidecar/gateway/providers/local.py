@@ -78,6 +78,11 @@ class LocalProvider(BaseProvider):
     def supports_function_calling(self) -> bool:
         return False
 
+    @property
+    def supports_vision(self) -> bool:
+        """Local vision needs the llama.cpp projector (--mmproj)."""
+        return bool(getattr(self._server, "mmproj_path", None))
+
     async def chat(
         self,
         messages: list[dict],

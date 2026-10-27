@@ -55,6 +55,11 @@ class AnthropicProvider(BaseProvider):
     def supports_function_calling(self) -> bool:
         return True
 
+    @property
+    def supports_vision(self) -> bool:
+        """Every current Claude model accepts image content blocks."""
+        return True
+
     def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
             headers = {

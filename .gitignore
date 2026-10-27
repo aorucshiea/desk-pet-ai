@@ -79,3 +79,12 @@ adapters/**/*.safetensors
 # They hold seeded organ copies + mood/curator state; never source, and they
 # got committed once already.
 .tmp-verify/
+
+# Laya router spike: 1.2 GB ONNX + a local venv + probe outputs. Scratch
+# only — the optional sidecar's real payloads live under
+# pet-sidecar/laya_sidecar/ and are covered by that directory's .gitignore.
+.tmp-laya/
+
+# One-off local probes (CDP scripts, bridge experiments). They depend on a
+# running desktop session and must never become repository source.
+/.tmp-*

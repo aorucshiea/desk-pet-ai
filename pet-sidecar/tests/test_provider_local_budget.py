@@ -87,3 +87,15 @@ def test_provider_allow_tools_can_be_disabled():
         base_url="http://127.0.0.1:1234/v1", model="minicpm5-2b", allow_tools=False
     )
     assert p.allow_tools is False
+
+
+def test_provider_function_calling_can_be_disabled():
+    # A browser-driven web-chat bridge speaks the OpenAI wire format but has
+    # no native tool calls; the renderer must keep the text-MCP prompt.
+    p = OpenAIProvider(
+        base_url="http://127.0.0.1:8766/v1",
+        model="deepseek-web",
+        supports_function_calling=False,
+    )
+    assert p.supports_function_calling is False
+    assert OpenAIProvider(base_url="https://api.deepseek.com/v1").supports_function_calling is True

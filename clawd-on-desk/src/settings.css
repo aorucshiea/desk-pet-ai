@@ -644,7 +644,7 @@ html, body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  max-width: 46vw;
+  max-width: calc(46vw / var(--clawd-text-zoom, 1));
 }
 .pet-model-hero-status {
   font-size: 11px;
@@ -1127,7 +1127,7 @@ html, body {
 /* ── Engine advanced parameters (Settings → Engine) ── */
 .pet-engine-adv-input {
   width: 220px;
-  max-width: 46vw;
+  max-width: calc(46vw / var(--clawd-text-zoom, 1));
   padding: 4px 8px;
   font-size: 12px;
   color: var(--text-primary);

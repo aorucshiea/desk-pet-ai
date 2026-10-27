@@ -369,6 +369,9 @@ module.exports = function initMenu(ctx) {
       if (typeof ctx.openDeskPetChat === "function") {
         data.push({ label: t("menuDeskPetChat"), icon: "chat", click: () => ctx.openDeskPetChat() });
       }
+      if (typeof ctx.openBrainWindow === "function") {
+        data.push({ label: "大脑流", icon: "monitor", click: () => ctx.openBrainWindow() });
+      }
       const displays = screen.getAllDisplays();
       if (displays.length > 1 && !ctx.getMiniMode()) {
         data.push({ type: "separator" });

@@ -17,6 +17,18 @@
 
 ---
 
+## ✅ 本轮已修复 / 部分修复（2026-10，B-3/B-10/B-11）
+
+> 改动仍在工作区，**commit 未提交**（无可引用 hash）。验证方式：`cd pet-sidecar && uv run pytest -q` → 874 passed / 2 skipped；`cd clawd-on-desk && npm test` → 4227 passed / 0 failed / 21 skipped。睡眠压缩、遥测统计窗口与检索效果均**未做真机长时间验证**。
+
+| 号 | 结论 |
+|---|---|
+| B-10 | 部分修复：遥测计数器/计时器 + `GET /api/memory/stats` 已落地；「心理报告」UI 未做 |
+| B-11 | 已修复（SSE 契约）：`tests/test_chat_sse_contract.py` 在 HTTP/SSE 边界锁定事件序列、工具循环与降级路径；`test_persona_prompt.py` 锁定唯一 prompt 契约 |
+| B-3 | 部分修复：本地词法检索 + `memory_search` 工具/端点已落地；模型主动维护的每日笔记与语义/向量检索未做 |
+
+---
+
 ## 历史条目
 
 ## B-1 · 流式过程中 `[EMOTION:]` / `[NEXT_CHAT:]` 标签会一闪而过
@@ -56,15 +68,15 @@
 
 ## B-3 · 长期记忆缺工作层 + 语义检索（对齐 OpenClaw memory/*.md + memory_search）
 
-- **状态**：未实现（P2/P3 排期）
-- **现状**：只有 `MEMORY.md`/`USER.md`（curated 长期层）+ `chat-history.json`（对话流水账）。缺 OpenClaw 那套 `memory/YYYY-MM-DD.md` 工作层 + SQLite FTS5/向量检索。
+- **状态**：**部分修复（2026-10，未提交 commit）**——本地检索层已落地：`gateway/memory/search.py` 提供 `memory_search` 工具与 `POST /api/memory/search`，一次覆盖事件库、「记忆」文件夹、每日对话日志（`memories/conversations/YYYY-MM-DD.jsonl`）；`scope` 取 `all/events/files/logs`，中文整串 + bigram、英文整词，结果带 event_id / path / day+turn 出处，默认 6 条、上限 50。仍缺：模型主动维护的 `memory/YYYY-MM-DD.md` 每日工作层（当前日志是网关自动记录的流水，不是模型笔记）、SQLite FTS5/向量/混合检索。验证：`tests/test_memory_search.py`（三类来源、权重/新鲜度排序、空查询/limit/scope、文件沙箱、主题切库）+ Python 全量 874 通过；未做真机检索效果评估。
+- **现状（2026-08 诊断）**：只有 `MEMORY.md`/`USER.md`（curated 长期层）+ `chat-history.json`（对话流水账）。缺 OpenClaw 那套 `memory/YYYY-MM-DD.md` 工作层 + SQLite FTS5/向量检索。
 - **三项目对照**：
   - OpenClaw：`memory/YYYY-MM-DD.md` 每日笔记（不每轮注入，按需 `memory_search` 检索）+ `DREAMS.md` 反思 + SQLite 后端（FTS5 + 向量 + 混合 + CJK trigram）。
   - Hermes：`plugins/memory/holographic`（HRR 全息记忆，实体/信任分/组合检索）、`mem0`、`honcho` 等可插拔 provider；`MemoryManager.prefetch_all` 每轮召回。
   - Claude Code：无语义检索，靠 `CLAUDE.md` 手动维护。
 - **建议方案**（按渐进）：
-  - P2：加 `memory/YYYY-MM-DD.md` 工作层，模型主动写每日笔记；`memory` 工具加 `target="daily"`。
-  - P2：加 `memory_search` 工具（关键词检索，先不上向量），让模型按需检索工作层。
+  - P2：加 `memory/YYYY-MM-DD.md` 工作层，模型主动写每日笔记；`memory` 工具加 `target="daily"`。（未做）
+  - P2：加 `memory_search` 工具（关键词检索，先不上向量），让模型按需检索工作层。**2026-10 已落地，但检索范围是事件 / 「记忆」文件夹 / 网关自动记录的每日日志，不含模型手写工作层。**
   - P3：评估接 mem0/holographic（通过 Hermes 的 `MemoryProvider` ABC，我们已规划这个抽象口）。
 - **关联模块**：`gateway/memory/`（新建 `daily.py`/`search.py`）、`gateway/memory/tool.py`、`gateway/server.py`
 
@@ -155,22 +167,23 @@
 
 ## B-10 · 几十个手调常数零行为遥测——调参永远是盲调
 
-- **状态**：未解决（P2/P3）
+- **状态**：**部分修复（2026-10，未提交 commit）**——后端遥测已落地：`gateway/telemetry.py` 提供零依赖、线程安全的计数器/仪表/计时集合，挂在记忆目录上每 60s 落 `telemetry.json`；`GET /api/memory/stats` 暴露 chat turns/errors/首 token/回合耗时、recall attempts/success/miss、flashback、resonance calls/hits、keyword flash、decision ticks/voices、extraction turns/missing block/fallback、homeostasis sick/recovered 等计数、耗时与成功率，并附当前 memory/mood/decision 状态。仍缺：设置页 / web-panel 的「心理报告」诊断卡，以及按真机长期数据重调常数。验证：`tests/test_telemetry.py`（快照结构、空 rates、observe 聚合、持久化恢复、chat 首 token/回合耗时/错误不记成功耗时、stats 与提取/fallback 指标）+ Python 全量 874 通过。
 - **影响范围**：`gateway/memory/`（decay/loader/recall/resonance/mood）、`server.py`（核心记忆晋升）
-- **现状**：`FLASH_CALM_FILTER_WEIGHT=300`、`FLASH_MOOD_SCALE=0.8`、`RECALL_RETRY_BONUS=0.06`、`CORE_RECALL_BONUS=0.40`、`RESONANCE_THRESHOLD=0.65`、衰减曲线 `r(t)=max(19, 55·e^(-t/1h))`、`CORE_PROMOTE_WEIGHT=800`/`CORE_CAP=7`……现有测试只验证**机制正确**，没有任何运行指标回答**体感对不对**：实际闪现频率？recall 成功率/复活率？共鸣三级 fallback 命中占比？目录长度曲线？emotion_index 轨迹？
-- **建议方案**：极轻遥测——内存计数器 + `GET /api/memory/stats`（上述指标按会话/累计两个粒度），设置页或 web-panel 出一张"心理报告"诊断卡。遥测既是调参依据，本身也是有趣的产品功能（凌凌的心理报告）。
+- **现状（2026-08 诊断）**：`FLASH_CALM_FILTER_WEIGHT=300`、`FLASH_MOOD_SCALE=0.8`、`RECALL_RETRY_BONUS=0.06`、`CORE_RECALL_BONUS=0.40`、`RESONANCE_THRESHOLD=0.65`、衰减曲线 `r(t)=max(19, 55·e^(-t/1h))`、`CORE_PROMOTE_WEIGHT=800`/`CORE_CAP=7`……当时测试只验证**机制正确**，没有任何运行指标回答**体感对不对**：实际闪现频率？recall 成功率/复活率？共鸣三级 fallback 命中占比？目录长度曲线？emotion_index 轨迹？
+- **建议方案**：极轻遥测——内存计数器 + `GET /api/memory/stats`（上述指标按会话/累计两个粒度），设置页或 web-panel 出一张"心理报告"诊断卡。遥测既是调参依据，本身也是有趣的产品功能（凌凌的心理报告）。**2026-10 后端已按此落地，UI 卡仍缺。**
 - **关联模块**：`gateway/memory/*`、`gateway/server.py`、`web-panel/index.html`
 
 ---
 
 ## B-11 · 测试盲区长在集成缝上——chat 管线零覆盖
 
-- **状态**：未解决（P2）。已发生两例实证：① 2026-08-29 `/api/debug/chat` 调用 `_blocking_chat_provider` 漏传 `mood_store`，已修复并补回归测试 `tests/test_debug_chat_args.py`；② 2026-08-30 发现 `_stream_chat_provider` 引用不存在的模块级 `event_store`（NameError 被吞）——**2026-08-01 起每次真实聊天的"事件记忆+心情+共鸣"注入全部静默失效**（日志 `LingLing context injection failed: name 'event_store' is not defined`），已改经 `recall.get_event_store()` 单例解析修复。两例都长在同一道缝上。
+- **状态**：✅ **已修复（SSE 契约，2026-10，未提交 commit）**——新增 `tests/test_chat_sse_contract.py`，在真实 FastAPI app 的 HTTP/SSE 边界用脚本化 provider 覆盖：`start/delta/think/next_chat/end` 顺序与控制标签剥离、MEM 块单次落盘与幂等重放、缺 MEM 块时后台降级不阻塞、缺 `[NEXT_CHAT]` 时 impulse 边界、provider error 转 error 帧、`allow_tools=False` 下核心记忆工具循环。另由 `tests/test_persona_prompt.py` 锁定网关唯一 prompt 与 Electron 离线 fallback 字节一致。验证：Python 874 通过 / 2 跳过；Electron 4227 通过 / 0 失败 / 21 跳过。仍缺：renderer 端（B-6 后已大幅缩小）的 prompt 组装端到端覆盖，以及真机 provider 链路验证。
 - **影响范围**：`gateway/server.py`（SSE 管线/工具循环/provider 解析）、`clawd-on-desk/src/pet-chat-renderer.js`（prompt 组装）
-- **现状**：319 个 pytest 全是模块级单测。`/api/chat` 的 SSE 事件序列（start/delta/think/next_chat/end）、工具循环（5 轮上限、`[MCP:]` 文本标记解析、截图多模态回填）、provider 回退链（auto → 非 local → local）无端到端覆盖；renderer 侧 2000+ 行 prompt 组装同样零覆盖。
-- **建议方案**（性价比最高的两条）：
-  - golden prompt 测试：mock provider，断言最终 system 的分段顺序与内容（完整形态依赖 B-6；现状可先覆盖网关侧注入段）
-  - SSE 契约测试：mock provider 流，断言事件序列与控制标签剥离行为（顺带覆盖 B-1 的网关侧过滤改造）
+- **现状（2026-08 诊断）**：当时 319 个 pytest 全是模块级单测。`/api/chat` 的 SSE 事件序列（start/delta/think/next_chat/end）、工具循环（5 轮上限、`[MCP:]` 文本标记解析、截图多模态回填）、provider 回退链（auto → 非 local → local）无端到端覆盖；renderer 侧 2000+ 行 prompt 组装同样零覆盖。
+- **历史实证（2026-08）**：① 2026-08-29 `/api/debug/chat` 调用 `_blocking_chat_provider` 漏传 `mood_store`，已修复并补回归测试 `tests/test_debug_chat_args.py`；② 2026-08-30 发现 `_stream_chat_provider` 引用不存在的模块级 `event_store`（NameError 被吞）——**2026-08-01 起每次真实聊天的"事件记忆+心情+共鸣"注入全部静默失效**（日志 `LingLing context injection failed: name 'event_store' is not defined`），已改经 `recall.get_event_store()` 单例解析修复。两例都长在同一道缝上。
+- **建议方案**（性价比最高的两条，2026-10 均已落地）：
+  - golden prompt 测试：mock provider，断言最终 system 的分段顺序与内容（完整形态依赖 B-6；现状可先覆盖网关侧注入段）→ `tests/test_persona_prompt.py`
+  - SSE 契约测试：mock provider 流，断言事件序列与控制标签剥离行为（顺带覆盖 B-1 的网关侧过滤改造）→ `tests/test_chat_sse_contract.py`
 - **关联模块**：`gateway/server.py`、`pet-sidecar/tests/`、`clawd-on-desk/test/`
 
 ---

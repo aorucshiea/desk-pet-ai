@@ -8,6 +8,8 @@ const os = require("os");
 
 const prefs = require("../src/prefs");
 
+// Desk Pet fork policy: every coding-agent integration and sub-gate defaults off.
+// Tests for legacy upgrade/side-effect behavior seed explicit opt-in state instead.
 const tempDirs = [];
 
 function makeTempPath(name = "clawd-prefs.json") {
@@ -33,8 +35,8 @@ describe("prefs.getDefaults", () => {
     assert.notStrictEqual(a.sessionAliases, b.sessionAliases);
     assert.notStrictEqual(a.tgApproval, b.tgApproval);
     // Mutating one shouldn't affect the other
-    a.agents["claude-code"].enabled = false;
-    assert.strictEqual(b.agents["claude-code"].enabled, true);
+    a.agents["claude-code"].enabled = true;
+    assert.strictEqual(b.agents["claude-code"].enabled, false);
   });
 
   it("includes the current schema version", () => {
@@ -42,9 +44,9 @@ describe("prefs.getDefaults", () => {
     assert.strictEqual(d.version, prefs.CURRENT_VERSION);
   });
 
-  it("defaults Claude hook management on and Start with Claude off", () => {
+  it("defaults Claude hook management and Start with Claude off", () => {
     const d = prefs.getDefaults();
-    assert.strictEqual(d.manageClaudeHooksAutomatically, true);
+    assert.strictEqual(d.manageClaudeHooksAutomatically, false);
     assert.strictEqual(d.autoStartWithClaude, false);
     assert.strictEqual(d.lowPowerIdleMode, false);
     assert.strictEqual(d.allowEdgePinning, false);
@@ -73,40 +75,28 @@ describe("prefs.getDefaults", () => {
     });
   });
 
-  it("seeds only default-installed agents as enabled", () => {
+  it("seeds every coding-agent integration disabled and uninstalled", () => {
     const d = prefs.getDefaults();
-    for (const id of ["claude-code", "codex"]) {
-      assert.strictEqual(d.agents[id].enabled, true, `${id} should default enabled`);
-      assert.strictEqual(d.agents[id].integrationInstalled, true, `${id} should default installed`);
-    }
-    for (const id of ["copilot-cli", "cursor-agent", "gemini-cli", "antigravity-cli", "codebuddy", "kiro-cli", "kimi-cli", "qwen-code", "codewhale", "opencode", "pi", "openclaw", "hermes", "qoder"]) {
-      assert.strictEqual(d.agents[id].enabled, false, `${id} should default disabled`);
-      assert.strictEqual(d.agents[id].integrationInstalled, false, `${id} should default not installed`);
+    for (const [id, entry] of Object.entries(d.agents)) {
+      assert.strictEqual(entry.enabled, false, `${id} should default disabled`);
+      assert.strictEqual(entry.integrationInstalled, false, `${id} should default not installed`);
     }
   });
 
-  it("seeds permission-capable agents with permissionsEnabled=true", () => {
+  it("seeds every agent permission gate off", () => {
     const d = prefs.getDefaults();
-    // State-only integrations intentionally excluded — no bubble.
-    for (const id of ["claude-code", "codex", "copilot-cli", "cursor-agent", "gemini-cli", "codebuddy", "kiro-cli", "kimi-cli", "qwen-code", "opencode", "hermes"]) {
+    for (const [id, entry] of Object.entries(d.agents)) {
       assert.strictEqual(
-        d.agents[id].permissionsEnabled,
-        true,
-        `${id} should default permissionsEnabled`
-      );
-    }
-    for (const id of ["antigravity-cli", "codewhale", "pi", "openclaw", "qoder"]) {
-      assert.strictEqual(
-        d.agents[id].permissionsEnabled,
+        entry.permissionsEnabled,
         false,
-        `${id} is state-only, permissionsEnabled must default to false`
+        `${id} should default permissionsEnabled=false`
       );
     }
   });
 
   it("seeds the subagent permission sub-gate on claude-code only (#451)", () => {
     const d = prefs.getDefaults();
-    assert.strictEqual(d.agents["claude-code"].subagentPermissionsEnabled, true);
+    assert.strictEqual(d.agents["claude-code"].subagentPermissionsEnabled, false);
     // Other agents must not carry the flag — normalizeAgents only accepts
     // flags present in an agent's default entry, which keeps this sub-gate
     // claude-code-scoped.
@@ -124,7 +114,7 @@ describe("prefs.getDefaults", () => {
     assert.strictEqual(d.agents.openclaw.integrationInstalled, false);
     assert.strictEqual(d.agents.openclaw.enabled, false);
     assert.strictEqual(d.agents.openclaw.permissionsEnabled, false);
-    assert.strictEqual(d.agents.openclaw.notificationHookEnabled, true);
+    assert.strictEqual(d.agents.openclaw.notificationHookEnabled, false);
   });
 
   it("defaults Qoder permission bubbles off (state-only)", () => {
@@ -132,7 +122,7 @@ describe("prefs.getDefaults", () => {
     assert.strictEqual(d.agents.qoder.integrationInstalled, false);
     assert.strictEqual(d.agents.qoder.enabled, false);
     assert.strictEqual(d.agents.qoder.permissionsEnabled, false);
-    assert.strictEqual(d.agents.qoder.notificationHookEnabled, true);
+    assert.strictEqual(d.agents.qoder.notificationHookEnabled, false);
   });
 
   it("defaults CodeWhale permission bubbles off (state-only)", () => {
@@ -140,7 +130,7 @@ describe("prefs.getDefaults", () => {
     assert.strictEqual(d.agents.codewhale.integrationInstalled, false);
     assert.strictEqual(d.agents.codewhale.enabled, false);
     assert.strictEqual(d.agents.codewhale.permissionsEnabled, false);
-    assert.strictEqual(d.agents.codewhale.notificationHookEnabled, true);
+    assert.strictEqual(d.agents.codewhale.notificationHookEnabled, false);
   });
 
   it("defaults Pi permission bubbles off", () => {
@@ -148,7 +138,7 @@ describe("prefs.getDefaults", () => {
     assert.strictEqual(d.agents.pi.integrationInstalled, false);
     assert.strictEqual(d.agents.pi.enabled, false);
     assert.strictEqual(d.agents.pi.permissionsEnabled, false);
-    assert.strictEqual(d.agents.pi.notificationHookEnabled, true);
+    assert.strictEqual(d.agents.pi.notificationHookEnabled, false);
   });
 
   it("defaults Codex permissions to intercept mode", () => {
@@ -376,8 +366,8 @@ describe("prefs.validate", () => {
       },
     });
     assert.strictEqual(v.agents["claude-code"].enabled, false);
-    // bogus + bad codex use defaults
-    assert.strictEqual(v.agents.codex.enabled, true);
+    // bogus + bad codex use the fork's disabled defaults
+    assert.strictEqual(v.agents.codex.enabled, false);
     assert.strictEqual(v.agents["bogus-entry"], undefined);
   });
 
@@ -392,16 +382,15 @@ describe("prefs.validate", () => {
   });
 
   it("normalizes agents: fills missing permissionsEnabled from defaults", () => {
-    // Pre-subgate prefs files only have { enabled: bool }. Normalization
-    // must NOT strip them, but must also NOT invent permissionsEnabled=false
-    // — defaults are true, and the gate reads "missing flag" as true anyway.
+    // Pre-subgate prefs files only have { enabled: bool }. Normalization keeps
+    // the entry and fills the sub-gate from the fork's opt-out default.
     const v = prefs.validate({
       agents: {
         "claude-code": { enabled: false },
       },
     });
     assert.strictEqual(v.agents["claude-code"].enabled, false);
-    assert.strictEqual(v.agents["claude-code"].permissionsEnabled, true);
+    assert.strictEqual(v.agents["claude-code"].permissionsEnabled, false);
   });
 
   it("normalizes agents: drops non-boolean permissionsEnabled, keeps valid enabled", () => {
@@ -411,9 +400,9 @@ describe("prefs.validate", () => {
       },
     });
     assert.strictEqual(v.agents["claude-code"].enabled, false);
-    // Bad flag falls back to the default for that agent (true), not dropped
-    // altogether — the entry has a valid flag so it survives.
-    assert.strictEqual(v.agents["claude-code"].permissionsEnabled, true);
+    // Bad flag falls back to the fork default (false), not dropped altogether —
+    // the entry has a valid flag so it survives.
+    assert.strictEqual(v.agents["claude-code"].permissionsEnabled, false);
   });
 
   it("normalizes agents: preserves subagentPermissionsEnabled for claude-code, strips it elsewhere", () => {
@@ -436,7 +425,7 @@ describe("prefs.validate", () => {
         "claude-code": { enabled: false },
       },
     });
-    assert.strictEqual(v.agents["claude-code"].subagentPermissionsEnabled, true);
+    assert.strictEqual(v.agents["claude-code"].subagentPermissionsEnabled, false);
   });
 
   it("normalizes agents: preserves Hermes permission/notification flags", () => {
@@ -516,15 +505,14 @@ describe("prefs.validate", () => {
   });
 
   it("normalizes agents: fills missing notificationHookEnabled from defaults", () => {
-    // Pre-flag prefs files don't carry notificationHookEnabled. The default
-    // must be true so an upgrade doesn't silently suppress idle notifications
-    // on users who never opted in.
+    // Pre-flag prefs files don't carry notificationHookEnabled. This fork
+    // fills it from the disabled-by-default integration policy.
     const v = prefs.validate({
       agents: {
         "claude-code": { enabled: true, permissionsEnabled: false },
       },
     });
-    assert.strictEqual(v.agents["claude-code"].notificationHookEnabled, true);
+    assert.strictEqual(v.agents["claude-code"].notificationHookEnabled, false);
   });
 
   it("normalizes dismissed agent hint maps as true-only maps", () => {
@@ -555,13 +543,13 @@ describe("prefs.validate", () => {
     assert.strictEqual(v.agents.codex.nativeNotificationSoundEnabled, false);
   });
 
-  it("seeds all known agents with notificationHookEnabled=true", () => {
+  it("seeds all known agents with notificationHookEnabled=false", () => {
     const d = prefs.getDefaults();
     for (const id of ["claude-code", "codex", "copilot-cli", "cursor-agent", "gemini-cli", "codebuddy", "kiro-cli", "kimi-cli", "qwen-code", "codewhale", "opencode", "pi", "openclaw", "hermes", "qoder", "reasonix"]) {
       assert.strictEqual(
         d.agents[id].notificationHookEnabled,
-        true,
-        `${id} should default notificationHookEnabled`
+        false,
+        `${id} should default notificationHookEnabled=false`
       );
     }
     assert.strictEqual(
@@ -1021,15 +1009,15 @@ describe("prefs.migrate v10 → v11 (on-demand agent integrations)", () => {
   it("keeps missing old agent entries on the v11 fresh defaults", () => {
     const validated = prefs.validate(prefs.migrate({ version: 10, lang: "en" }));
     assert.strictEqual(validated.version, prefs.CURRENT_VERSION);
-    assert.strictEqual(validated.agents["claude-code"].integrationInstalled, true);
-    assert.strictEqual(validated.agents["claude-code"].enabled, true);
-    assert.strictEqual(validated.agents.codex.integrationInstalled, true);
-    assert.strictEqual(validated.agents.codex.enabled, true);
+    assert.strictEqual(validated.agents["claude-code"].integrationInstalled, false);
+    assert.strictEqual(validated.agents["claude-code"].enabled, false);
+    assert.strictEqual(validated.agents.codex.integrationInstalled, false);
+    assert.strictEqual(validated.agents.codex.enabled, false);
     assert.strictEqual(validated.agents["gemini-cli"].integrationInstalled, false);
     assert.strictEqual(validated.agents["gemini-cli"].enabled, false);
   });
 
-  it("preserves existing enabled flags without installing non-default agents", () => {
+  it("preserves existing enabled flags without installing default-seeded agents", () => {
     const validated = prefs.validate(prefs.migrate({
       version: 10,
       agents: {
@@ -1038,7 +1026,7 @@ describe("prefs.migrate v10 → v11 (on-demand agent integrations)", () => {
       },
     }));
     assert.strictEqual(validated.agents.codex.enabled, false);
-    assert.strictEqual(validated.agents.codex.integrationInstalled, true);
+    assert.strictEqual(validated.agents.codex.integrationInstalled, false);
     assert.strictEqual(validated.agents["copilot-cli"].enabled, true);
     assert.strictEqual(validated.agents["copilot-cli"].integrationInstalled, false);
   });
@@ -1060,8 +1048,8 @@ describe("prefs.migrate v10 → v11 (on-demand agent integrations)", () => {
   it("does not mark v0 default-seeded agent entries as installed", () => {
     const validated = prefs.validate(prefs.migrate({ lang: "en" }));
     assert.strictEqual(validated.version, prefs.CURRENT_VERSION);
-    assert.strictEqual(validated.agents["claude-code"].integrationInstalled, true);
-    assert.strictEqual(validated.agents.codex.integrationInstalled, true);
+    assert.strictEqual(validated.agents["claude-code"].integrationInstalled, false);
+    assert.strictEqual(validated.agents.codex.integrationInstalled, false);
     assert.strictEqual(validated.agents["gemini-cli"].integrationInstalled, false);
     assert.strictEqual(validated.agents["gemini-cli"].enabled, false);
   });

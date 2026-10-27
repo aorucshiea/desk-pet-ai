@@ -18,6 +18,45 @@ const TOOL = path.join(__dirname, "..", "..", "pet-sidecar", "gateway", "memory"
 
 function read(file) { return fs.readFileSync(file, "utf8"); }
 
+// Load a top-level function from a browser script without booting the shell.
+// Both scripts are plain <script> files (no exports), but these functions are
+// self-contained apart from the dependency slice passed in.
+function loadFunction(file, name, deps = "") {
+  const source = read(file);
+  const start = source.indexOf(`function ${name}(`);
+  assert.ok(start >= 0, `${name} not found in ${path.basename(file)}`);
+  const open = source.indexOf("{", start);
+  let depth = 0;
+  for (let i = open; i < source.length; i += 1) {
+    if (source[i] === "{") depth += 1;
+    else if (source[i] === "}" && --depth === 0) {
+      return new Function(`${deps}\n${source.slice(start, i + 1)}\nreturn ${name};`)();
+    }
+  }
+  throw new Error(`unterminated ${name} in ${path.basename(file)}`);
+}
+
+test("a stray <<<MEMEND>>> tag is never rendered as visible speech", () => {
+  const renderer = read(RENDERER);
+  const deps = [
+    renderer.match(/const TOOL_STATUS_LINE_RE = .*;/),
+    renderer.match(/const TOOL_MARKER_LINE_RE = .*;/),
+  ].map((m) => assert.ok(m, "tool-status regexes must exist") || m[0]).join("\n");
+  const sanitize = loadFunction(RENDERER, "sanitizeReplyTags");
+  const isStatusOnly = loadFunction(RENDERER, "isToolStatusOnlyReply", deps);
+
+  assert.equal(sanitize("<<<MEMEND>>>"), "");
+  assert.equal(sanitize("正文<<<memend>>>"), "正文");
+  assert.equal(sanitize("<<<MEM>>>"), "");
+  assert.equal(
+    sanitize('前文<<<MEM>>>{"events":[]}<<<MEMEND>>>后文'),
+    "前文后文",
+    "complete MEM blocks must still be stripped",
+  );
+  // A tag-only round carries no answer, so it cannot look like speech.
+  assert.equal(isStatusOnly("<<<MEMEND>>>"), false);
+});
+
 test("the chat prompt no longer names the retired MEMORY.md / USER.md surfaces", () => {
   const code = read(RENDERER);
   assert.doesNotMatch(code, /MEMORY\.md|USER\.md/,

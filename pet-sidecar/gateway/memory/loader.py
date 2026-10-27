@@ -27,6 +27,7 @@ import random
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set
 
+from .. import telemetry
 from ..log_setup import get_logger
 from .decay import on_event_accessed
 from .events import EventStore, human_time_ago
@@ -160,6 +161,7 @@ def pick_flashback(
         if random.random() < (evt["weight"] / denominator) * scale:
             on_event_accessed(store, evt["id"])
             add_to_session(evt["id"])
+            telemetry.inc("memory.flashbacks")
             return evt
     return None
 
@@ -248,6 +250,8 @@ def build_memory_context(store: EventStore, emotion_index: float = 0.0) -> str:
         top_ids.add(flashback["id"])
 
     directory = build_faded_directory(store, top_ids)
+    telemetry.gauge("memory.events", store.event_count())
+    telemetry.gauge("memory.directory_lines", len(directory))
 
     lines: List[str] = []
 

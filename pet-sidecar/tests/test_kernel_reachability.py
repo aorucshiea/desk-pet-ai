@@ -21,7 +21,19 @@ import asyncio
 import pytest
 
 from gateway import server as server_mod
+from gateway.memory.events import EventStore
 from gateway.petplugins import PluginManager
+
+
+def _live_manager(memory_dir):
+    """A container with the same soul services build_app registers at boot.
+
+    Seeded organs declare ``inject = ["events"]`` (recall / loader / decay /
+    resonance / somatic / self_note). A bare PluginManager has no such
+    service, so every one of those organs parks — which is correct kernel
+    behaviour, not the reachability these tests pin.
+    """
+    return PluginManager({"memory_dir": memory_dir, "events": EventStore()})
 
 
 @pytest.fixture()
@@ -56,7 +68,7 @@ def test_organs_reach_an_install_whose_plugins_dir_already_has_content(tmp_path)
     (pdir / "a_pre_existing_plugin.py").write_text(
         "inject = []\ndef apply(ctx):\n    pass\n", encoding="utf-8")
 
-    mgr = PluginManager({"memory_dir": tmp_path})
+    mgr = _live_manager(tmp_path)
     result = mgr.sync()
 
     for organ in ("organ_impulse", "organ_recall", "organ_decay", "organ_dream",
@@ -75,7 +87,7 @@ def test_seeding_never_clobbers_an_edited_organ(tmp_path):
     edited = "inject = []\ndef apply(ctx):\n    # model edited me\n    pass\n"
     (pdir / "organ_decay.py").write_text(edited, encoding="utf-8")
 
-    PluginManager({"memory_dir": tmp_path}).sync()
+    _live_manager(tmp_path).sync()
     assert (pdir / "organ_decay.py").read_text(encoding="utf-8") == edited
 
 
@@ -100,7 +112,7 @@ def test_module_accessors_degrade_without_a_booted_container(no_container):
 
 
 def test_gather_tools_exposes_plugin_tools_once_the_container_is_mirrored(tmp_path, no_container):
-    mgr = PluginManager({"memory_dir": tmp_path})
+    mgr = _live_manager(tmp_path)
     mgr.sync()
     server_mod._plugin_container_ref["mgr"] = mgr
     try:
@@ -116,7 +128,7 @@ def test_gather_tools_exposes_plugin_tools_once_the_container_is_mirrored(tmp_pa
 def test_muting_an_organ_really_removes_its_tool_from_the_model(tmp_path, no_container):
     """P2g's promise: switching an organ off must make the ability disappear
     from the model's side, not merely swap implementations."""
-    mgr = PluginManager({"memory_dir": tmp_path})
+    mgr = _live_manager(tmp_path)
     mgr.sync()
     server_mod._plugin_container_ref["mgr"] = mgr
     try:

@@ -124,3 +124,59 @@ def test_thread_safety_smoke(monkeypatch):
         t.join()
     assert client.posts, "expected posts to be recorded"
     assert all(h.get("x-clawd-token") == TOKEN for _, h in client.posts)
+
+
+def test_health_treats_never_seen_pet_as_standalone_not_sick(monkeypatch):
+    now = [1000.0]
+    monkeypatch.setattr("gateway.clawd_state.time.time", lambda: now[0])
+    client = _Client({})
+    b = _bridge(client, monkeypatch)
+
+    assert b.is_reachable() is True
+    for _ in range(4):
+        b.post("thinking")
+
+    assert b._last_attempt == 1000.0
+    assert b._last_success == 0.0
+    assert b._consecutive_failures == 4
+    assert b.is_reachable() is True
+
+
+def test_health_requires_failures_and_stale_success_then_recovers(monkeypatch):
+    now = [1000.0]
+    monkeypatch.setattr("gateway.clawd_state.time.time", lambda: now[0])
+    client = _Client({23333: [_Resp(204)]})
+    b = _bridge(client, monkeypatch)
+
+    b.post("idle")
+    assert b._last_success == 1000.0
+    assert b._consecutive_failures == 0
+
+    b.post("thinking")
+    assert b._consecutive_failures == 1
+    assert b.is_reachable() is True
+
+    now[0] += b.SUCCESS_GRACE_SECONDS + 1
+    b.post("thinking")
+    assert b._consecutive_failures == 2
+    assert b.is_reachable() is True
+    b.post("thinking")
+    assert b._consecutive_failures == 3
+    assert b.is_reachable() is False
+
+    client.script[23333].append(_Resp(204))
+    b.post("attention")
+    assert b._last_success == now[0]
+    assert b._consecutive_failures == 0
+    assert b.is_reachable() is True
+
+
+def test_disabled_bridge_does_not_record_health_failures(monkeypatch):
+    b = ClawdBridge(enabled=False)
+    b._client = _Client({})
+
+    b.post("idle")
+
+    assert b._last_attempt == 0.0
+    assert b._consecutive_failures == 0
+    assert b.is_reachable() is True

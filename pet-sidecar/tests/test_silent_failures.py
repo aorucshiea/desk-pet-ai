@@ -5,7 +5,10 @@ empty for a week and the only trace was a log.debug() the INFO file logger
 never wrote. A fix nobody can see is a fix that regresses.
 """
 
+import logging
+
 from gateway import server as S
+from gateway.log_setup import get_logger
 
 
 def _reset():
@@ -14,10 +17,18 @@ def _reset():
 
 def test_note_failure_counts_and_warns_where_the_file_logger_sees_it(caplog):
     _reset()
+    # The gateway logger deliberately does not propagate to root (it owns its
+    # stderr + rotating-file handlers), so caplog must attach to it directly.
+    logger = get_logger()
+    logger.addHandler(caplog.handler)
     try:
-        raise ValueError("boom")
-    except ValueError as exc:
-        S._note_failure("unit_test_site", exc)
+        with caplog.at_level(logging.WARNING, logger="pet.gateway"):
+            try:
+                raise ValueError("boom")
+            except ValueError as exc:
+                S._note_failure("unit_test_site", exc)
+    finally:
+        logger.removeHandler(caplog.handler)
 
     assert S._silent_failures["unit_test_site"] == 1
     assert "swallowed error at unit_test_site (x1)" in caplog.text

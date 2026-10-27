@@ -16,6 +16,8 @@ import time
 from pathlib import Path
 from typing import Any, List, Optional
 
+from .. import telemetry
+
 DEFAULT_PROBABILITY = 0.05
 MAX_WORDS = 24
 
@@ -83,5 +85,6 @@ def maybe_flash(
             ephemeral.add_flash(flash, kind="keyword")
         except Exception:
             return None
+        telemetry.inc("memory.keyword_flashes")
         return flash
     return None

@@ -32,6 +32,7 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from .. import telemetry
 from ..log_setup import get_logger
 from .decay import on_event_accessed
 from .events import EventStore, EMOTION_VOCAB
@@ -172,6 +173,7 @@ async def find_resonance(
     if not user_message or not user_message.strip():
         return []
 
+    telemetry.inc("resonance.calls")
     # 1. Embedding resonance (primary path).
     if _api_key() is not None:
         await _ensure_event_vectors(store)
@@ -193,6 +195,7 @@ async def find_resonance(
                 on_event_accessed(store, evt["id"])
                 loader.add_to_session(evt["id"])
             if results:
+                telemetry.inc("resonance.hits")
                 logger.info(
                     "Resonance: %d event(s) triggered by %r",
                     len(results), user_message[:50],
@@ -205,6 +208,7 @@ async def find_resonance(
         for evt in emotion_hits:
             on_event_accessed(store, evt["id"])
             loader.add_to_session(evt["id"])
+        telemetry.inc("resonance.hits")
         return emotion_hits
 
     # 3. Keyword fallback (legacy substring).
@@ -217,6 +221,8 @@ async def find_resonance(
     for evt in filtered:
         on_event_accessed(store, evt["id"])
         loader.add_to_session(evt["id"])
+    if filtered:
+        telemetry.inc("resonance.hits")
     return filtered
 
 

@@ -44,15 +44,17 @@ afterEach(() => {
 });
 
 describe("agent installation detector", () => {
-  it("skips default integrations and returns runtime-only checkedAt metadata", () => {
+  it("checks every agent and returns runtime-only checkedAt metadata", () => {
     const homeDir = makeHome();
 
     const report = detectAgentInstallations({ homeDir, now: 12345 });
 
+    // No integrations are default-installed in the Desk Pet fork, so the
+    // detector must not skip Claude Code or Codex.
     assert.strictEqual(report.checkedAt, 12345);
-    assert.deepStrictEqual(report.skippedAgentIds, ["claude-code", "codex"]);
-    assert.ok(!byId(report, "claude-code"));
-    assert.ok(!byId(report, "codex"));
+    assert.deepStrictEqual(report.skippedAgentIds, []);
+    assert.ok(byId(report, "claude-code"));
+    assert.ok(byId(report, "codex"));
     assert.ok(byId(report, "qwen-code"));
   });
 
@@ -172,7 +174,8 @@ describe("agent installation detector", () => {
     const homeDir = makeHome();
     mkdirp(path.join(homeDir, ".hermes"));
 
-    const report = detectAgentInstallations({ homeDir, now: 1 });
+    // Isolate the fixture from a real Hermes install under LOCALAPPDATA.
+    const report = detectAgentInstallations({ homeDir, env: {}, now: 1 });
     const hermes = byId(report, "hermes");
 
     assert.strictEqual(hermes.detectedInstalled, true);

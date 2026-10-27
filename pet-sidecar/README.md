@@ -109,7 +109,7 @@ CI 和默认本地构建不再编译 `llama.cpp`，而是直接下载官方
 
 ## API
 
-gateway 对 Electron 暴露下列端点（保持与旧 bridge 完全兼容）：
+gateway 对 Electron 暴露下列端点（保持旧 bridge 端点兼容，并增补潜意识相关接口）：
 
 | 类型 | 状态 | 说明 |
 |------|------|------|
@@ -124,9 +124,31 @@ gateway 对 Electron 暴露下列端点（保持与旧 bridge 完全兼容）：
 | `POST /api/state` | ok | 手动桌宠状态推送 |
 | `GET /api/adapters` | ok | 扫描 `<PET_ADAPTER_DIR>/**/*.gguf`，返回 `{items, current, current_name, adapter_dir}` |
 | `POST /api/load-adapter` | ok | 切换全局激活 LoRA（`{path}`，`null` 卸载）；新文件会触发 llama-server 子进程重启 |
+| `GET /api/prompt/system` | ok | 唯一人格/记忆契约（`{ok, version, native_tools, prompt}`）；`?provider=` 指向原生 function calling 的 provider 时返回 native 措辞 |
+| `POST /api/memory/search` | ok | 本机检索事件、「记忆」文件夹与每日对话日志；body `{query, limit?, scope?}`，`scope` 取 `all/events/files/logs` |
+| `GET /api/memory/stats` | ok | 潜意识遥测快照：chat/recall/flashback/resonance/keyword flash/decision/extraction/homeostasis，并附当前 memory/mood/decision 状态 |
 | `POST /api/classify` | stub | v1 返回 501 |
 
 字段细节参见 [`gateway/server.py`](gateway/server.py)。
+
+### 核心工具分级与降级提取
+
+`GET /api/providers` 的每个 provider 额外返回 `supports_function_calling`、`allow_tools`、`is_local`。loopback 端点（LM Studio / Ollama / 外挂 llama.cpp）默认 `allow_tools=False`：网关不再把 30+ 个 MCP / 世界 / 插件工具塞进 prompt，但**保留三个核心记忆工具**——`memory`（维护「记忆」文件夹）、`recall`（概率性回忆事件）、`memory_search`（本机检索事件 / 记忆文件 / 每日日志）。重型工具仍可通过 `~/.pet/providers.json` 的 `"toolsEnabled": true` 打开。
+
+主记忆路径仍是模型在回复尾部输出 `<<<MEM>>>` 块，由网关在 SSE 收尾处落盘。块缺失时，网关会对真实用户回合发起一次后台降级提取（`gateway/memory/extract_fallback.py`）：使用同一 provider、温度 0.2、最多 500 token、90 秒超时，输入按 4k/6k 字符截断（本地 2k/3k），产物走同一套校验与幂等去重。该任务**不阻塞 SSE**；已有 MEM 块、过短用户文本、`[系统提示...]` 主动唤醒不会触发。
+
+云端 provider 默认开启；**loopback 端点默认关闭**（本地单槽上会和下一条消息抢模型，设置 `PET_EXTRACT_FALLBACK_LOCAL=1` 才开）。新的真实用户回合一进来会取消上一次尚未完成的提取；`PET_EXTRACT_FALLBACK=0` 全局关闭。
+
+### DeepSeek 网页版 bridge（可选，实验）
+
+`deepseek_web/` 提供一个零依赖的本地 OpenAI 兼容 bridge（`127.0.0.1:8766`）+ 浏览器扩展：扩展在已登录的 `chat.deepseek.com` 标签页里填输入、发送、等回复，把文本回传给 bridge。桌宠把 bridge 当普通 provider 用，不经过 DeepSeek API。桌宠的 **设置 → 网页模型** 页面可以查看/启动 bridge、测试、一键设为当前模型。
+
+它靠 DOM 自动化，网页改版/限流会失效，每轮消耗网页额度，也可能违反平台条款；只建议低频试用。安装、`functionCalling: false` / `toolsEnabled: true` 配置和限制见 [`deepseek_web/README.md`](deepseek_web/README.md)。
+
+### 睡眠压缩与直觉压力
+
+- **自动睡眠压缩**：内置器官 `organ_sleep` 每 600 秒巡检一次；空闲 ≥ 7200 秒且存在早于今天的日志日（至少 4 条）时，每次压缩一天。只有压缩与记忆落盘都成功，才把该日写进 `sleep-state.json` 的 `compressed_days`；失败留待下一轮重试。`check_interval_seconds` / `idle_seconds` / `min_turns` 可在插件配置里改。
+- **直觉压力**：`DecisionLoop` 里最新的强闪念（confidence ≥ 0.5）按 600 秒半衰期衰减，只用于**缩短下一次主动开口的间隙**（默认最多提前 35%）；它不决定动作或措辞，用户回应后清零，模型显式输出的 `[NEXT_CHAT:0]` 永不覆盖。
 
 ### LoRA 适配器协议
 

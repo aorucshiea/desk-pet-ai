@@ -30,6 +30,7 @@ import random
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
+from .. import telemetry
 from ..log_setup import get_logger
 from .decay import on_event_accessed
 from .events import EventStore, EMOTION_VOCAB, human_time_ago
@@ -57,7 +58,8 @@ RECALL_TOOL_SCHEMA = {
         "当你看到记忆目录中某个模糊的标题，觉得它和当前对话有关，"
         "但你想不起细节时，调用这个工具来回忆。输入你想回忆的关键词——"
         "可以是人名、地点、事件片段，也可以是情绪（如：开心、难过）。"
-        "回忆是概率性的，像人回想——一次可能想不起来，多次回想会逐渐想起更多。"
+        "回忆是概率性的，像人回想——一次可能想不起来，多次回想会逐渐想起更多；"
+        "但一轮里试两三次就够了，还是想不起来就先按记得的部分回答。"
     ),
     "input_schema": {
         "type": "object",
@@ -196,10 +198,12 @@ async def recall_tool_handler(args: dict) -> Dict[str, Any]:
             "summary": "keyword is required",
         }
 
+    telemetry.inc("recall.attempts")
     candidates = _search_candidates(store, keyword)
     sampled = _sample_recall(store, candidates)
 
     if not sampled:
+        telemetry.inc("recall.miss")
         # Distinguish WHY nothing came back so the model knows what to do:
         #   - no candidates at all        → try another keyword
         #   - candidates but all missed   → probabilistic — try again
@@ -217,7 +221,7 @@ async def recall_tool_handler(args: dict) -> Dict[str, Any]:
         else:
             text = (
                 "这个记忆太难想起来了——你努力回想，但那个模糊的影子怎么也抓不住。"
-                "别急，多试几次，也许能想起来。"
+                "如果已经试过几次，就先按记得的部分回答吧，别再反复想了。"
             )
             summary = f"recall '{keyword}': probabilistic miss ({len(candidates)} candidate(s))."
         return {
@@ -226,6 +230,7 @@ async def recall_tool_handler(args: dict) -> Dict[str, Any]:
             "summary": summary,
         }
 
+    telemetry.inc("recall.success")
     lines = ["你想起来了："]
     for evt in sampled:
         when = human_time_ago(evt.get("created_at", ""))

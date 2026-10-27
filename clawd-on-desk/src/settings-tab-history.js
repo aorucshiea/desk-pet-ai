@@ -68,7 +68,8 @@
   // by the bubble's sanitize, but the file may hold older raw turns.
   function cleanContent(text) {
     return String(text || "")
-      .replace(/<<<MEM>[\s\S]*?<<<MEMEND>>>/g, "")
+      .replace(/<<<MEM>>>[\s\S]*?<<<MEMEND>>>/gi, "")
+      .replace(/<<<(?:MEM|MEMEND)>>>/gi, "")
       .replace(/\[EMOTION:[^\]]*\]/g, "")
       .replace(/\[NEXT_CHAT:\s*\d+[^\]]*\]/gi, "")
       .replace(/\[MCP:([a-zA-Z0-9_\-\/]+)/g, "🔧 $1 ")

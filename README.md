@@ -108,9 +108,21 @@ cd desk-pet-ai
 
 > **本地小模型第一次回复慢，不是卡死。** 网关要把人设 + 记忆 + 上下文整段做预填充（prefill），
 > 这段耗时取决于模型和显存/CPU 的预填充速度，**和 LM Studio 里把 context 调大基本无关**。
-> 网关对 loopback 端点（LM Studio / Ollama / llama.cpp）默认关闭工具调用、把输出预算降到 768，
-> 并给到 300 秒超时；要恢复工具调用，在 `~/.pet/providers.json` 对应 provider 上加
+> 网关对 loopback 端点（LM Studio / Ollama / llama.cpp）默认关闭重型工具调用，只保留
+> `memory` / `recall` / `memory_search` 三个核心记忆工具，把输出预算降到 768，
+> 并给到 300 秒超时；要打开重型工具，在 `~/.pet/providers.json` 对应 provider 上加
 > `"toolsEnabled": true`。日志里的 `prompt budget` / `first token after` 两行可以直接看出慢在哪。
+
+### 用 DeepSeek 网页版免费额度（实验）
+
+[`pet-sidecar/deepseek_web/`](./pet-sidecar/deepseek_web) 可以把**已登录的 `chat.deepseek.com`** 变成一个
+OpenAI 兼容 provider：本地 `8766` bridge + 浏览器扩展，桌宠不需要 API key，每轮用网页版自己的额度。
+
+它靠 DOM 自动化，不是官方 API：首次会新开一个网页会话，之后在同一会话里只追加新消息（不再重发硬 system prompt）；
+每轮仍消耗一条网页消息，网页改版/限流会失效，
+也可能违反平台服务条款；**只建议低频试用，不要当唯一 provider**。安装、配置和限制见
+[`deepseek_web/README.md`](./pet-sidecar/deepseek_web/README.md)。桌宠里打开 **设置 → 网页模型**
+可以看 Bridge / 浏览器扩展状态、启动 Bridge、测试对话、一键设为当前模型。
 
 端口：网关 `18765`、llama-server `18766`、coding-agent hook 服务 `23333–23337`。
 
@@ -147,16 +159,18 @@ desk-pet-ai/
 **已跑通**
 
 - 本地/云端对话、流式输出、工具循环、loRA 人格
-- 事件记忆、衰减、概率回忆、共鸣、梦境、核心记忆、「记忆」文件夹
+- 事件记忆、衰减、概率回忆、共鸣、梦境、核心记忆、「记忆」文件夹；本机 `memory_search` 可检索事件 / 记忆文件 / 每日对话日志（无云端 embedding）
 - 身体情绪 + 语言情绪提示词、情绪指数调制温度/闪现
 - 瞬时记忆、直觉注册表、元直觉、骰子、整合层、闪念、心声（[INNER:] 内心独白）、身体日志
+- 潜意识遥测：`GET /api/memory/stats` 可看 chat / recall / 闪现 / 共鸣 / 决策 / 提取等指标
+- 自动睡眠压缩（`organ_sleep`：空闲门控、只压缩早于今天的日志、成功才写 `sleep-state.json`；代码与测试已通过，待真机验证）
 - 桌面物理：任务栏跟随、窗口/桌面图标刚体、AI 推拉踢拎、视锥
 - 器官插件热加载、模型自创器官、自创直觉、skills / MCP
 - 屏幕观察、OmniParser、Holo GUI agent（默认关闭、需授权）
 
 **接下来**
 
-- 睡眠压缩自动触发 + 睡眠模型配置（目前需手动 `/api/compress`）
+- 睡眠压缩的模型选择（目前自动挑可用 provider，不能单独指定）
 - Tauri 壳与 Electron 的功能对齐
 - 动画统一后端：GIF / Live2D / 3D 三层 + 官方新主题
 - Laya 小脑（姿态决策）、TTS / ASR、3D 桌面世界

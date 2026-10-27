@@ -281,19 +281,16 @@ class MoodStore:
     # ------------------------------------------------------------------
 
     def format_for_system_prompt(self) -> str:
-        """Build the mood context block for the system prompt."""
-        params = self.get_params()
-        return (
-            f"【你此刻的心情】\n"
-            f"你现在感到{self._current_mood}（强度{self._intensity}/100）。\n"
-            f"原因：{self._reason}\n"
-            f"从{self._since[:16]}持续到现在。\n\n"
-            f"你当前的情绪指数：{self._emotion_index:+.2f}（{index_mood_phrase(self._emotion_index)}）。"
-            f"指数越高你说话越活泼发散，越低越低沉收敛。\n\n"
-            f"基于这个心情自然说话。不需要每句话都体现。\n"
-            f"如果你很难过，你可以只输出\"……\"。\n"
-            f"在回复最开头用方括号标注情绪，如[{self._current_mood}]。此标签控制你的动画，不显示给用户。"
-        )
+        """Return no LLM-facing mood block (internal state only).
+
+        Mood and the emotion index are the pet's own body state: they drive
+        temperature and animations. Showing the model a self-report such as
+        "you feel X (intensity N/100)" or a numeric emotion index made it
+        treat the report as an instruction instead of a feeling, so this
+        formatter intentionally returns an empty string. Internal callers
+        keep reading ``current_mood`` / ``emotion_index`` directly.
+        """
+        return ""
 
 
 def build_mood_assessment_prompt(

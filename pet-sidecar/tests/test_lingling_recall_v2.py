@@ -214,6 +214,9 @@ class TestHandler:
         out = await rc.recall_tool_handler({"keyword": "平静"})
         assert out["is_error"] is False
         assert "抓不住" in out["content"][0]["text"]
+        assert "如果已经试过几次" in out["content"][0]["text"], (
+            "a miss must not tell the model to keep retrying forever"
+        )
 
     @pytest.mark.asyncio
     async def test_handler_no_candidates_tells_model_why(self, store, monkeypatch):

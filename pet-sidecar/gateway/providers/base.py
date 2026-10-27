@@ -35,6 +35,11 @@ class ToolCall:
     server_name: str
     name: str
     arguments: dict = field(default_factory=dict)
+    # DeepSeek (and other thinking-mode OpenAI-compatible APIs) require the
+    # assistant's reasoning_content to be sent back with the tool_calls
+    # message, otherwise the follow-up round fails with HTTP 400. Empty for
+    # providers/models that do not expose reasoning.
+    reasoning_content: str = ""
 
 
 @dataclass
@@ -327,13 +332,18 @@ def delta_event(content: str) -> dict:
 
 
 def tool_call_event(tc: ToolCall) -> dict:
-    return {
+    event = {
         "type": "tool_call",
         "id": tc.id,
         "server_name": tc.server_name,
         "name": tc.name,
         "arguments": tc.arguments,
     }
+    if tc.reasoning_content:
+        # Only present when the model actually emitted reasoning, so the
+        # non-thinking path keeps its previous event shape.
+        event["reasoning_content"] = tc.reasoning_content
+    return event
 
 
 def error_event(message: str) -> dict:

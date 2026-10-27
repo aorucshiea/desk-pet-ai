@@ -149,31 +149,50 @@
       const h = (await gwGet("/api/health")) || {};
       return h.model_dir ? [{ path: h.model_dir }] : [];
     },
-    listAdapters: async () => [],
-    listDevices: async () => [],
-    engineLocalVersion: async () => null,
-    engineUpdateCheck: async () => ({ available: false }),
-    engineUpdateApply: stubUnported("engineUpdateApply"),
-    engineUpdateApplyDir: stubUnported("engineUpdateApplyDir"),
+    listAdapters: async () => {
+      // gateway shape: {adapters: [...], adapter_dir, current}
+      const r = (await gwGet("/api/adapters")) || {};
+      return Array.isArray(r) ? r : (r.adapters || []);
+    },
+    listDevices: async () => {
+      const r = await gwGet("/api/devices");
+      return (r && r.devices) || [];
+    },
+    engineLocalVersion: async () => invoke("engine_local_version"),
+    engineUpdateCheck: async () => invoke("engine_update_check"),
+    engineUpdateApply: async () => invoke("engine_update_apply"),
+    engineUpdateApplyDir: async (dir) => invoke("engine_update_apply_dir", { dir }),
     onEngineUpdateProgress: (cb) => listen("engine-update-progress", (e) => { try { cb(e.payload); } catch {} }),
-    addModelFolder: stubUnported("addModelFolder"),
-    removeModelFolder: stubUnported("removeModelFolder"),
-    uploadAdapter: stubUnported("uploadAdapter"),
-    removeAdapter: stubUnported("removeAdapter"),
-    renameAdapter: stubUnported("renameAdapter"),
-    openAdapterDir: stubUnported("openAdapterDir"),
-    openModelDir: stubUnported("openModelDir"),
-    openLogsDir: stubUnported("openLogsDir"),
-    pickModelDir: stubUnported("pickModelDir"),
-    useModelDir: async () => ({ ok: false, unported: true }),
-    loadAdapter: async () => ({ ok: false, unported: true }),
-    setDevice: async () => ({ ok: false }),
-    setDeviceAndRestart: async () => ({ ok: false }),
-    restartSidecar: async () => { await invoke("ensure_gateway"); return { ok: true }; },
+    listLocalModels: async () => {
+      const r = await invoke("list_models");
+      return (r && r.models) || [];
+    },
+    listModelFolders: async () => {
+      const r = await invoke("list_model_folders");
+      return (r && r.folders) || [];
+    },
+    addModelFolder: async () => invoke("add_model_folder_dialog"),
+    removeModelFolder: async (folder) => invoke("remove_model_folder", { folder }),
+    uploadAdapter: async () => invoke("upload_adapter"),
+    removeAdapter: async (name) => invoke("remove_adapter", { name }),
+    renameAdapter: async (oldName, newName) => invoke("rename_adapter", { oldName, newName }),
+    openAdapterDir: async () => invoke("open_adapter_dir"),
+    openModelDir: async () => invoke("open_model_dir"),
+    openLogsDir: async () => invoke("open_logs_dir"),
+    pickModelDir: async () => invoke("pick_model_dir"),
+    useModelDir: async (path, mmproj) => invoke("use_model_dir", { path, mmproj }),
+    loadAdapter: async (path) => invoke("load_adapter", { path: path ?? null }),
+    setDevice: async (device) => invoke("set_device", { device }),
+    setDeviceAndRestart: async (device) => {
+      const r = await invoke("set_device", { device });
+      if (r && r.error) return r;
+      return invoke("restart_gateway");
+    },
+    restartSidecar: async () => invoke("restart_gateway"),
     mcpListServers: async () => ({ servers: (await gwGet("/api/mcp/servers")) || [] }),
-    mcpGetConfig: async () => ({ config: (await gwGet("/api/mcp/servers")) || [] }),
-    mcpSaveConfig: stubUnported("mcpSaveConfig"),
-    saveProvidersConfig: async () => ({ ok: false }),
+    mcpGetConfig: async () => invoke("mcp_read_config"),
+    mcpSaveConfig: async (servers) => invoke("mcp_save_config", { servers }),
+    saveProvidersConfig: async (providers) => invoke("save_providers_config", { providers }),
   };
 
   // ── window.doctor — the sidebar Doctor indicator + modal ──────────

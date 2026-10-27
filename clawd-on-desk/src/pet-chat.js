@@ -33,6 +33,7 @@ const fs = require("fs");
 const http = require("http");
 const os = require("os");
 const { showContextMenu } = require("./context-menu-window");
+const createBrainWindow = require("./brain-window");
 const path = require("path");
 
 const isMac = process.platform === "darwin";
@@ -700,10 +701,25 @@ class Sidecar {
       // permission; "deny" (default) → per-action authorization dialogs
       // (AI-agent style).
       PET_SCREEN_CONSENT: (() => {
+        let value = "";
         try {
           const snap = typeof ctx.getSettingsSnapshot === "function" ? ctx.getSettingsSnapshot() : {};
-          return (snap && snap.screenObserveConsent) || "deny";
-        } catch { return "deny"; }
+          value = (snap && snap.screenObserveConsent) || "";
+        } catch {}
+        // The settings snapshot can be empty while the sidecar is spawning
+        // during a cold boot; the persisted pref is the source of truth.
+        // Without this fallback a user who enabled "always allow screen"
+        // restarts into deny and capture_screen asks for permission again.
+        if (!["deny", "once", "always"].includes(value)) {
+          try {
+            const raw = JSON.parse(fs.readFileSync(
+              path.join(app.getPath("userData"), "clawd-prefs.json"), "utf8"
+            ));
+            value = (raw && raw.screenObserveConsent) || "";
+          } catch {}
+        }
+        if (!["deny", "once", "always"].includes(value)) value = "deny";
+        return value;
       })(),
       // Boot-time theme: the sidecar loads THIS theme's soul-layer memory
       // (换身体 = 换灵魂). Theme ids are ASCII slugs already.
@@ -1500,6 +1516,11 @@ module.exports = function initDeskPetChat(ctx) {
   refreshActiveAdapterPath();
 
   let bubble = null;
+  // One-shot guard for the startup boot wake. `warmup()` runs at launch and
+  // again after onboarding / model swaps; only the first successful run may
+  // create the hidden bubble that silently boots + greets from memory.
+  let bootWakeArmed = false;
+  let bootWakePending = false;
   let activeSide = "right";
   // Updated from /api/health after the sidecar comes online — drives the
   // narrator's voice (default vs neko etc.).
@@ -1531,7 +1552,9 @@ module.exports = function initDeskPetChat(ctx) {
     top_p: 0.95,
     top_k: 0,                  // 0 = disabled
     repetition_penalty: 1.05,
-    thinking: true,            // 思考默认开启 — 用户可在设置里关掉
+    // 默认快直觉 = 不思考。用户可用 ⌘⇧T 或在设置里手动开启；
+    // 之后 Laya/decision roll 仍可能为单轮临时升级（工具采样，不再走预调用）。
+    thinking: false,
   };
   const CHAT_PARAM_KEYS = Object.keys(DEFAULT_CHAT_PARAMS);
 
@@ -1577,6 +1600,21 @@ module.exports = function initDeskPetChat(ctx) {
     const raw = readDeskPetPrefsRaw();
     for (const key of CHAT_PARAM_KEYS) {
       if (Object.prototype.hasOwnProperty.call(raw, key)) chatParams[key] = raw[key];
+    }
+    // One-time defaults migration (schema v2). The old default was
+    // thinking=true; fast intuition is the new default. Existing users get
+    // flipped exactly once — chat_defaults_version records the migration and
+    // is deliberately NOT a chat param, so it never leaks into chatParams or
+    // gets echoed by setChatParams. Writes are best-effort: a read-only
+    // prefs file must not break startup (the migration simply retries on the
+    // next launch).
+    if (!Object.prototype.hasOwnProperty.call(raw, "chat_defaults_version")) {
+      chatParams.thinking = false;
+      try {
+        mergeDeskPetPrefs({ thinking: false, chat_defaults_version: 2 });
+      } catch (err) {
+        log(`[pet] chat defaults migration failed: ${err && err.message}`);
+      }
     }
   }
   function clampChatParams(input) {
@@ -1961,7 +1999,7 @@ module.exports = function initDeskPetChat(ctx) {
     } catch {}
   }
 
-  function createBubble() {
+  function createBubble({ bootWake = false } = {}) {
     const pb = getPetBoundsSafe() || { x: 200, y: 200, width: 280, height: 280 };
     const wa = getWorkAreaForPet(pb);
     activeSide = pickSide(pb, wa, ASK_WIDTH, ASK_HEIGHT, bubblePos.side);
@@ -2003,7 +2041,7 @@ module.exports = function initDeskPetChat(ctx) {
     bubble.setMenuBarVisibility(false);
     // Bypass any cached HTML so code changes always take effect.
     bubble.webContents.session.clearCache();
-    bubble.loadFile(path.join(__dirname, "pet-chat.html"));
+    bubble.loadFile(path.join(__dirname, "pet-chat.html"), bootWake ? { query: { boot: "1" } } : undefined);
 
     bubble.webContents.on("before-input-event", (event, input) => {
       if (input.type === "keyDown" && input.key === "Escape") {
@@ -2017,9 +2055,125 @@ module.exports = function initDeskPetChat(ctx) {
     return bubble;
   }
 
-  function ensureBubble() {
-    if (!bubble || bubble.isDestroyed()) createBubble();
+  function ensureBubble(opts) {
+    if (!bubble || bubble.isDestroyed()) createBubble(opts);
     return bubble;
+  }
+
+  // Startup boot wake: create the bubble HIDDEN at launch so its renderer can
+  // silently boot the sidecar session and arm the one-shot wake. The renderer
+  // shows the window itself only once the pet actually speaks. If a bubble
+  // already exists the user opened it first — its renderer already scheduled
+  // its own boot wake, so do nothing here.
+  function _webModelLog(message) {
+    log(message);
+    try {
+      fs.appendFileSync(
+        path.join(app.getPath("userData"), "web-model.log"),
+        `${new Date().toISOString()} ${message}\n`,
+        "utf8"
+      );
+    } catch {}
+  }
+
+  function _activeProviderId() {
+    try {
+      const snapshot = typeof ctx.getSettingsSnapshot === "function" ? ctx.getSettingsSnapshot() : {};
+      return (snapshot && snapshot.skills && snapshot.skills.defaultProvider) || "local";
+    } catch {
+      return "local";
+    }
+  }
+
+  function _webBridgeScriptPath() {
+    const bases = [];
+    if (sidecar && sidecar.sidecarDir) bases.push(sidecar.sidecarDir);
+    if (sidecar && sidecar.appRoot) bases.push(path.join(sidecar.appRoot, "..", "pet-sidecar"));
+    for (const base of bases) {
+      const candidate = path.join(base, "deepseek_web", "bridge.py");
+      try { if (fs.statSync(candidate).isFile()) return candidate; } catch {}
+    }
+    return null;
+  }
+
+  async function _webBridgeHealth(timeoutMs = 1200) {
+    try {
+      const r = await httpJson("GET", "http://127.0.0.1:8766/health", null, timeoutMs);
+      return r && r.status === 200 ? (r.json || {}) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  async function _ensureWebBridgeProcess() {
+    let health = await _webBridgeHealth(900);
+    if (health) return health;
+    const script = _webBridgeScriptPath();
+    if (!script) {
+      _webModelLog("[pet-chat] web model: bridge.py not found; skip auto-start");
+      return null;
+    }
+    const python = locatePython(sidecar && sidecar.sidecarDir);
+    if (!python) {
+      _webModelLog("[pet-chat] web model: no sidecar venv Python / PET_PYTHON; skip auto-start");
+      return null;
+    }
+    try {
+      const child = spawn(python, [script], {
+        cwd: path.dirname(script),
+        detached: true,
+        windowsHide: true,
+        stdio: "ignore",
+      });
+      child.on("error", (err) => _webModelLog(`[pet-chat] web bridge spawn failed: ${err && err.message || err}`));
+      child.unref();
+      _webModelLog(`[pet-chat] web bridge started (pid=${child.pid})`);
+    } catch (err) {
+      _webModelLog(`[pet-chat] web bridge spawn failed: ${err && err.message || err}`);
+      return null;
+    }
+    for (let i = 0; i < 10; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      health = await _webBridgeHealth(800);
+      if (health) return health;
+    }
+    _webModelLog("[pet-chat] web model: bridge did not become healthy; skip boot wake");
+    return null;
+  }
+
+  async function _waitForWebExtension(initial, timeoutMs = 10_000) {
+    const deadline = Date.now() + timeoutMs;
+    let health = initial;
+    while (Date.now() < deadline) {
+      if (health && health.extension_connected) return true;
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      health = await _webBridgeHealth(800);
+    }
+    return !!(health && health.extension_connected);
+  }
+
+  async function bootWake() {
+    if (bootWakeArmed || bootWakePending) return;
+    bootWakePending = true;
+    try {
+      const provider = _activeProviderId();
+      _webModelLog(`[pet-chat] boot wake provider=${provider}`);
+      if (provider === "deepseek-web") {
+        const health = await _ensureWebBridgeProcess();
+        if (!health) {
+          _webModelLog("[pet-chat] web model: bridge unavailable; skip boot wake");
+          return;
+        }
+        if (!await _waitForWebExtension(health, 10_000)) {
+          _webModelLog("[pet-chat] web model: extension not connected within 10s; skip boot wake");
+          return;
+        }
+      }
+      bootWakeArmed = true;
+      ensureBubble({ bootWake: true });
+    } finally {
+      bootWakePending = false;
+    }
   }
 
   async function open() {
@@ -2401,6 +2555,12 @@ module.exports = function initDeskPetChat(ctx) {
       log(`[pet-chat] sidecar warmup ${r.status}`);
       void refreshUpdateStatus();
       void refreshPersona();
+      // Sidecar is up — arm the hidden boot-wake bubble. One-shot: later
+      // warmups (onboarding complete, model swap) are no-ops. If the web
+      // model is selected, this first starts its bridge and waits briefly
+      // for the browser extension; an unavailable bridge skips the wake
+      // silently instead of making the pet look frozen.
+      await bootWake();
     } catch (err) {
       log(`[pet-chat] sidecar warmup failed: ${err && err.message || err}`);
     }
@@ -2500,6 +2660,29 @@ module.exports = function initDeskPetChat(ctx) {
     });
   }
 
+  // ── 大脑流 window (internal steps, independent from the bubble) ────────
+  // Lazily created so a session that never opens it pays no window cost.
+  let brainWindow = null;
+  function openBrainWindow() {
+    try {
+      if (!brainWindow) {
+        brainWindow = createBrainWindow({
+          getUrl: () => sidecar.baseUrl(),
+          getToken: gatewayToken,
+          getPetBounds: () => {
+            try {
+              return typeof ctx.getPetWindowBounds === "function" ? ctx.getPetWindowBounds() : null;
+            } catch { return null; }
+          },
+        });
+      }
+      return brainWindow.open();
+    } catch (err) {
+      log(`[pet-chat] openBrainWindow failed: ${err && err.message ? err.message : err}`);
+      return null;
+    }
+  }
+
   // ── Context menu (right-click on bubble) ───────────────────────────────
 
   async function openContextMenu() {
@@ -2563,6 +2746,10 @@ module.exports = function initDeskPetChat(ctx) {
       click: (it) => { setNarrationEnabled(!!it.checked); },
     });
     items.push({ type: "separator" });
+    items.push({
+      label: "大脑流（内部步骤）",
+      click: () => { openBrainWindow(); },
+    });
     items.push({
       label: "清空对话历史",
       click: () => { if (bubble && !bubble.isDestroyed()) bubble.webContents.send("pet:cmd-reset"); },
@@ -2744,6 +2931,16 @@ module.exports = function initDeskPetChat(ctx) {
           if (item.thinking != null) map[item.provider].thinking = item.thinking;
           if (item.reasoningEffort) map[item.provider].reasoningEffort = item.reasoningEffort;
           if (item.contextWindow) map[item.provider].contextWindow = Number(item.contextWindow);
+          // Capability overrides for OpenAI-compatible bridges (web chat):
+          // native tool calls / tool schemas / image inputs. Losing these on
+          // a Settings save would silently turn the text-MCP web provider
+          // into a native-tools provider that cannot honor them.
+          for (const key of ["functionCalling", "toolsEnabled", "images"]) {
+            if (item[key] != null) map[item.provider][key] = item[key];
+          }
+          if (item.capabilities && typeof item.capabilities === "object") {
+            map[item.provider].capabilities = item.capabilities;
+          }
           // CherryStudio-style per-provider model list — keep it verbatim,
           // otherwise every settings save wipes what the user curated.
           if (Array.isArray(item.models)) map[item.provider].models = item.models;
@@ -3913,8 +4110,10 @@ module.exports = function initDeskPetChat(ctx) {
     open,
     toggle,
     dismiss,
+    openBrain: openBrainWindow,
     toggleThinking,
     warmup,
+    bootWake,
     onStateEvent,
     setNarrationEnabled,
     isNarrationEnabled,

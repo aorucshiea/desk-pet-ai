@@ -1219,10 +1219,8 @@ describe("settings renderer browser environment", () => {
       "settings-i18n.js",
       "settings-anim-overrides-merge.js",
       "settings-ui-core.js",
-      "settings-agent-order.js",
       "settings-hardware-buddy-panel.js",
       "settings-tab-general.js",
-      "settings-tab-agents.js",
       "settings-tab-theme.js",
       "settings-tab-anim-map.js",
       "settings-tab-anim-overrides.js",
@@ -1230,7 +1228,6 @@ describe("settings renderer browser environment", () => {
       "settings-tab-telegram-approval.js",
       "settings-tab-about.js",
       "settings-tab-remote-ssh.js",
-      "settings-doctor-modal.js",
       "settings-renderer.js",
     ];
 
@@ -1243,6 +1240,10 @@ describe("settings renderer browser environment", () => {
       previousIndex = nextIndex;
     }
 
+    // Retired coding-agent Settings UI is not loaded by the Desk Pet fork.
+    for (const scriptName of ["settings-agent-order.js", "settings-tab-agents.js", "settings-doctor-modal.js"]) {
+      assert.ok(!html.includes(`<script src="${scriptName}"></script>`), `${scriptName} should stay disconnected`);
+    }
     assert.ok(
       !html.includes('<script src="settings-size-preview-session.js"></script>'),
       "settings.html must not load the main-process size preview helper"
@@ -2122,7 +2123,7 @@ describe("settings renderer browser environment", () => {
     );
   });
 
-  it("wires Clawd Doctor through Settings with Step 2 connection actions", () => {
+  it("keeps Clawd Doctor disconnected from Settings while preserving guarded diagnostics plumbing", () => {
     const html = fs.readFileSync(SETTINGS_HTML, "utf8");
     const css = fs.readFileSync(SETTINGS_CSS, "utf8");
     const rendererSource = fs.readFileSync(SETTINGS_RENDERER, "utf8");
@@ -2132,10 +2133,12 @@ describe("settings renderer browser environment", () => {
     const doctorIpcSource = fs.readFileSync(DOCTOR_IPC, "utf8");
     const i18nSource = fs.readFileSync(SETTINGS_I18N, "utf8");
 
-    assert.ok(html.includes('<script src="settings-doctor-modal.js"></script>'));
+    // The sidebar entry is intentionally retired, but the dormant diagnostics
+    // implementation and IPC guards remain covered by the assertions below.
+    assert.ok(!html.includes('<script src="settings-doctor-modal.js"></script>'));
     assert.ok(css.includes(".doctor-indicator"));
     assert.ok(css.includes(".doctor-modal"));
-    assert.ok(rendererSource.includes("ClawdSettingsDoctorModal.renderSidebarIndicator"));
+    assert.ok(!rendererSource.includes("ClawdSettingsDoctorModal.renderSidebarIndicator"));
     assert.ok(doctorModalSource.includes("initialRunStarted"));
     assert.ok(doctorModalSource.includes("runningPromise"));
     assert.ok(doctorModalSource.includes("root.doctor.runChecks"));
@@ -4886,7 +4889,7 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(sw.attributes["aria-checked"], "false");
   });
 
-  it("rebuilds Animation Map instead of patching with stale theme ids when the theme changes", () => {
+  it("rebuilds Animation Map instead of patching with stale theme ids when the theme changes", async () => {
     const harness = loadAnimMapTabForTest({
       snapshot: {
         theme: "clawd",
@@ -4926,6 +4929,8 @@ describe("settings renderer browser environment", () => {
       },
     });
 
+    // Theme changes refresh override data before requesting the rebuild.
+    await new Promise((resolve) => setImmediate(resolve));
     assert.strictEqual(
       harness.getContentRenderCount(),
       before + 1,

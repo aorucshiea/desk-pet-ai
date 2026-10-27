@@ -17,6 +17,8 @@ const {
 const { commandRegistry } = require("../src/settings-actions");
 const prefs = require("../src/prefs");
 
+// The Desk Pet fork defaults all agent gates off. Side-effect tests explicitly
+// seed the prior opt-in state they exercise rather than relying on upstream defaults.
 describe("isAgentEnabled", () => {
   it("returns true when snapshot is missing", () => {
     assert.strictEqual(isAgentEnabled(null, "codex"), true);
@@ -68,9 +70,11 @@ describe("isAgentIntegrationInstalled", () => {
 
   it("reads explicit installed intent from normalized prefs", () => {
     const snap = prefs.getDefaults();
-    assert.strictEqual(isAgentIntegrationInstalled(snap, "claude-code"), true);
-    assert.strictEqual(isAgentIntegrationInstalled(snap, "codex"), true);
+    assert.strictEqual(isAgentIntegrationInstalled(snap, "claude-code"), false);
+    assert.strictEqual(isAgentIntegrationInstalled(snap, "codex"), false);
     assert.strictEqual(isAgentIntegrationInstalled(snap, "copilot-cli"), false);
+    snap.agents.codex.integrationInstalled = true;
+    assert.strictEqual(isAgentIntegrationInstalled(snap, "codex"), true);
   });
 
   it("combines installed intent and enabled for startup sync", () => {
@@ -361,7 +365,7 @@ describe("setAgentFlag command", () => {
   it("is noop when value already matches current state", () => {
     const { deps, calls } = makeDeps();
     const r = commandRegistry.setAgentFlag(
-      { agentId: "codex", flag: "enabled", value: true },
+      { agentId: "codex", flag: "enabled", value: false },
       deps
     );
     assert.strictEqual(r.status, "ok");
@@ -371,7 +375,9 @@ describe("setAgentFlag command", () => {
   });
 
   it("disabling master flag runs stop + clear sessions + dismiss permissions", () => {
-    const { deps, calls } = makeDeps();
+    const seeded = prefs.getDefaults();
+    seeded.agents.codex.enabled = true;
+    const { deps, calls } = makeDeps({ snapshot: seeded });
     const r = commandRegistry.setAgentFlag(
       { agentId: "codex", flag: "enabled", value: false },
       deps
@@ -383,7 +389,7 @@ describe("setAgentFlag command", () => {
     assert.deepStrictEqual(calls.dismissPermissionsByAgent, ["codex"]);
     assert.strictEqual(calls.startMonitorForAgent.length, 0);
     assert.strictEqual(r.commit.agents.codex.enabled, false);
-    assert.strictEqual(r.commit.agents["claude-code"].enabled, true);
+    assert.strictEqual(r.commit.agents["claude-code"].enabled, false);
   });
 
   it("enabling a previously-disabled agent syncs its integration and starts the monitor", () => {
@@ -476,7 +482,11 @@ describe("setAgentFlag command", () => {
 
   it("disabling subagentPermissionsEnabled dismisses only subagent bubbles (#451)", () => {
     const dismissCalls = [];
+    const seeded = prefs.getDefaults();
+    seeded.agents["claude-code"].subagentPermissionsEnabled = true;
+    seeded.agents["claude-code"].permissionsEnabled = true;
     const { deps, calls } = makeDeps({
+      snapshot: seeded,
       dismissPermissionsByAgent: (id, options) => dismissCalls.push([id, options]),
     });
     const r = commandRegistry.setAgentFlag(
@@ -513,7 +523,10 @@ describe("setAgentFlag command", () => {
   });
 
   it("disabling permissionsEnabled only dismisses bubbles — no monitor/session churn", () => {
-    const { deps, calls } = makeDeps();
+    const seeded = prefs.getDefaults();
+    seeded.agents["claude-code"].enabled = true;
+    seeded.agents["claude-code"].permissionsEnabled = true;
+    const { deps, calls } = makeDeps({ snapshot: seeded });
     const r = commandRegistry.setAgentFlag(
       { agentId: "claude-code", flag: "permissionsEnabled", value: false },
       deps
@@ -548,7 +561,10 @@ describe("setAgentFlag command", () => {
   });
 
   it("propagates an error if a side effect throws, without committing", () => {
+    const seeded = prefs.getDefaults();
+    seeded.agents.codex.enabled = true;
     const { deps } = makeDeps({
+      snapshot: seeded,
       stopMonitorForAgent: () => {
         throw new Error("boom");
       },
@@ -586,7 +602,11 @@ describe("setAgentFlag command", () => {
     // The idle-alert mute is a presentation-layer check inside state.js
     // updateSession (gated right before setState("notification")), so
     // toggling the flag has no monitor / session / bubble side effects.
-    const { deps, calls } = makeDeps();
+    const seeded = prefs.getDefaults();
+    seeded.agents["claude-code"].enabled = true;
+    seeded.agents["claude-code"].permissionsEnabled = true;
+    seeded.agents["claude-code"].notificationHookEnabled = true;
+    const { deps, calls } = makeDeps({ snapshot: seeded });
     const r = commandRegistry.setAgentFlag(
       { agentId: "claude-code", flag: "notificationHookEnabled", value: false },
       deps

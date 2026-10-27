@@ -15,6 +15,9 @@ proactive chat.
   越等越久（1.6 倍/次，封顶 5 次）。用户一开口即清零。
 - 回忆次数 (recall_count)：本会话里成功想起旧事越多 → 心绪越活跃，
   轻微缩短间隙。
+- 直觉压力 (intuition_pressure)：决策循环刚浮现的强内心声音会轻轻
+  把下一次开口提前；用户已经回应后压力归零。压力只缩短、不决定
+  说什么或做什么。
 
 设计边界：模型永远可以显式选择沉默——[NEXT_CHAT:0] 原样转发，永不
 兜底。兜底只发生在"忘了决定"的时候；系统决定的是"什么时候开口"，
@@ -22,6 +25,8 @@ proactive chat.
 """
 
 from __future__ import annotations
+
+import math
 
 # ── Tuning constants ─────────────────────────────────────────────────
 
@@ -45,17 +50,38 @@ PROACTIVE_BACKOFF_CAP = 5  # ×1.6^5 ≈ 10.5 at most
 RECALL_EASE = 0.04
 RECALL_EASE_CAP = 5
 
+# A fresh inner voice (flash of intuition) may pull the next opening
+# earlier. It only ever shortens — at full pressure it removes at most
+# INTUITION_EASE of the wait. It never chooses an action or wording.
+INTUITION_EASE = 0.35
+
+
+def _clamp_pressure(value: float) -> float:
+    """Defensive [0, 1] clamp: bad/NaN/out-of-range input means no pressure."""
+    try:
+        pressure = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(pressure):
+        return 0.0
+    return max(0.0, min(1.0, pressure))
+
 
 def compute_gap(
     emotion_index: float = 0.0,
     proactive_streak: int = 0,
     recall_count: int = 0,
+    intuition_pressure: float = 0.0,
 ) -> int:
     """Compute the seconds until the next proactive chat attempt.
 
     Pure function of the pet's current subconscious state — no I/O, no
     randomness (the randomness lives in the model's own tags; the
     subconscious should be steady and predictable).
+
+    `intuition_pressure` comes from the decision loop's latest strong
+    inner voice. It scales the gap down by at most INTUITION_EASE and is
+    applied before the min/max clamp, so fear of nagging still wins.
     """
     idx = max(-1.0, min(1.0, emotion_index or 0.0))
     gap = float(BASE_GAP_SECONDS)
@@ -70,5 +96,7 @@ def compute_gap(
 
     rec = max(0, min(RECALL_EASE_CAP, int(recall_count or 0)))
     gap *= 1.0 - RECALL_EASE * rec
+
+    gap *= 1.0 - INTUITION_EASE * _clamp_pressure(intuition_pressure)
 
     return int(max(MIN_GAP_SECONDS, min(MAX_GAP_SECONDS, round(gap))))

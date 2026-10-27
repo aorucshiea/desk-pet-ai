@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from gateway.memory.impulse import (
     BASE_GAP_SECONDS,
+    INTUITION_EASE,
     MAX_GAP_SECONDS,
     MIN_GAP_SECONDS,
     compute_gap,
@@ -60,3 +61,55 @@ def test_combined_state_still_sane():
     # Happy + mind stirring → shorter than base but still ≥ min.
     gap = compute_gap(emotion_index=0.6, proactive_streak=0, recall_count=5)
     assert MIN_GAP_SECONDS <= gap < BASE_GAP_SECONDS
+
+
+# ── Intuition pressure (decision-loop voice nudges the schedule) ──────────
+
+def test_zero_pressure_is_byte_identical_to_the_old_schedule():
+    states = [
+        (0.0, 0, 0),
+        (0.8, 0, 0),
+        (-0.8, 2, 3),
+        (1.0, 5, 5),
+        (-1.0, 4, 0),
+        (0.3, 0, 5),
+    ]
+    for emotion, streak, recall in states:
+        expected = compute_gap(emotion, streak, recall)
+        assert compute_gap(emotion, streak, recall, intuition_pressure=0.0) == expected
+        assert compute_gap(emotion, streak, recall, intuition_pressure=-1.0) == expected
+
+
+def test_pressure_shortens_gap_by_the_configured_ease():
+    base = compute_gap(proactive_streak=1)
+    eased = compute_gap(proactive_streak=1, intuition_pressure=0.5)
+    assert eased == round(base * (1.0 - INTUITION_EASE * 0.5))
+    assert eased < base
+    assert eased >= MIN_GAP_SECONDS
+
+
+def test_full_pressure_still_respects_min_and_max(monkeypatch):
+    # Default constants never reach MIN via pressure, so shrink the base to
+    # prove the clamp still wins over the hunch.
+    from gateway.memory import impulse
+
+    monkeypatch.setattr(impulse, "BASE_GAP_SECONDS", 200)
+    assert impulse.compute_gap(intuition_pressure=1.0) == impulse.MIN_GAP_SECONDS
+
+    # Sad + long unanswered streak + full pressure is still capped at max.
+    monkeypatch.setattr(impulse, "BASE_GAP_SECONDS", 1200)
+    assert impulse.compute_gap(
+        emotion_index=-1.0, proactive_streak=5, intuition_pressure=1.0,
+    ) == MAX_GAP_SECONDS
+
+
+def test_pressure_bad_or_out_of_range_input_is_safe():
+    baseline = compute_gap()
+    for bad in (None, "not-a-number", object(), float("nan"), float("inf"), -3.0):
+        gap = compute_gap(intuition_pressure=bad)
+        assert MIN_GAP_SECONDS <= gap <= MAX_GAP_SECONDS
+        assert gap == baseline
+    # Over-range finite values clamp to full pressure (never invert/lengthen).
+    full = compute_gap(intuition_pressure=1.0)
+    assert compute_gap(intuition_pressure=7.0) == full
+    assert full < baseline

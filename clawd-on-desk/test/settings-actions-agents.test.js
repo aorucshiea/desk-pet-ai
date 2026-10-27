@@ -110,12 +110,15 @@ test("settings agent actions switch Codex permission mode and dismiss pending bu
 
   assert.strictEqual(result.status, "ok");
   assert.strictEqual(result.commit.agents.codex.permissionMode, "native");
-  assert.strictEqual(result.commit.agents.codex.enabled, true);
+  assert.strictEqual(result.commit.agents.codex.enabled, false);
   assert.deepStrictEqual(calls.dismissPermissionsByAgent, ["codex"]);
 });
 
 test("settings agent actions repair Codex with the forced hooks feature option", async () => {
   const snapshot = prefs.getDefaults();
+  // Repair coverage requires an explicit prior install/opt-in in this fork.
+  snapshot.agents.codex.integrationInstalled = true;
+  snapshot.agents.codex.enabled = true;
   const calls = [];
   const deps = {
     snapshot,

@@ -154,6 +154,20 @@ def test_seed_example_plugin_loads(tmp_path):
     assert "记下了" in out
 
 
+def test_seed_mood_watch_reports_qualitative_mood_only(tmp_path):
+    class Mood:
+        current_mood = "开心"
+
+    pm = PluginManager({"memory_dir": tmp_path, "events": object(), "mood": Mood()})
+    result = pm.sync()
+    assert "mood_watch" in result["loaded"]
+    import asyncio
+    out = asyncio.run(pm.call_tool("pet_mood_now", {}))
+    assert out == "此刻的心情：开心｜最近：（还没有记录）"
+    assert "情绪指数" not in out
+    assert not any(ch.isdigit() for ch in out)
+
+
 def test_protected_core_context_survives_sync(pm, tmp_path):
     """plugin_forge is registered WITHOUT a file — the hot-reload scan
     must never mistake it for a removed plugin (this actually happened)."""
@@ -305,6 +319,9 @@ def test_provided_services_match_production_access_pattern(tmp_path):
     )
     gap = imp.compute_gap(emotion_index=0.0, proactive_streak=0, recall_count=0)
     assert isinstance(gap, int) and gap >= 180, gap
+    # The intuition pressure input must exist and only ever shorten.
+    assert imp.compute_gap(0.0, 0, 0, intuition_pressure=0.0) == gap
+    assert imp.compute_gap(0.0, 0, 0, intuition_pressure=0.5) < gap
 
     # recall: production reads .get_session_recall_count, and the tool
     # schema must be identical to the builtin RECALL_TOOL_SCHEMA.
@@ -328,3 +345,38 @@ def test_provided_services_match_production_access_pattern(tmp_path):
         svc = pm.get_service(name)
         assert svc is not None, f"{name} service missing (organ failed to load?)"
         assert callable(getattr(svc, attr, None)), f"{name}.{attr} must be attribute-accessible"
+
+
+def test_seed_upgrades_known_legacy_but_never_user_edits(pm, tmp_path, monkeypatch):
+    """An existing old seed is migrated once; a model-edited file is kept.
+
+    The live plugins dir is never overwritten (the model may have edited a
+    file), so a feature added to an organ needs a narrow migration path:
+    only content whose hash matches a previously shipped seed is upgraded.
+    """
+    import hashlib
+
+    from gateway import organ_plugins, petplugins
+
+    pdir = tmp_path / "plugins"
+    pdir.mkdir()
+    legacy = "# old organ_impulse seed\n"
+    target = pdir / "organ_impulse.py"
+    target.write_text(legacy, encoding="utf-8")
+
+    monkeypatch.setattr(
+        organ_plugins, "ORGAN_SOURCES", {"organ_impulse.py": "# new seed\n"}
+    )
+    monkeypatch.setattr(
+        petplugins,
+        "_UPGRADABLE_SEEDS",
+        {"organ_impulse.py": {hashlib.sha256(legacy.encode("utf-8")).hexdigest()}},
+    )
+
+    pm.seed_core_plugins(pdir)
+    assert target.read_text(encoding="utf-8") == "# new seed\n"
+
+    # A later model/user edit is *not* a legacy seed and must survive.
+    target.write_text("# my edit\n", encoding="utf-8")
+    pm.seed_core_plugins(pdir)
+    assert target.read_text(encoding="utf-8") == "# my edit\n"

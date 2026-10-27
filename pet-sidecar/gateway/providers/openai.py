@@ -32,6 +32,12 @@ from .base import (
 # pick an output budget or an HTTP timeout.
 _LOCAL_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", "0.0.0.0"})
 
+# Model-name markers for OpenAI-compatible text-only endpoints. This is a
+# heuristic, not a whitelist: DeepSeek/Qwen/Gemini-compatible models are not
+# listed here and therefore assumed to accept image inputs. A provider entry
+# in providers.json can override it with "images" / "capabilities.images".
+_NO_VISION_MODEL_MARKERS = ("gpt-3.5", "text-", "embedding", "davinci", "babbage")
+
 
 def is_local_url(base_url: str) -> bool:
     """True when *base_url* points at a loopback endpoint."""
@@ -40,6 +46,24 @@ def is_local_url(base_url: str) -> bool:
     except Exception:
         return False
     return host in _LOCAL_HOSTS
+
+
+def model_supports_vision(model: str) -> bool:
+    """Heuristic image-input support for an OpenAI-compatible model name."""
+    name = str(model or "").lower()
+    return not any(marker in name for marker in _NO_VISION_MODEL_MARKERS)
+
+
+def _is_reasoning_content_error(body_text: str) -> bool:
+    """True for the DeepSeek thinking-mode HTTP 400.
+
+    Live error: ``The reasoning_content in the thinking mode must be passed
+    back to the API.`` It means a previous assistant/tool_calls message lost
+    its reasoning_content (text [MCP:] path, history replay, …). The only
+    recovery from here is to stop sending thinking parameters and retry.
+    """
+    text = str(body_text or "").lower()
+    return "reasoning_content" in text
 
 
 class OpenAIProvider(BaseProvider):
@@ -58,6 +82,8 @@ class OpenAIProvider(BaseProvider):
         context_window: Optional[int] = None,
         is_local: Optional[bool] = None,
         allow_tools: bool = True,
+        supports_vision: Optional[bool] = None,
+        supports_function_calling: Optional[bool] = None,
     ) -> None:
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
@@ -69,6 +95,13 @@ class OpenAIProvider(BaseProvider):
         self._context_window = context_window
         self._is_local = is_local_url(base_url) if is_local is None else bool(is_local)
         self._allow_tools = bool(allow_tools)
+        # A bridge/provider may speak the OpenAI wire format but not actually
+        # support native tool calls (e.g. a browser-driven web-chat bridge).
+        # None keeps the historical True default.
+        self._supports_function_calling = supports_function_calling
+        # None = derive from the model name; explicit True/False from
+        # providers.json ("images"/"capabilities.images") always wins.
+        self._supports_vision = supports_vision
         self._log = get_logger()
         self._client: Optional[httpx.AsyncClient] = None
         # Set to True after the first HTTP 400 "Unsupported parameter: thinking"
@@ -78,6 +111,22 @@ class OpenAIProvider(BaseProvider):
     @property
     def name(self) -> str:
         return self._name
+
+    @property
+    def model(self) -> str:
+        return self._model
+
+    @property
+    def supports_vision(self) -> bool:
+        """Whether this endpoint accepts image_url content parts.
+
+        Explicit configuration wins; otherwise the model-name heuristic
+        applies. DeepSeek and other unlisted cloud models are treated as
+        vision-capable (the vision encoder lives server-side).
+        """
+        if self._supports_vision is not None:
+            return bool(self._supports_vision)
+        return model_supports_vision(self._model)
 
     @property
     def is_local(self) -> bool:
@@ -98,7 +147,9 @@ class OpenAIProvider(BaseProvider):
 
     @property
     def supports_function_calling(self) -> bool:
-        return True
+        if self._supports_function_calling is None:
+            return True
+        return bool(self._supports_function_calling)
 
     def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
@@ -131,8 +182,16 @@ class OpenAIProvider(BaseProvider):
         max_tokens: int = 512,
         temperature: float = 0.6,
         top_p: float = 0.95,
+        thinking_override: Optional[bool] = None,
+        reasoning_effort_override: Optional[str] = None,
         **kwargs,
     ) -> AsyncGenerator[dict, None]:
+        """Stream a completion.
+
+        ``thinking_override`` / ``reasoning_effort_override`` let the gateway
+        apply a per-request budget (Laya) without mutating the provider's
+        static providers.json defaults. ``None`` keeps the configured value.
+        """
         client = self._get_client()
 
         openai_messages = list(messages)
@@ -155,26 +214,60 @@ class OpenAIProvider(BaseProvider):
         if openai_tools:
             body["tools"] = openai_tools
             body["tool_choice"] = "auto"
-        # DeepSeek / thinking mode: only emit the `thinking` field when the
-        # provider explicitly opted in (self._thinking === True) AND we
-        # haven't already learned this provider rejects it.
-        if self._thinking is True and not self._thinking_unsupported:
-            body["thinking"] = {"type": "enabled"}
-        # Reasoning effort: passed as top-level field (OpenAI/DeepSeek compat)
-        if self._reasoning_effort and not self._thinking_unsupported and self._reasoning_effort in ("low", "medium", "high", "xhigh", "max"):
-            body["reasoning_effort"] = self._reasoning_effort
+        # DeepSeek / thinking mode. A per-request override wins over
+        # providers.json. When the effective mode is on, emit
+        # {"type": "enabled"} unless this provider already rejected the
+        # parameter. When it is off, omission is NOT enough: DeepSeek V4
+        # defaults reasoning to on and its docs require an explicit
+        # {"type": "disabled"} — a live canonical-prompt chat with
+        # thinking=False still streamed a long reasoning block (~16 s).
+        # Only send the disabled marker when providers.json explicitly
+        # enabled thinking for a cloud endpoint. Unknown support (None),
+        # already-off config (False), local OpenAI-compatible servers
+        # (LM Studio / llama.cpp reject unknown fields) and providers that
+        # already 400'd on the parameter keep the field absent entirely.
+        thinking_mode = self._thinking if thinking_override is None else bool(thinking_override)
+        if not self._thinking_unsupported:
+            if thinking_mode is True:
+                body["thinking"] = {"type": "enabled"}
+            elif (
+                thinking_mode is False
+                and self._thinking is True
+                and not self._is_local
+            ):
+                body["thinking"] = {"type": "disabled"}
+        # Reasoning effort: passed as top-level field (OpenAI/DeepSeek compat).
+        # The request override wins; when thinking is explicitly off we must
+        # not smuggle the static effort back in (that would re-enable
+        # reasoning on providers that key off reasoning_effort).
+        effort = (
+            self._reasoning_effort
+            if reasoning_effort_override is None
+            else reasoning_effort_override
+        )
+        if (
+            effort
+            and thinking_mode is not False
+            and not self._thinking_unsupported
+            and effort in ("low", "medium", "high", "xhigh", "max")
+        ):
+            body["reasoning_effort"] = effort
 
         # Track if we already retried without thinking in this call
         retried_without_thinking = False
+        # Separate one-shot guard for the reasoning_content 400: a provider
+        # must never ping-pong between the two downgrade paths.
+        retried_without_reasoning = False
         started = time.monotonic()
         first_token_logged = False
 
         while True:
             try:
                 async with client.stream("POST", "/chat/completions", json=body) as resp:
-                    if resp.status_code == 400 and not retried_without_thinking:
-                        error_body = (await resp.aread()).decode("utf-8", "ignore")[:500]
-                        if "thinking" in error_body.lower() and "unsupported" in error_body.lower():
+                    if resp.status_code == 400:
+                        error_body = (await resp.aread()).decode("utf-8", "ignore")
+                        lowered = error_body.lower()
+                        if not retried_without_thinking and "thinking" in lowered and "unsupported" in lowered:
                             self._log.warning(
                                 "Provider %s does not support thinking parameter, retrying without it",
                                 self._name,
@@ -182,6 +275,22 @@ class OpenAIProvider(BaseProvider):
                             body.pop("thinking", None)
                             body.pop("reasoning_effort", None)
                             retried_without_thinking = True
+                            self._thinking_unsupported = True
+                            continue
+                        if not retried_without_reasoning and _is_reasoning_content_error(error_body):
+                            # DeepSeek thinking mode: the follow-up round lost
+                            # reasoning_content. Degrade this provider to
+                            # non-thinking and retry exactly once; if it still
+                            # fails the caller gets the error.
+                            self._log.warning(
+                                "Provider %s rejected a thinking-mode request (%s); "
+                                "disabling thinking for this provider and retrying once",
+                                self._name,
+                                error_body[:200].replace("\n", " "),
+                            )
+                            body.pop("thinking", None)
+                            body.pop("reasoning_effort", None)
+                            retried_without_reasoning = True
                             self._thinking_unsupported = True
                             continue
 
@@ -193,6 +302,11 @@ class OpenAIProvider(BaseProvider):
                         return
 
                     tool_calls_acc: dict[int, dict] = {}
+                    # Reasoning is streamed separately from visible content.
+                    # Accumulate it for THIS round so a tool-call follow-up
+                    # can pass it back (DeepSeek thinking mode rejects the
+                    # next request with HTTP 400 otherwise).
+                    reasoning_acc = ""
 
                     async for raw_line in resp.aiter_lines():
                         if not raw_line.startswith("data:"):
@@ -226,6 +340,10 @@ class OpenAIProvider(BaseProvider):
                                 body.get("max_tokens"),
                             )
                         if reasoning:
+                            # Keep it out of the visible delta stream, but
+                            # remember the full text for the tool-call
+                            # assistant message.
+                            reasoning_acc += reasoning
                             # Yield as a "think" event so the renderer shows
                             # it with the same淡化 styling as DeskPet5's
                             # imd block, not as regular reply text.
@@ -261,9 +379,13 @@ class OpenAIProvider(BaseProvider):
                                     server_name="default",
                                     name=tc_data["function"]["name"],
                                     arguments=args,
+                                    reasoning_content=reasoning_acc,
                                 )
                                 yield tool_call_event(tc)
                             tool_calls_acc.clear()
+                            # Reasoning belongs to the round that just ended;
+                            # never concatenate it into the next tool round.
+                            reasoning_acc = ""
                         elif finish == "stop":
                             break
                         elif finish == "length":

@@ -35,8 +35,10 @@ test("settings system actions keep auto-start inert when hook management is disa
 
 test("settings system actions sync hooks before starting the watcher", async () => {
   const calls = [];
+  const snapshot = prefs.getDefaults();
+  snapshot.agents["claude-code"].enabled = true;
   const result = await systemActions.manageClaudeHooksAutomatically.effect(true, {
-    snapshot: prefs.getDefaults(),
+    snapshot,
     syncClaudeHooksNow: async () => {
       calls.push("sync");
     },

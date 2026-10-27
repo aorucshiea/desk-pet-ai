@@ -1,0 +1,8 @@
+# Optional runtime payloads: never commit the sidecar venv, weights, ONNX, or logs.
+.venv/
+models/
+run/
+__pycache__/
+*.pyc
+*.part
+*.onnx

@@ -14,10 +14,12 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+import pytest
+
 from gateway.decision.body_log import BodyLog
 from gateway.decision.dice import roll
 from gateway.decision.integrate import integrate
-from gateway.decision.loop import DecisionLoop
+from gateway.decision.loop import PRESSURE_HALF_LIFE_SECONDS, DecisionLoop
 from gateway.decision.meta import decide_thinking, needs_decision
 from gateway.decision.registry import Intuition, IntuitionRegistry
 from gateway.memory.ephemeral import EphemeralMemory
@@ -32,6 +34,30 @@ class AlwaysRng:
 
     def choices(self, labels, weights, k=1):
         return [labels[0]]
+
+
+@pytest.fixture(autouse=True)
+def _deterministic_emit_rng(monkeypatch):
+    """Keep loop tests off the dice.
+
+    DecisionLoop calls integrate() without an rng, and p_emit=1.0 is still
+    capped at 0.95 there. With the global RNG these tests failed ~5% of
+    runs (pytest-randomly seeds it differently every run): the only strong
+    intuition could be skipped, turning the expected voice into "quiet".
+    Direct integrate() tests already pass AlwaysRng explicitly.
+
+    Patch the module attribute explicitly: ``gateway.decision.integrate``
+    is NOT the submodule once the package's __init__ rebinds that name to
+    the function (``from .integrate import integrate``), so both the
+    string form and ``import gateway.decision.integrate as m`` resolve to
+    the function and fail with AttributeError. Go through importlib to get
+    the real module object.
+    """
+    import importlib
+
+    integrate_module = importlib.import_module("gateway.decision.integrate")
+
+    monkeypatch.setattr(integrate_module, "random", AlwaysRng())
 
 
 def _tired_state() -> dict:
@@ -215,3 +241,101 @@ def test_loop_supports_async_collect():
 
     loop.collect_state = collect
     asyncio.run(loop._run())
+
+
+# ── Intuition pressure: voices only bend the *timing*, never the action ──
+
+class _PressureRegistry:
+    def items(self):
+        return {
+            "emotion": Intuition(
+                "emotion", "emotion", "", lambda s: 0.9, p_emit=1.0, weight=1.0
+            )
+        }
+
+
+class _PressureEph:
+    def maybe_reset(self):
+        return False
+
+    def refresh_dir_snapshot(self):
+        pass
+
+    def add_thought(self, *a, **k):
+        pass
+
+
+def _run_pressure_loop(registry, clock, user_ts, state=None):
+    """Run exactly one tick on a controllable clock (no sleeps)."""
+    loop = DecisionLoop(
+        registry,
+        _PressureEph(),
+        lambda: state or {},
+        interval_sec=0,
+        now_fn=lambda: clock["now"],
+        last_user_ts_fn=lambda: user_ts["t"],
+    )
+
+    def collect():
+        loop._stop = True
+        return state or {}
+
+    loop.collect_state = collect
+    asyncio.run(loop._run())
+    return loop
+
+
+def test_voice_creates_pressure_that_decays_with_half_life():
+    clock = {"now": 1000.0}
+    user_ts = {"t": 0.0}
+    loop = _run_pressure_loop(_PressureRegistry(), clock, user_ts, {"last_user_msg": "我好累"})
+
+    fresh = loop.pressure()
+    assert fresh == pytest.approx(0.9, abs=0.01)
+
+    half = loop.pressure(now=1000.0 + PRESSURE_HALF_LIFE_SECONDS)
+    assert half == pytest.approx(fresh / 2.0, abs=0.01)
+
+    later = loop.pressure(now=1000.0 + 2 * PRESSURE_HALF_LIFE_SECONDS)
+    assert 0.0 < later < half < fresh
+
+
+def test_user_message_after_the_voice_zeroes_pressure():
+    clock = {"now": 1000.0}
+    user_ts = {"t": 0.0}
+    loop = _run_pressure_loop(_PressureRegistry(), clock, user_ts, {"last_user_msg": "我好累"})
+    assert loop.pressure(now=1000.0) > 0
+
+    # The user replied after the hunch appeared: context moved on.
+    user_ts["t"] = 1001.0
+    assert loop.pressure(now=1001.0) == 0.0
+
+
+def test_consume_pressure_reads_once_then_clears():
+    clock = {"now": 1000.0}
+    user_ts = {"t": 0.0}
+    loop = _run_pressure_loop(_PressureRegistry(), clock, user_ts)
+
+    spent = loop.consume_pressure()
+    assert spent > 0
+    assert loop.pressure() == 0.0
+    assert loop.consume_pressure() == 0.0
+
+
+def test_weak_or_conflicted_voice_creates_no_pressure():
+    class ConflictRegistry:
+        def items(self):
+            return {
+                "a": Intuition("a", "habit", "", lambda s: 0.9, p_emit=1.0, weight=1.0),
+                "b": Intuition("b", "space", "", lambda s: 0.4, p_emit=1.0, weight=1.0),
+            }
+
+    clock = {"now": 1000.0}
+    user_ts = {"t": 0.0}
+    loop = _run_pressure_loop(ConflictRegistry(), clock, user_ts)
+
+    # Conflicting signals still make a "按钮" (status=ok) but its confidence
+    # is below the pressure threshold, so the schedule must not move.
+    assert loop.last["result"]["status"] == "ok"
+    assert loop.last["result"]["confidence"] < 0.5
+    assert loop.pressure() == 0.0

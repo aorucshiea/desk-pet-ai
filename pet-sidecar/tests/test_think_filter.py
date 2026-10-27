@@ -105,3 +105,36 @@ class TestToolNarrationFilter:
         text = "_这个_词有强调\n执行任务很重要\n"
         out = self._collect([text])
         assert "强调" in out and "执行任务很重要" in out
+
+class TestDStateFilter:
+    """The hidden DSTATE block must never reach the renderer, even split."""
+
+    BLOCK = '<<<DSTATE>>>{"summary":"今天和用户聊了天气","action_options":[]}<<<DSTATEEND>>>'
+
+    def _collect(self, pieces: list[str]) -> str:
+        from gateway.think_filter import DStateFilter
+
+        f = DStateFilter()
+        out = "".join(f.feed(p) for p in pieces)
+        return out + f.flush()
+
+    def test_block_is_dropped_whole(self):
+        assert self._collect([f"你好。\n{self.BLOCK}\n"]) == "你好。\n\n"
+
+    def test_survives_char_split_stream(self):
+        text = f"前文{self.BLOCK}后文"
+        pieces = [text[i : i + 1] for i in range(len(text))]
+        assert self._collect(pieces) == "前文后文"
+
+    def test_unterminated_trailing_block_dropped(self):
+        assert self._collect(['你好\n<<<DSTATE>>>{"summary":']) == "你好\n"
+
+    def test_partial_start_marker_not_leaked(self):
+        assert self._collect(["你好\n<<<DST"]) == "你好\n"
+
+    def test_normal_text_passthrough(self):
+        assert self._collect(["普通回复，没有状态块。"]) == "普通回复，没有状态块。"
+
+    def test_two_blocks_both_dropped(self):
+        text = f"a{self.BLOCK}b{self.BLOCK}c"
+        assert self._collect([text]) == "abc"

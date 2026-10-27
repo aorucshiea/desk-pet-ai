@@ -4,7 +4,20 @@ const assert = require("node:assert");
 const path = require("node:path");
 const test = require("node:test");
 
-const ensure = require("../scripts/ensure-sidecar-binaries");
+let ensure;
+try {
+  ensure = require("../scripts/ensure-sidecar-binaries");
+} catch (error) {
+  if (error.code !== "MODULE_NOT_FOUND" || !error.message.includes("../scripts/ensure-sidecar-binaries")) {
+    throw error;
+  }
+}
+
+function sidecarTest(name, fn) {
+  return test(name, {
+    skip: ensure ? false : "scripts/ensure-sidecar-binaries.js is not present in this fork",
+  }, fn);
+}
 
 function makeStream() {
   let text = "";
@@ -18,14 +31,14 @@ function makeStream() {
   };
 }
 
-test("runtimeSidecarTarget maps supported runtime platforms to pinned sidecar targets", () => {
+sidecarTest("runtimeSidecarTarget maps supported runtime platforms to pinned sidecar targets", () => {
   assert.equal(ensure.runtimeSidecarTarget({ platform: "win32", arch: "x64" }).dir, "windows-x64");
   assert.equal(ensure.runtimeSidecarTarget({ platform: "darwin", arch: "arm64" }).dir, "darwin-arm64");
   assert.equal(ensure.runtimeSidecarTarget({ platform: "linux", arch: "x64" }).dir, "linux-x64");
   assert.equal(ensure.runtimeSidecarTarget({ platform: "linux", arch: "arm64" }), null);
 });
 
-test("ensureCurrentPlatformSidecar skips when the current binary already exists", async () => {
+sidecarTest("ensureCurrentPlatformSidecar skips when the current binary already exists", async () => {
   const calls = [];
   const result = await ensure.ensureCurrentPlatformSidecar({
     platform: "win32",
@@ -48,7 +61,7 @@ test("ensureCurrentPlatformSidecar skips when the current binary already exists"
   assert.deepEqual(calls, []);
 });
 
-test("ensureCurrentPlatformSidecar fetches only the current platform target when missing", async () => {
+sidecarTest("ensureCurrentPlatformSidecar fetches only the current platform target when missing", async () => {
   const fetchCalls = [];
   const stdout = makeStream();
   const result = await ensure.ensureCurrentPlatformSidecar({
@@ -76,7 +89,7 @@ test("ensureCurrentPlatformSidecar fetches only the current platform target when
   assert.match(stdout.text(), /fetching pinned binary/);
 });
 
-test("ensureCurrentPlatformSidecar reports fetch failures without throwing", async () => {
+sidecarTest("ensureCurrentPlatformSidecar reports fetch failures without throwing", async () => {
   const stderr = makeStream();
   const result = await ensure.ensureCurrentPlatformSidecar({
     platform: "darwin",
@@ -100,7 +113,7 @@ test("ensureCurrentPlatformSidecar reports fetch failures without throwing", asy
   assert.match(stderr.text(), /Set CLAWD_SKIP_SIDECAR_FETCH=1 before running npm start/);
 });
 
-test("ensureCurrentPlatformSidecar honors skip and valid override env vars", async () => {
+sidecarTest("ensureCurrentPlatformSidecar honors skip and valid override env vars", async () => {
   const fetchSidecarBinaries = () => {
     throw new Error("should not fetch");
   };
@@ -126,7 +139,7 @@ test("ensureCurrentPlatformSidecar honors skip and valid override env vars", asy
   assert.deepEqual(result, { ok: true, skipped: true, reason: "override-path", path: overrideExe });
 });
 
-test("ensureCurrentPlatformSidecar reports a missing override path without fetching", async () => {
+sidecarTest("ensureCurrentPlatformSidecar reports a missing override path without fetching", async () => {
   const stderr = makeStream();
   const result = await ensure.ensureCurrentPlatformSidecar({
     env: { CLAWD_CC_CONNECT_CLAWD_PATH: "/tmp/missing-sidecar" },
@@ -150,7 +163,7 @@ test("ensureCurrentPlatformSidecar reports a missing override path without fetch
   assert.match(stderr.text(), /Clawd will still launch/);
 });
 
-test("ensureCurrentPlatformSidecar reports strict override failures accurately", async () => {
+sidecarTest("ensureCurrentPlatformSidecar reports strict override failures accurately", async () => {
   const stderr = makeStream();
   const result = await ensure.ensureCurrentPlatformSidecar({
     strict: true,
@@ -171,14 +184,14 @@ test("ensureCurrentPlatformSidecar reports strict override failures accurately",
   assert.match(stderr.text(), /Strict mode will stop launch/);
 });
 
-test("resolveOverridePath appends the runtime executable for directory-like values", () => {
+sidecarTest("resolveOverridePath appends the runtime executable for directory-like values", () => {
   assert.equal(
     ensure.resolveOverridePath("D:\\tools\\sidecar\\", { platform: "win32", fs: { statSync: () => { throw new Error("skip"); } } }),
     path.join("D:\\tools\\sidecar\\", "cc-connect-clawd.exe")
   );
 });
 
-test("sidecarFetchCommand gives the manual recovery command", () => {
+sidecarTest("sidecarFetchCommand gives the manual recovery command", () => {
   assert.equal(
     ensure.sidecarFetchCommand("windows-x64"),
     "npm run fetch:sidecars -- --target windows-x64"

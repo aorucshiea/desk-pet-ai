@@ -3,7 +3,7 @@
 // verbatim; this binary only replaces the Electron main process).
 //
 // Window model (same as the original):
-//   pet-render — the sprite (cybercat GIFs), click-through
+//   pet-render — the sprite (theme GIFs), click-through
 //   pet-hit    — input surface over the sprite hitbox (drag/click/menu)
 //   chat       — the ORIGINAL minicpm-chat.html bubble (full replica)
 //   menu       — the ORIGINAL context-menu.html styling
@@ -54,7 +54,7 @@ fn http_request(
     let req = format!(
         "{method} {path} HTTP/1.0\r\nHost: {GW_HOST}:{GW_PORT}\r\n\
          content-type: application/json\r\n\
-         x-minicpm-token: {token}\r\n\
+         x-pet-token: {token}\r\n\
          content-length: {}\r\n\r\n{body}",
         body.len()
     );
@@ -71,14 +71,19 @@ fn http_request(
     Ok((status, resp_body))
 }
 
-/// B-5 auth: the gateway generates ~/.minicpm/gateway-token at boot.
+/// B-5 auth: the gateway generates ~/.pet/gateway-token at boot (the
+/// rebrand moved it from ~/.minicpm — read the new path first, fall back
+/// to the old one so a half-migrated machine still works).
 fn gateway_token() -> String {
-    std::env::var("USERPROFILE")
-        .map(|home| PathBuf::from(home).join(".minicpm").join("gateway-token"))
-        .ok()
-        .and_then(|p| std::fs::read_to_string(p).ok())
-        .map(|s| s.trim().to_string())
-        .unwrap_or_default()
+    let read = |dir: &str| {
+        std::env::var("USERPROFILE")
+            .ok()
+            .map(|home| PathBuf::from(home).join(dir).join("gateway-token"))
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    };
+    read(".pet").or_else(|| read(".minicpm")).unwrap_or_default()
 }
 
 /// Where the original project's gateway lives. Priority: DESKPT_GATEWAY_DIR
@@ -91,14 +96,17 @@ fn gateway_dir() -> PathBuf {
         }
     }
     if let Ok(exe) = std::env::current_exe() {
+        // dev layout: <repo>/deskpt-tauri/src-tauri/target/release/exe → repo
         if let Some(root) = exe.ancestors().nth(5) {
-            let cand = root.join("minicpm-sidecar");
-            if cand.join("gateway").is_dir() {
-                return cand;
+            for sidecar in ["pet-sidecar", "minicpm-sidecar"] {
+                let cand = root.join(sidecar);
+                if cand.join("gateway").is_dir() {
+                    return cand;
+                }
             }
         }
     }
-    PathBuf::from("D:\\MiniCPM-Desk-Pet-0.10.0\\minicpm-sidecar")
+    PathBuf::from("E:\\deskpetai\\pet-sidecar")
 }
 
 fn spawn_sidecar() -> Result<(), String> {
@@ -130,8 +138,8 @@ fn spawn_sidecar() -> Result<(), String> {
     let mut cmd = Command::new(&python);
     cmd.args(["-m", "gateway", "--port", &GW_PORT.to_string(), "--host", GW_HOST])
         .current_dir(&dir)
-        .env("MINICPM_THEME", &theme)
-        .env("MINICPM_ADAPTER_DIR", &adapter_dir);
+        .env("PET_THEME", &theme)
+        .env("PET_ADAPTER_DIR", &adapter_dir);
     // real log files (append) instead of discarded output — the settings
     // UI's 打开日志目录 opens this folder.
     let log_open = |name: &str| -> Option<std::fs::File> {
@@ -152,7 +160,7 @@ fn spawn_sidecar() -> Result<(), String> {
         cmd.stderr(Stdio::null());
     }
     if !memory_dir.is_empty() {
-        cmd.env("MINICPM_MEMORY_DIR", &memory_dir);
+        cmd.env("PET_MEMORY_DIR", &memory_dir);
     }
     #[cfg(windows)]
     cmd.creation_flags(CREATE_NO_WINDOW);
@@ -188,22 +196,16 @@ async fn ensure_gateway() -> Result<serde_json::Value, String> {
 /// Electron shell: minicpm-prefs.json model_dir → DESKPT_MODEL_DIR env →
 /// <repo>/models/*.gguf (first match; a dir path is scanned for a gguf).
 fn resolve_model_path() -> Option<PathBuf> {
-    // 1. prefs file written by the Electron Settings UI
-    if let Ok(appdata) = std::env::var("APPDATA") {
-        let prefs = PathBuf::from(&appdata).join("deskpt").join("minicpm-prefs.json");
-        if let Ok(raw) = std::fs::read_to_string(&prefs) {
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) {
-                if let Some(dir) = v.get("model_dir").and_then(|d| d.as_str()) {
-                    let p = PathBuf::from(dir);
-                    if p.is_file() {
-                        return Some(p);
-                    }
-                    if p.is_dir() {
-                        if let Some(g) = first_gguf_in(&p) {
-                            return Some(g);
-                        }
-                    }
-                }
+    // 1. pet-prefs.json (written by the current Electron Settings UI;
+    //    pet_prefs_read falls back to the legacy minicpm-prefs.json)
+    if let Some(dir) = pet_prefs_read().get("model_dir").and_then(|d| d.as_str()) {
+        let p = PathBuf::from(dir);
+        if p.is_file() {
+            return Some(p);
+        }
+        if p.is_dir() {
+            if let Some(g) = first_gguf_in(&p) {
+                return Some(g);
             }
         }
     }
@@ -740,8 +742,67 @@ fn first_gguf_in_dir(dir: &std::path::Path) -> Option<PathBuf> {
     })
 }
 
+// ── pet-prefs.json — the model-management prefs the CURRENT Electron
+// shell reads/writes (userData/pet-prefs.json; rebrand moved it off
+// minicpm-prefs.json). Read old file as migration fallback.
+fn pet_prefs_path() -> Result<PathBuf, String> {
+    std::env::var("APPDATA")
+        .map(|a| PathBuf::from(a).join("deskpt").join("pet-prefs.json"))
+        .map_err(|_| "no APPDATA".to_string())
+}
+
+fn pet_prefs_read() -> serde_json::Value {
+    pet_prefs_path()
+        .ok()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_else(|| {
+            // migration: the old file's model_dir/folders still count
+            std::env::var("APPDATA")
+                .ok()
+                .map(|a| PathBuf::from(a).join("deskpt").join("minicpm-prefs.json"))
+                .and_then(|p| std::fs::read_to_string(p).ok())
+                .and_then(|raw| serde_json::from_str(&raw).ok())
+                .unwrap_or(serde_json::json!({}))
+        })
+}
+
+fn pet_prefs_write(value: &serde_json::Value) -> Result<(), String> {
+    let p = pet_prefs_path()?;
+    if let Some(dir) = p.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(p, serde_json::to_string_pretty(value).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())
+}
+
+fn pet_prefs_merge(patch: &serde_json::Value) -> Result<(), String> {
+    let mut prefs = pet_prefs_path()
+        .ok()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .unwrap_or(serde_json::json!({}));
+    if let (Some(obj), Some(patch_obj)) = (prefs.as_object_mut(), patch.as_object()) {
+        for (k, v) in patch_obj {
+            obj.insert(k.clone(), v.clone());
+        }
+    }
+    pet_prefs_write(&prefs)
+}
+
+#[tauri::command]
+fn pet_prefs_load() -> Result<serde_json::Value, String> {
+    Ok(pet_prefs_read())
+}
+
+#[tauri::command]
+fn pet_prefs_save(json: String) -> Result<(), String> {
+    let patch: serde_json::Value = serde_json::from_str(&json).map_err(|e| e.to_string())?;
+    pet_prefs_merge(&patch)
+}
+
 fn model_folders_list() -> Vec<String> {
-    prefs_read()
+    pet_prefs_read()
         .get("model_folders")
         .and_then(|v| v.as_array())
         .map(|a| {
@@ -755,9 +816,9 @@ fn model_folders_list() -> Vec<String> {
 }
 
 fn set_model_folders(list: Vec<String>) -> Result<(), String> {
-    let mut prefs = prefs_read();
+    let mut prefs = pet_prefs_read();
     prefs["model_folders"] = serde_json::json!(list);
-    prefs_write(&prefs)
+    pet_prefs_write(&prefs)
 }
 
 fn app_data_dir() -> PathBuf {
@@ -912,7 +973,7 @@ fn list_models() -> Result<serde_json::Value, String> {
         }
     }
     // the current effective model dir participates too (original behavior)
-    let cur = prefs_read()
+    let cur = pet_prefs_read()
         .get("model_dir")
         .and_then(|v| v.as_str())
         .map(PathBuf::from);
@@ -960,9 +1021,9 @@ async fn use_model_dir_impl(
     }
     // persist effective model dir (SAME prefs key as the Electron shell;
     // takes effect for future sidecar spawns too)
-    let mut prefs = prefs_read();
+    let mut prefs = pet_prefs_read();
     prefs["model_dir"] = serde_json::json!(trimmed);
-    prefs_write(&prefs)?;
+    pet_prefs_write(&prefs)?;
     // hot-swap on the RUNNING llama-server: gateway stops + respawns it
     // with the new --model and blocks until /health is 200 again.
     let mut body = serde_json::json!({ "path": trimmed });
@@ -996,7 +1057,7 @@ async fn pick_model_dir() -> Result<serde_json::Value, String> {
     // Windows quirk from the original: file-only picker — directories go
     // through the "add model folder" flow, so the user can always pick a
     // single .gguf.
-    let default_dir = prefs_read()
+    let default_dir = pet_prefs_read()
         .get("model_dir")
         .and_then(|v| v.as_str())
         .map(PathBuf::from)
@@ -1051,7 +1112,7 @@ async fn open_model_dir() -> Result<serde_json::Value, String> {
         }
     }
     if gguf.is_none() {
-        let cur = prefs_read()
+        let cur = pet_prefs_read()
             .get("model_dir")
             .and_then(|v| v.as_str())
             .map(PathBuf::from);
@@ -1067,7 +1128,7 @@ async fn open_model_dir() -> Result<serde_json::Value, String> {
         shell_open(&g.to_string_lossy(), true)?;
         return Ok(serde_json::json!({ "ok": true, "path": g.to_string_lossy(), "highlighted": true }));
     }
-    let dir = prefs_read()
+    let dir = pet_prefs_read()
         .get("model_dir")
         .and_then(|v| v.as_str())
         .map(PathBuf::from)
@@ -1087,10 +1148,25 @@ fn open_logs_dir() -> Result<serde_json::Value, String> {
 
 #[tauri::command]
 fn engine_local_version() -> Result<serde_json::Value, String> {
-    let exe = gateway_dir().join("bin").join("win-x64").join("llama-server.exe");
-    if !exe.is_file() {
+    // resolve like the gateway: PET_LLAMA_SERVER → bin/win-x64/ →
+    // bin/win-x64/backends/*/<exe> (the engine updater installs there)
+    let candidates: Vec<PathBuf> = {
+        let mut v = Vec::new();
+        if let Ok(p) = std::env::var("PET_LLAMA_SERVER") {
+            v.push(PathBuf::from(p));
+        }
+        let bin = gateway_dir().join("bin").join("win-x64");
+        v.push(bin.join("llama-server.exe"));
+        if let Ok(rd) = std::fs::read_dir(&bin) {
+            for be in rd.flatten() {
+                v.push(be.path().join("llama-server.exe"));
+            }
+        }
+        v
+    };
+    let Some(exe) = candidates.iter().find(|p| p.is_file()) else {
         return Ok(serde_json::json!({ "version": null, "error": "llama-server.exe not found" }));
-    }
+    };
     #[cfg(windows)]
     {
         match Command::new(&exe)
@@ -1148,7 +1224,7 @@ async fn engine_apply(
         let req = format!(
             "POST {path} HTTP/1.0\r\nHost: {GW_HOST}:{GW_PORT}\r\n\
              content-type: application/json\r\n\
-             x-minicpm-token: {token}\r\n\
+             x-pet-token: {token}\r\n\
              content-length: {}\r\n\r\n{body_str}",
             body_str.len()
         );
@@ -1292,7 +1368,7 @@ async fn set_device(device: String) -> Result<serde_json::Value, String> {
 async fn restart_gateway() -> Result<serde_json::Value, String> {
     #[cfg(windows)]
     {
-        let script = "Get-Process python,llama-server -ErrorAction SilentlyContinue | Where-Object { $_.Path -and ($_.Path -like '*minicpm-sidecar*') } | Stop-Process -Force";
+        let script = "Get-Process python,llama-server -ErrorAction SilentlyContinue | Where-Object { $_.Path -and (($_.Path -like '*pet-sidecar*') -or ($_.Path -like '*minicpm-sidecar*')) } | Stop-Process -Force";
         let _ = Command::new("powershell")
             .args(["-NoProfile", "-Command", script])
             .creation_flags(CREATE_NO_WINDOW)
@@ -1312,7 +1388,7 @@ async fn restart_gateway() -> Result<serde_json::Value, String> {
 #[tauri::command]
 fn save_providers_config(providers: serde_json::Value) -> Result<serde_json::Value, String> {
     // mirror the original conversion: array of {provider,apiKey,baseUrl,...}
-    // → {providers: {name: {...}}} in ~/.minicpm/providers.json
+    // → {providers: {name: {...}}} in ~/.pet/providers.json
     let Some(arr) = providers.as_array() else {
         return Ok(serde_json::json!({ "ok": false, "error": "invalid providers" }));
     };
@@ -1337,19 +1413,19 @@ fn save_providers_config(providers: serde_json::Value) -> Result<serde_json::Val
         if let Some(r) = item.get("reasoningEffort") {
             if let Some(s) = r.as_str() {
                 if !s.is_empty() {
-                    entry["reasoningEffort"] = json!(s);
+                    entry["reasoningEffort"] = serde_json::json!(s);
                 }
             }
         }
         if let Some(c) = item.get("contextWindow") {
             if let Some(n) = c.as_i64() {
-                entry["contextWindow"] = json!(n);
+                entry["contextWindow"] = serde_json::json!(n);
             }
         }
         map.insert(name.to_string(), entry);
     }
     let path = std::env::var("USERPROFILE")
-        .map(|h| PathBuf::from(h).join(".minicpm").join("providers.json"))
+        .map(|h| PathBuf::from(h).join(".pet").join("providers.json"))
         .map_err(|_| "no home dir")?;
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
@@ -1369,7 +1445,7 @@ fn mcp_save_config(servers: serde_json::Value) -> Result<serde_json::Value, Stri
         return Ok(serde_json::json!({ "ok": false, "error": "invalid servers object" }));
     }
     let path = std::env::var("USERPROFILE")
-        .map(|h| PathBuf::from(h).join(".minicpm").join("mcp.json"))
+        .map(|h| PathBuf::from(h).join(".pet").join("mcp.json"))
         .map_err(|_| "no home dir")?;
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
@@ -1381,6 +1457,18 @@ fn mcp_save_config(servers: serde_json::Value) -> Result<serde_json::Value, Stri
     )
     .map_err(|e| e.to_string())?;
     Ok(serde_json::json!({ "ok": true }))
+}
+
+#[tauri::command]
+fn mcp_read_config() -> Result<serde_json::Value, String> {
+    let path = std::env::var("USERPROFILE")
+        .map(|h| PathBuf::from(h).join(".pet").join("mcp.json"))
+        .map_err(|_| "no home dir".to_string())?;
+    match std::fs::read_to_string(&path) {
+        Ok(raw) => serde_json::from_str(&raw)
+            .or_else(|_| Ok(serde_json::json!({ "mcpServers": {} }))),
+        Err(_) => Ok(serde_json::json!({ "mcpServers": {} })),
+    }
 }
 
 /// The settings UI's snapshot: the real clawd-prefs.json (same file the
@@ -1839,6 +1927,36 @@ fn main() {
             memory_view,
             minicpm_prefs_load,
             minicpm_prefs_save,
+            pet_prefs_load,
+            pet_prefs_save,
+            // real model / engine / LoRA / providers management (Settings)
+            pick_folder,
+            pick_gguf,
+            open_path,
+            list_model_folders,
+            add_model_folder,
+            add_model_folder_dialog,
+            remove_model_folder,
+            list_models,
+            use_model_dir,
+            pick_model_dir,
+            open_model_dir,
+            open_logs_dir,
+            engine_local_version,
+            engine_update_check,
+            engine_update_apply,
+            engine_update_apply_dir,
+            list_adapters,
+            upload_adapter,
+            remove_adapter,
+            rename_adapter,
+            open_adapter_dir,
+            load_adapter,
+            set_device,
+            restart_gateway,
+            save_providers_config,
+            mcp_save_config,
+            mcp_read_config,
         ])
         .run(tauri::generate_context!())
         .expect("error while running deskpt-tauri");

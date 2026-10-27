@@ -36,7 +36,7 @@
     hideWindow: () => invoke("chat_hide"),
     focusWindow: () => invoke("chat_focus"),
     setChatAnchor: (bottomY) => invoke("chat_anchor", { bottomY: bottomY === null ? null : Number(bottomY) }),
-    getActiveThemeId: async () => ({ ok: true, themeId: "cybercat" }),
+    getActiveThemeId: async () => ({ ok: true, themeId: "mochi" }),
 
     // ── history (shared file with the Electron shell: same brain) ──
     loadHistory: () => invoke("chat_load_history"),

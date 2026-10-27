@@ -53,6 +53,7 @@ kernel; all of it is ADDITIVE — every v1 call site keeps working.
 
 from __future__ import annotations
 
+import hashlib
 import threading
 import time
 import types
@@ -63,6 +64,19 @@ from .log_setup import get_logger
 from . import plugin_policy as _plugin_policy
 
 log = get_logger()
+
+# Seed files whose *known old* content may be upgraded in place. The value
+# is a set of sha256 hashes over LF-normalized text. A user/model edit changes
+# the hash, so it is never clobbered — this is a migration, not a sync.
+#
+# organ_impulse.py (2026-10-08 seed, 2442 chars) predates the intuition-
+# pressure argument; without the upgrade compute_gap() raises TypeError and
+# every "forgot [NEXT_CHAT]" turn logs impulse_pressure_unsupported.
+_UPGRADABLE_SEEDS: dict[str, set[str]] = {
+    "organ_impulse.py": {
+        "9698399b209fb9c63dc13839cb5de0f1234279e992dea729f4861a2273223a53",
+    },
+}
 
 # Where plugin files live (GLOBAL capability layer — shared across themes).
 PLUGIN_DIR_NAME = "plugins"
@@ -737,6 +751,11 @@ class PluginManager:
         The self_note example only lands on a fresh install; the organs
         must also reach EXISTING installs — and must never clobber a
         model/user edit — so each file is written only when absent.
+
+        Exception: a file whose normalized hash matches a known shipped
+        seed may be upgraded in place (see ``_UPGRADABLE_SEEDS``). This is
+        how a feature added to an organ reaches installs that already have
+        the old seed, without touching a model-edited file.
         """
         try:
             from .organ_plugins import ORGAN_SOURCES
@@ -747,6 +766,22 @@ class PluginManager:
         for fname, source in ORGAN_SOURCES.items():
             target = pdir / fname
             if target.exists():
+                allowed = _UPGRADABLE_SEEDS.get(fname)
+                if not allowed:
+                    continue
+                try:
+                    existing = target.read_text(encoding="utf-8").replace("\r\n", "\n")
+                    digest = hashlib.sha256(existing.encode("utf-8")).hexdigest()
+                except OSError:
+                    digest = ""
+                if digest not in allowed:
+                    # Model/user edit — preserving it is the whole point.
+                    continue
+                try:
+                    target.write_text(source, encoding="utf-8")
+                    log.info("upgraded core organ: %s", fname)
+                except Exception:
+                    log.exception("failed to upgrade organ plugin %s", fname)
                 continue
             try:
                 target.write_text(source, encoding="utf-8")
@@ -846,13 +881,13 @@ def apply(ctx):
 
     def mood_now(args):
         mood = ctx.mood                      # 注入的服务（可能为 None）
-        idx = getattr(mood, "emotion_index", None) if mood is not None else None
+        current = getattr(mood, "current_mood", "未知") if mood is not None else "未知"
         recent = "、".join(str(t) for t in trace[-5:]) or "（还没有记录）"
-        return "当前情绪指数：%s｜轨迹 %d 条｜最近：%s" % (idx, len(trace), recent)
+        return "此刻的心情：%s｜最近：%s" % (current, recent)
 
     ctx.tool(
         "pet_mood_now",
-        "读当前的情绪指数与最近的情绪轨迹",
+        "读此刻的心情与最近的情绪轨迹",
         {"type": "object", "properties": {}},
         mood_now,
     )

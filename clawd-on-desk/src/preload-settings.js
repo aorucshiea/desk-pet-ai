@@ -241,6 +241,13 @@ contextBridge.exposeInMainWorld("petSettings", {
   saveProvidersConfig: (providers) => ipcRenderer.invoke("pet:save-providers-config", { providers }),
   mcpGetConfig: () => ipcRenderer.invoke("pet:mcp-get-config"),
   mcpSaveConfig: (servers) => ipcRenderer.invoke("pet:mcp-save-config", { servers }),
+  // Optional DeepSeek web-chat bridge.
+  webModelStatus: () => ipcRenderer.invoke("settings:web-model-status"),
+  webModelStart: () => ipcRenderer.invoke("settings:web-model-start"),
+  webModelSetLimit: (limit) => ipcRenderer.invoke("settings:web-model-set-limit", limit),
+  webModelTest: () => ipcRenderer.invoke("settings:web-model-test"),
+  webModelOpen: () => ipcRenderer.invoke("settings:web-model-open"),
+  webModelReveal: () => ipcRenderer.invoke("settings:web-model-reveal"),
 });
 
 contextBridge.exposeInMainWorld("doctor", {

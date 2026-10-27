@@ -23,7 +23,8 @@ test("README files keep Desk Pet as the product identity", () => {
     const markdown = readReadme(filename);
     assert.match(markdown, /<h1 align="center">Desk Pet<\/h1>/, `${filename} should use the Desk Pet product title`);
     assert.ok(markdown.includes("assets/tray-icon.png"), `${filename} should use the Desk Pet tray icon asset`);
-    assert.ok(markdown.includes("the local GGUF model-1B-GGUF"), `${filename} should describe the Desk Pet model`);
+    const modelName = filename === "README.md" ? "DeskPet5-1B-GGUF" : "the local GGUF model-1B-GGUF";
+    assert.ok(markdown.includes(modelName), `${filename} should describe the Desk Pet model`);
     // No upstream product branding: the upstream repo link is the fork
     // source (clawd-on-desk), not an upstream product page.
     assert.ok(!markdown.includes("aorucshiea/desk-pet-ai"), `${filename} must not link to the upstream product repo`);

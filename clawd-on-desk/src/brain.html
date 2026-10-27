@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'none'; style-src 'self'; script-src 'self'; connect-src http://127.0.0.1:* http://localhost:*; img-src 'self' data:; font-src 'self';">
+  <title>大脑流</title>
+  <link rel="stylesheet" href="brain.css">
+</head>
+<body>
+  <header class="app-header">
+    <div class="title-block">
+      <div class="title-row">
+        <h1>大脑流</h1>
+        <span id="eventCount" class="event-count">0 条</span>
+      </div>
+      <p class="subtitle">桌宠的内部步骤，不是说话窗口</p>
+    </div>
+    <div class="status" role="status" aria-live="polite">
+      <span id="statusDot" class="status-dot connecting"></span>
+      <span id="statusText" class="status-text">连接中</span>
+    </div>
+  </header>
+
+  <div class="toolbar">
+    <div id="filters" class="filters" role="group" aria-label="事件筛选">
+      <button class="chip active" type="button" data-filter="all">全部</button>
+      <button class="chip" type="button" data-filter="d">D</button>
+      <button class="chip" type="button" data-filter="think">思考</button>
+      <button class="chip" type="button" data-filter="inner">心声</button>
+      <button class="chip" type="button" data-filter="tool">工具</button>
+      <button class="chip" type="button" data-filter="summary">总结</button>
+      <button class="chip" type="button" data-filter="speak">说</button>
+      <button class="chip" type="button" data-filter="quiet">安静</button>
+      <button class="chip" type="button" data-filter="error">错误</button>
+    </div>
+    <div class="tools">
+      <span id="pausedBadge" class="paused-badge" hidden>已暂停 · 0 条</span>
+      <button id="pauseBtn" class="tool-btn" type="button" aria-pressed="false">暂停</button>
+      <button id="autoscrollBtn" class="tool-btn active" type="button" aria-pressed="true">自动滚动</button>
+      <button id="clearBtn" class="tool-btn" type="button">清空</button>
+    </div>
+  </div>
+
+  <div class="feed-wrap">
+    <main id="feed" class="feed" aria-live="polite"></main>
+    <div id="emptyState" class="empty-state">等待网关事件…</div>
+    <button id="jumpBtn" class="jump-btn" type="button" hidden>回到底部</button>
+  </div>
+
+  <script src="brain-renderer.js"></script>
+</body>
+</html>

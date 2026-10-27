@@ -26,10 +26,14 @@ test("settings-tab-remote-ssh.js is registered in settings.html before settings-
   assert.ok(rendererIdx > tabIdx, "settings-renderer.js must come after settings-tab-remote-ssh.js");
 });
 
-test("settings-renderer.js SIDEBAR_TABS includes remote-ssh entry", () => {
+test("settings-renderer.js SIDEBAR_TABS omits retired coding-agent entries", () => {
   const code = fs.readFileSync(path.join(SRC_DIR, "settings-renderer.js"), "utf8");
-  assert.match(code, /id:\s*"remote-ssh"/);
-  assert.match(code, /labelKey:\s*"sidebarRemoteSsh"/);
+  // The Desk Pet fork intentionally hides agents, Doctor and Remote SSH from
+  // Settings; the remote module remains loaded for its guarded legacy runtime.
+  for (const id of ["agents", "doctor", "remote-ssh"]) {
+    assert.doesNotMatch(code, new RegExp(`id:\\s*"${id}"`), `${id} must not be a sidebar entry`);
+  }
+  assert.doesNotMatch(code, /labelKey:\s*"sidebarRemoteSsh"/);
 });
 
 // ── i18n: all language packs include the new keys ──

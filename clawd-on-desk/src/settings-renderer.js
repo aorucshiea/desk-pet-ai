@@ -14,6 +14,7 @@ const SIDEBAR_TABS = [
   // underneath the model cards, which read as duplicate/confusing UI.
   { id: "pet", labelKey: "sidebarModels", available: true, keywords: "模型 本地模型 内置引擎 推理引擎 桌宠内置 llama gguf 模型文件 引擎更新 换模型 下载 model engine local file" },
   { id: "providers", labelKey: "sidebarProviders", available: true, keywords: "服务商 供应 模型供应 供应源 LM Studio Ollama API OpenAI 云 接口 key 密钥 provider api cloud endpoint" },
+  { id: "webModel", label: "网页模型", available: true, keywords: "网页 模型 deepseek 免费 额度 web bridge chrome extension 浏览器 网址" },
   // "agents" tab intentionally removed: this is a desktop pet, not a
   // coding-agent companion. See AGENTS.md / hooks/ for the removed
   // integration layer.
@@ -165,6 +166,7 @@ if (globalThis.ClawdSettingsTabDeskPet) globalThis.ClawdSettingsTabDeskPet.init(
 if (globalThis.ClawdSettingsTabScreenClick) globalThis.ClawdSettingsTabScreenClick.init(core);
 if (globalThis.ClawdSettingsTabSkills) globalThis.ClawdSettingsTabSkills.init(core);
 if (globalThis.ClawdSettingsTabProviders) globalThis.ClawdSettingsTabProviders.init(core);
+if (globalThis.ClawdSettingsTabWebModel) globalThis.ClawdSettingsTabWebModel.init(core);
 if (globalThis.ClawdSettingsTabMcp) globalThis.ClawdSettingsTabMcp.init(core);
 if (globalThis.ClawdSettingsTabEvolve) globalThis.ClawdSettingsTabEvolve.init(core);
 if (globalThis.ClawdSettingsTabMemory) globalThis.ClawdSettingsTabMemory.init(core);

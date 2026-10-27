@@ -63,10 +63,15 @@ class TestMoodStore:
         fresh_mood.update_mood(mood="开心", intensity=70, reason="", changed=True)
         assert fresh_mood.get_emotion_tag() == "happy"
 
-    def test_format_for_system_prompt(self, fresh_mood):
+    def test_format_for_system_prompt_is_empty(self, fresh_mood):
+        # Mood is internal state: the model must never see a self-report or
+        # a numeric emotion index in its system prompt.
+        fresh_mood.update_mood(mood="开心", intensity=80, reason="用户说喜欢我", changed=True)
+        fresh_mood.apply_emotion_tag("happy")
         text = fresh_mood.format_for_system_prompt()
-        assert "你此刻的心情" in text
-        assert "平静" in text
+        assert text == ""
+        assert "情绪指数" not in text
+        assert "你此刻的心情" not in text
 
     def test_persistence_roundtrip(self, fresh_mood):
         fresh_mood.update_mood(mood="难过", intensity=20, reason="没人理我", changed=True)

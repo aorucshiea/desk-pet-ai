@@ -2912,6 +2912,9 @@ const _menuCtx = {
   ensureUserThemesDir: () => themeLoader.ensureUserThemesDir(),
   openSettingsWindow: () => settingsWindowRuntime.open(),
   openDeskPetChat: () => openDeskPetChat(),
+  openBrainWindow: () => {
+    if (_petChat && _petChat.openBrain) _petChat.openBrain();
+  },
 };
 const _menu = require("./menu")(_menuCtx);
 const { t, buildContextMenu, buildTrayMenu, rebuildAllMenus, createTray,
@@ -3717,6 +3720,11 @@ if (!gotTheLock) {
           if (_petChat && typeof _petChat.toggleThinking === "function") {
             _petChat.toggleThinking();
           }
+        } catch {}
+      });
+      globalShortcut.register("CommandOrControl+Shift+B", () => {
+        try {
+          if (_petChat && typeof _petChat.openBrain === "function") _petChat.openBrain();
         } catch {}
       });
     } catch (err) {

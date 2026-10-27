@@ -27,6 +27,21 @@ def _isolate_memory_root(tmp_path, monkeypatch):
     plugins directory. That is user data being mutated by a test run.
     """
     monkeypatch.setenv("PET_MEMORY_DIR", str(tmp_path / "memories"))
+    # D decisions append to this log; keep the user's real rolls clean.
+    monkeypatch.setenv("PET_DECISION_LOG", str(tmp_path / "decision-rolls.jsonl"))
+
+
+@pytest.fixture(autouse=True)
+def _reset_dstate_provider(monkeypatch):
+    """Isolate the process-global D state provider between tests.
+
+    ``build_app`` installs a per-theme provider. Without this reset a test
+    that builds an app would leak D into every later direct
+    ``_stream_chat_provider`` test in the same process.
+    """
+    from gateway import server as _server_mod
+
+    monkeypatch.setattr(_server_mod, "_dstate_provider", None, raising=False)
 
 
 def _gateway_token() -> str:

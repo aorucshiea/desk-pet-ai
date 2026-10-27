@@ -131,10 +131,12 @@ describe("applyUpdate sync invariant", () => {
   });
 
   it("manageClaudeHooksAutomatically uses the async effect path without changing controller semantics", async () => {
+    const snapshot = { ...prefs.getDefaults(), manageClaudeHooksAutomatically: false };
+    snapshot.agents["claude-code"].enabled = true;
     const ctrl = createSettingsController({
       prefsPath: makeTempPath(),
       loadResult: {
-        snapshot: { ...prefs.getDefaults(), manageClaudeHooksAutomatically: false },
+        snapshot,
         locked: false,
       },
       injectedDeps: {
@@ -154,10 +156,12 @@ describe("applyUpdate sync invariant", () => {
 
   it("serializes Claude hook update and command work on one shared lock", async () => {
     const calls = [];
+    const snapshot = { ...prefs.getDefaults(), manageClaudeHooksAutomatically: false };
+    snapshot.agents["claude-code"].enabled = true;
     const ctrl = createSettingsController({
       prefsPath: makeTempPath(),
       loadResult: {
-        snapshot: { ...prefs.getDefaults(), manageClaudeHooksAutomatically: false },
+        snapshot,
         locked: false,
       },
       injectedDeps: {

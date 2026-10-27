@@ -63,6 +63,9 @@ def _candidate_ports() -> list[int]:
 class ClawdBridge:
     """Thread-friendly state pusher with one persistent session_id per chat turn."""
 
+    FAILURE_THRESHOLD = 3
+    SUCCESS_GRACE_SECONDS = 15 * 60.0
+
     def __init__(self, *, enabled: bool = True, debug: bool = False) -> None:
         self.enabled = enabled
         self.debug = debug
@@ -72,14 +75,47 @@ class ClawdBridge:
         self._cwd = os.getcwd()
         self._client = httpx.Client(timeout=0.4)
         self._token = ""
+        self._last_attempt = 0.0
+        self._last_success = 0.0
+        self._consecutive_failures = 0
 
     def new_session(self) -> None:
         with self._lock:
             self._session_id = f"pet-{uuid.uuid4().hex[:8]}"
 
+    def is_reachable(self) -> bool:
+        """Conservative health, not a probe: standalone gateways stay healthy.
+
+        Until a pet has answered, absence is normal. After a confirmed success,
+        only repeated failed push rounds with no recent success mean unreachable.
+        """
+        if not self.enabled:
+            return True
+        with self._lock:
+            if not self._last_attempt or not self._last_success:
+                return True
+            if self._consecutive_failures < self.FAILURE_THRESHOLD:
+                return True
+            return time.time() - self._last_success <= self.SUCCESS_GRACE_SECONDS
+
+    def _record_attempt(self) -> None:
+        with self._lock:
+            self._last_attempt = time.time()
+
+    def _record_success(self, port: int) -> None:
+        with self._lock:
+            self._port = port
+            self._last_success = time.time()
+            self._consecutive_failures = 0
+
+    def _record_failure(self) -> None:
+        with self._lock:
+            self._consecutive_failures += 1
+
     def post(self, state: str, *, event: Optional[str] = None, title: Optional[str] = None, emotion: Optional[str] = None, extra: Optional[dict] = None) -> None:
         if not self.enabled:
             return
+        self._record_attempt()
         body = {
             "state": state,
             "session_id": self._session_id,
@@ -123,7 +159,7 @@ class ClawdBridge:
                     # unrelated service's 405, a 400 from an unknown state —
                     # is NOT our pet; keep probing the other ports.
                     if resp.headers.get("x-clawd-server") == "clawd-on-desk" or 200 <= resp.status_code < 300:
-                        self._port = port
+                        self._record_success(port)
                         if self.debug:
                             print(f"[clawd] {state} -> :{port} ({resp.status_code})")
                         return
@@ -139,6 +175,7 @@ class ClawdBridge:
                         print(f"[clawd] :{port} failed: {exc}")
                     break
             continue
+        self._record_failure()
         if self.debug:
             print(f"[clawd] no server reachable; dropped state={state}")
 

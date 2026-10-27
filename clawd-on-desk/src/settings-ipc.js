@@ -3,6 +3,7 @@
 const defaultFs = require("fs");
 const defaultPath = require("path");
 const defaultHttp = require("http");
+const defaultChildProcess = require("child_process");
 const { detectAgentInstallations: defaultDetectAgentInstallations } = require("./agent-installation-detector");
 const settingsThemeImporter = require("./settings-theme-importer");
 const productMetadata = require("./product-metadata");
@@ -14,6 +15,25 @@ const { DEFAULT_THEME_ID } = require("./default-theme");
 // the sidecar lifecycle.
 const SIDECAR_HOST = "127.0.0.1";
 const SIDECAR_PORT = Number(process.env.PET_PORT) || 18765;
+
+// Optional DeepSeek web-chat bridge (pet-sidecar/deepseek_web).
+const WEB_BRIDGE_HOST = "127.0.0.1";
+const WEB_BRIDGE_PORT = 8766;
+const WEB_BRIDGE_SCRIPT = defaultPath.join(
+  __dirname, "..", "..", "pet-sidecar", "deepseek_web", "bridge.py"
+);
+// Dedicated browser profile used by the web-model setup (extension installed
+// once). Override with PET_WEB_CHROME_PROFILE; if it does not exist we fall
+// back to the user's default browser.
+const WEB_CHROME_PROFILE = process.env.PET_WEB_CHROME_PROFILE
+  || defaultPath.join(require("os").homedir(), ".deepseek-chrome");
+const WEB_CHROME_CANDIDATES = [
+  process.env.PET_CHROME,
+  "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+  "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
+  "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+  "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe",
+].filter(Boolean);
 
 // B-5: gateway requires X-DeskPet-Token on every API call. Read + cache.
 let _gatewayTokenCache = null;
@@ -68,6 +88,63 @@ function sidecarJson(method, pathname, timeoutMs = 3000, body = null) {
     if (payload) req.write(payload);
     req.end();
   });
+}
+
+function webBridgeJson(method, pathname, timeoutMs = 2000, body = null) {
+  return new Promise((resolve) => {
+    const payload = body ? JSON.stringify(body) : null;
+    const headers = {};
+    if (payload) {
+      headers["content-type"] = "application/json";
+      headers["content-length"] = Buffer.byteLength(payload);
+    }
+    const req = defaultHttp.request(
+      {
+        hostname: WEB_BRIDGE_HOST,
+        port: WEB_BRIDGE_PORT,
+        path: pathname,
+        method,
+        timeout: timeoutMs,
+        headers,
+      },
+      (res) => {
+        let buf = "";
+        res.setEncoding("utf8");
+        res.on("data", (c) => { buf += c; });
+        res.on("end", () => {
+          if (res.statusCode >= 400) {
+            let why = "";
+            try {
+              const j = JSON.parse(buf);
+              why = j && (j.error?.message || j.error || j.message) ? ` — ${j.error?.message || j.error || j.message}` : "";
+            } catch {}
+            resolve({ ok: false, error: `HTTP ${res.statusCode}${why}` });
+            return;
+          }
+          try { resolve({ ok: true, json: JSON.parse(buf) }); }
+          catch { resolve({ ok: true, json: null }); }
+        });
+      }
+    );
+    req.on("error", (err) => resolve({ ok: false, error: err.message }));
+    req.on("timeout", () => { req.destroy(); resolve({ ok: false, error: "timeout" }); });
+    if (payload) req.write(payload);
+    req.end();
+  });
+}
+
+function webBridgePython() {
+  const sidecarDir = defaultPath.dirname(defaultPath.dirname(WEB_BRIDGE_SCRIPT));
+  const candidates = [
+    process.env.PET_PYTHON,
+    defaultPath.join(sidecarDir, ".venv", "Scripts", "python.exe"),
+    defaultPath.join(sidecarDir, ".venv", "bin", "python"),
+    defaultPath.join(sidecarDir, ".venv", "bin", "python3"),
+  ].filter(Boolean);
+  for (const candidate of candidates) {
+    try { if (defaultFs.existsSync(candidate)) return candidate; } catch {}
+  }
+  return "python";
 }
 
 function platformTriple() {
@@ -1001,6 +1078,116 @@ function registerSettingsIpc(options = {}) {
       return { status: "error", message: (err && err.message) || String(err) };
     }
   });
+
+  // ── Optional DeepSeek web-chat bridge (Web model settings page) ──────
+  handle("settings:web-model-status", async () => {
+    const r = await webBridgeJson("GET", "/health", 1500);
+    const paths = {
+      bridge: WEB_BRIDGE_SCRIPT,
+      extension: defaultPath.join(defaultPath.dirname(WEB_BRIDGE_SCRIPT), "extension"),
+    };
+    return r.ok
+      ? { status: "ok", bridge: r.json || {}, paths }
+      : { status: "offline", bridge: null, paths, error: r.error || "bridge offline" };
+  });
+
+  handle("settings:web-model-set-limit", async (_event, limit) => {
+    const value = Number(limit);
+    if (!Number.isInteger(value) || value < 0 || value > 10_000) {
+      return { status: "error", message: "每日上限必须是 0–10000 的整数（0 = 不限）" };
+    }
+    const r = await webBridgeJson("POST", "/config", 3000, { daily_limit: value });
+    if (!r.ok) return { status: "error", message: r.error || "Bridge 保存失败" };
+    return { status: "ok", daily_limit: (r.json && r.json.daily_limit) ?? value };
+  });
+
+  handle("settings:web-model-start", async () => {
+    const already = await webBridgeJson("GET", "/health", 800);
+    if (already.ok) return { status: "ok", bridge: already.json || {}, already: true };
+    if (!defaultFs.existsSync(WEB_BRIDGE_SCRIPT)) {
+      return { status: "error", message: "bridge.py not found: " + WEB_BRIDGE_SCRIPT };
+    }
+    try {
+      const child = defaultChildProcess.spawn(
+        webBridgePython(),
+        [WEB_BRIDGE_SCRIPT],
+        {
+          cwd: defaultPath.dirname(WEB_BRIDGE_SCRIPT),
+          detached: true,
+          windowsHide: true,
+          stdio: "ignore",
+        }
+      );
+      child.on("error", () => {});
+      child.unref();
+      let after = { ok: false, error: "bridge did not start" };
+      for (let i = 0; i < 10; i += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 400));
+        after = await webBridgeJson("GET", "/health", 800);
+        if (after.ok) break;
+      }
+      return after.ok
+        ? { status: "ok", bridge: after.json || {}, pid: child.pid }
+        : { status: "error", message: after.error || "bridge did not start" };
+    } catch (err) {
+      return { status: "error", message: (err && err.message) || String(err) };
+    }
+  });
+
+  handle("settings:web-model-test", async () => {
+    const started = Date.now();
+    const r = await webBridgeJson(
+      "POST",
+      "/v1/chat/completions",
+      60_000,
+      {
+        model: "deepseek-web",
+        messages: [{ role: "user", content: "只回复：网页模型连接成功" }],
+        stream: false,
+      }
+    );
+    if (!r.ok) return { status: "error", message: r.error || "bridge error" };
+    const reply = (r.json && r.json.choices && r.json.choices[0]
+      && r.json.choices[0].message && r.json.choices[0].message.content) || "";
+    return { status: "ok", reply: String(reply), elapsed_ms: Date.now() - started };
+  });
+
+  handle("settings:web-model-open", async () => {
+    try {
+      if (defaultFs.existsSync(WEB_CHROME_PROFILE)) {
+        const chrome = WEB_CHROME_CANDIDATES.find((candidate) => defaultFs.existsSync(candidate));
+        if (chrome) {
+          const child = defaultChildProcess.spawn(chrome, [
+            `--user-data-dir=${WEB_CHROME_PROFILE}`,
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--disable-background-timer-throttling",
+            "--disable-renderer-backgrounding",
+            "--disable-backgrounding-occluded-windows",
+            "--disable-features=CalculateNativeWinOcclusion",
+            "https://chat.deepseek.com/",
+          ], { detached: true, windowsHide: false, stdio: "ignore" });
+          child.on("error", () => {});
+          child.unref();
+          return { status: "ok", launched: true };
+        }
+      }
+      await shell.openExternal("https://chat.deepseek.com/");
+      return { status: "ok", launched: false };
+    } catch (err) {
+      return { status: "error", message: (err && err.message) || String(err) };
+    }
+  });
+
+  handle("settings:web-model-reveal", () => {
+    try {
+      shell.showItemInFolder(WEB_BRIDGE_SCRIPT);
+      return { status: "ok" };
+    } catch (err) {
+      return { status: "error", message: (err && err.message) || String(err) };
+    }
+  });
+
 
   handle("settings:mobile-connection-info", async () => {
     try {

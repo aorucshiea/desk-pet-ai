@@ -11,7 +11,8 @@ this exact event vocabulary.
 
 Also hosts ControlTagFilter (B-1): strips [EMOTION:…] / [NEXT_CHAT:…]
 control tags from the delta stream mid-flight so the typewriter renderer
-never flashes them at the user.
+never flashes them at the user. DStateFilter hides the main LLM's
+<<<DSTATE>>>…<<<DSTATEEND>>> rolling-summary block the same way.
 """
 
 from __future__ import annotations
@@ -203,6 +204,69 @@ class ControlTagFilter:
 _NARRATION_RE = re.compile(
     r"^\s*_{0,2}\s*执行\s+[A-Za-z_][\w]*\s*(?:\.\.\.)?\s*_{0,2}\s*$"
 )
+
+
+class DStateFilter:
+    """Hold back a ``<<<DSTATE>>>…<<<DSTATEEND>>>`` block while it streams.
+
+    The main LLM ends every round with a hidden rolling-life-summary block
+    for the D core. It must never flash on screen, so text from the start
+    marker until the end marker is swallowed wholesale. An unterminated
+    trailing block (and a partial start marker) is dropped at ``flush()``.
+    """
+
+    START_TAG = "<<<DSTATE>>>"
+    END_TAG = "<<<DSTATEEND>>>"
+
+    def __init__(self) -> None:
+        self._buf = ""
+        self._inside = False
+
+    def feed(self, piece: str) -> str:
+        self._buf += piece
+        out: list[str] = []
+        while self._buf:
+            if self._inside:
+                idx = self._buf.find(self.END_TAG)
+                if idx < 0:
+                    break  # still streaming the hidden JSON
+                self._buf = self._buf[idx + len(self.END_TAG):]
+                self._inside = False
+                continue
+            idx = self._buf.find(self.START_TAG)
+            if idx < 0:
+                safe = self._safe_emit_len(self._buf)
+                if safe <= 0:
+                    break
+                out.append(self._buf[:safe])
+                self._buf = self._buf[safe:]
+                break
+            if idx > 0:
+                out.append(self._buf[:idx])
+            self._buf = self._buf[idx + len(self.START_TAG):]
+            self._inside = True
+        return "".join(out)
+
+    def flush(self) -> str:
+        """Stream end: drop an unfinished block, emit the rest."""
+        if self._inside:
+            self._buf = ""
+            self._inside = False
+            return ""
+        # A held partial start marker at the very end is most likely a
+        # truncated block — never leak it. Anything else is plain text.
+        out = self._buf
+        if len(out) >= 3 and self.START_TAG.startswith(out):
+            out = ""
+        self._buf = ""
+        return out
+
+    def _safe_emit_len(self, buf: str) -> int:
+        max_keep = len(self.START_TAG) - 1
+        for keep in range(min(max_keep, len(buf)), 0, -1):
+            if self.START_TAG.startswith(buf[-keep:]):
+                return len(buf) - keep
+        return len(buf)
 
 
 class ToolNarrationFilter:

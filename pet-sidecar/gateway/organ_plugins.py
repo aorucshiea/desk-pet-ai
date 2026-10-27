@@ -177,6 +177,118 @@ def apply(ctx):
     ctx.effect("task:organ_dream", _cancel, "dream cycle on the main loop")
 '''
 
+ORGAN_SOURCES["organ_sleep.py"] = '''"""organ_sleep — 闲置时自动压缩昨日及更早的对话。
+
+每个周期最多处理一个候选日。只有压缩与记忆落盘都成功，才把该日写入
+sleep-state.json；模型或落盘失败会在之后的周期重试，不会假装睡过。
+"""
+
+inject = [
+    "events", "mood", "memory_ctx", "providers", "llama_server",
+    "schedule", "conversation_state", "memory_dir",
+]
+
+config = {
+    "check_interval_seconds": {"type": "int", "default": 600, "description": "睡眠压缩巡检间隔（秒）"},
+    "idle_seconds": {"type": "int", "default": 7200, "description": "静默多久后允许睡眠压缩"},
+    "min_turns": {"type": "int", "default": 4, "description": "候选日最少对话日志条数"},
+}
+
+
+def apply(ctx):
+    import asyncio
+
+    from gateway.memory import sleep_compress as _compress
+    from gateway.memory import sleep_schedule as _schedule
+    from gateway.memory import resonance as _resonance
+
+    interval = int(ctx.config.get("check_interval_seconds") or 600)
+    idle_seconds = int(ctx.config.get("idle_seconds") or 7200)
+    min_turns = int(ctx.config.get("min_turns") or 4)
+    task_holder = {}
+
+    def _memory_root():
+        mem_ctx = ctx.require("memory_ctx")
+        if mem_ctx is not None:
+            return mem_ctx.theme_dir(mem_ctx.current_theme)
+        return ctx.require("memory_dir")
+
+    async def _maybe_sleep():
+        root = _memory_root()
+        state = _schedule.load_state(root)
+        due, day_or_reason = _schedule.should_run(
+            root,
+            (ctx.require("conversation_state") or {}).get("last_conversation_at"),
+            state=state,
+            idle_seconds=idle_seconds,
+            min_turns=min_turns,
+        )
+        if not due:
+            return ""
+        day = day_or_reason
+        providers = ctx.require("providers")
+        provider = None
+        for name, candidate in providers._providers.items():
+            if name != "local":
+                provider = candidate
+                break
+        if provider is None and getattr(ctx.require("llama_server"), "alive", False):
+            provider = providers.get_or("local")
+        if provider is None:
+            ctx.log("sleep compression deferred: no provider available")
+            return ""
+
+        result = await _compress.compress_day(provider, day, memory_dir=root)
+        if result.get("status") != "ok":
+            ctx.log("sleep compression failed for %s: %s" % (day, result.get("message", result.get("status"))))
+            return ""
+        persisted = _compress.persist(
+            result.get("memories") or [], result.get("keywords") or [],
+            ctx.events, memory_dir=root, day=day,
+        )
+        if persisted.get("errors"):
+            ctx.log("sleep compression persistence failed for %s: %s" % (day, persisted["errors"]))
+            return ""
+
+        mood_name = getattr(ctx.mood, "current_mood", "") if ctx.mood else ""
+        ctx.events.add_event(
+            title="睡了一觉",
+            content="睡了一觉，把 %s 的对话整理成了长期记忆（平静）。" % day,
+            weight=150,
+            type_="experience",
+            resolved=True,
+        )
+        _schedule.mark_completed(root, day, {
+            "events_written": persisted.get("events_written", 0),
+            "keywords_written": persisted.get("keywords_written", False),
+            "mood": mood_name,
+        })
+        _resonance.mark_stale()
+        return day
+
+    async def _sleep_loop():
+        while True:
+            try:
+                await asyncio.sleep(interval)
+                day = await _maybe_sleep()
+                if day:
+                    ctx.log("sleep compression complete: %s" % day)
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                ctx.log("sleep loop error: %s" % exc)
+
+    sched = ctx.require("schedule")
+    task_holder["task"] = sched(_sleep_loop())
+
+    def _cancel():
+        task = task_holder.get("task")
+        if task is not None:
+            task.get_loop().call_soon_threadsafe(task.cancel)
+
+    ctx.effect("task:organ_sleep", _cancel, "automatic sleep compression")
+'''
+
 ORGAN_SOURCES["organ_impulse.py"] = '''"""organ_impulse — 说话冲动器官（桌宠的潜意识兜底）。
 
 模型每轮本该在回复末尾给出 [NEXT_CHAT:秒数]——那是意识层在决定
@@ -190,7 +302,8 @@ ORGAN_SOURCES["organ_impulse.py"] = '''"""organ_impulse — 说话冲动器官�
 
 设计边界（不要改坏）：
 - 模型显式选择沉默（[NEXT_CHAT:0]）永不兜底，永远原样转发；
-- 系统只决定"什么时候开口"，不决定"必须说什么"。
+- 系统只决定"什么时候开口"，不决定"必须说什么"；
+- 直觉压力只负责"稍微提前一点"，且用户回应后由决策循环清零。
 """
 
 # 纯函数器官：不依赖任何服务，所以它永不 park，随时可被聊天流调用。
@@ -206,13 +319,27 @@ config = {
     "backoff_cap": {"type": "int", "default": 5, "description": "退避最多叠几次"},
     "recall_ease": {"type": "float", "default": 0.04, "description": "每次成功回忆的缩短比例"},
     "recall_ease_cap": {"type": "int", "default": 5, "description": "回忆加成最多叠几次"},
+    "intuition_ease": {"type": "float", "default": 0.35, "description": "直觉压力最多缩短的比例（0~1，只提前不延后）"},
 }
 
 
 def apply(ctx):
+    import math
+
     cfg = ctx.config
 
-    def compute_gap(emotion_index=0.0, proactive_streak=0, recall_count=0):
+    def _clamp01(value):
+        """坏值/NaN/越界一律当作 0，宁可不提前，也不能把间隙算反。"""
+        try:
+            v = float(value)
+        except (TypeError, ValueError):
+            return 0.0
+        if not math.isfinite(v):
+            return 0.0
+        return max(0.0, min(1.0, v))
+
+    def compute_gap(emotion_index=0.0, proactive_streak=0, recall_count=0,
+                    intuition_pressure=0.0):
         """距离下一次主动开口还有几秒。纯函数：无 I/O、无随机。"""
         idx = max(-1.0, min(1.0, emotion_index or 0.0))
         gap = float(cfg.get("base_gap_seconds", 1200))
@@ -227,6 +354,9 @@ def apply(ctx):
 
         rec = max(0, min(int(cfg.get("recall_ease_cap", 5)), int(recall_count or 0)))
         gap *= 1.0 - float(cfg.get("recall_ease", 0.04)) * rec
+
+        ease = _clamp01(cfg.get("intuition_ease", 0.35))
+        gap *= 1.0 - ease * _clamp01(intuition_pressure)
 
         lo = int(cfg.get("min_gap_seconds", 180))
         hi = int(cfg.get("max_gap_seconds", 10800))
@@ -361,4 +491,31 @@ def apply(ctx):
     # 顺带把模块暴露成服务（session recall count 走这里，可降级）
     ctx.provide("recall", _recall)
     ctx.log("recall organ online (tool=%s)" % sch["name"])
+'''
+
+ORGAN_SOURCES["organ_search.py"] = '''"""organ_search — 本机全记忆检索器官。
+
+事件、模型自己的「记忆」文件夹和每日对话日志统一走本地词法检索；
+不请求 embedding 服务，也不需要联网。模型通过 memory_search 工具调用。
+"""
+
+inject = ["events", "memory_dir"]
+
+
+def apply(ctx):
+    from gateway.memory import search as _search
+
+    sch = _search.MEMORY_SEARCH_TOOL_SCHEMA
+
+    async def _handler(args):
+        # EventStore tracks the active theme directory. Prefer it over the
+        # boot-time base directory so a theme switch cannot search another soul.
+        memory_dir = getattr(ctx.events, "_memory_dir", None) or ctx.require("memory_dir")
+        return await _search.memory_search_tool_handler(
+            args, event_store=ctx.events, memory_dir=memory_dir,
+        )
+
+    ctx.tool(sch["name"], sch["description"], sch["input_schema"], _handler)
+    ctx.provide("search", _search)
+    ctx.log("local memory search organ online (tool=memory_search)")
 '''

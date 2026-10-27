@@ -9,6 +9,8 @@ owned by `LlamaServer`; this file is just glue.
 from __future__ import annotations
 
 import asyncio
+import base64
+import contextvars
 import hashlib
 import hmac
 import json
@@ -16,9 +18,11 @@ import math
 import os
 import platform
 import re
+import secrets
 import shlex
 import shutil
 import time
+from collections import Counter
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -36,11 +40,16 @@ from .llama_client import LlamaServer, detect_backend, find_sibling_mmproj
 from .log_setup import get_logger
 from .mcp.mcp_manager import MCPManager
 from .mcp.mcp_router import create_mcp_router
-from .providers import ProviderRegistry, create_providers
+from .providers import (
+    ProviderRegistry,
+    create_providers,
+    provider_can_see_images,
+    vision_capability_from_config,
+)
 from .providers.anthropic import AnthropicProvider
 from .providers.base import ToolDef, parse_mcp_calls
 from .providers.local import LocalProvider
-from .providers.openai import is_local_url
+from .providers.openai import OpenAIProvider, is_local_url
 from .skills.skill_routes import register_skill_routes
 from .omniparser_manager import OmniParserManager
 from .memory import MemoryStore, EventStore, MoodStore
@@ -55,8 +64,13 @@ from .memory import loader as _loader_module
 from .memory import continuity as _continuity_module
 from .memory import resonance as _resonance_module
 from .memory import somatic as _somatic_module
+from .memory import search as _memory_search
+from .memory import extract_fallback as _extract_fallback
 from . import petplugins as _petplugins_module
 from . import plugin_policy as _plugin_policy
+from . import telemetry
+from . import brain as _brain
+from .decision import sampler as _decision_sampler
 
 # Kernel container mirror: _stream_chat_provider is a MODULE-level function
 # and cannot see build_app's closure, so the live PluginManager is mirrored
@@ -102,6 +116,181 @@ def _note_failure(site: str, exc: BaseException) -> None:
     if n == 1 or n % 20 == 0:
         get_logger().warning("swallowed error at %s (x%d): %s", site, n, exc)
 
+
+# The provider handling the CURRENT chat turn. Builtin tool handlers live in
+# build_app's closure and cannot see _stream_chat_provider's local `provider`;
+# a ContextVar keeps the lookup request-scoped, so a user chat and a silent
+# narrator turn running concurrently never see each other's provider.
+_active_chat_provider_ref: contextvars.ContextVar = contextvars.ContextVar(
+    "pet_active_chat_provider", default=None
+)
+
+
+def _active_chat_provider():
+    """Provider for the in-flight chat turn, or None outside a chat."""
+    return _active_chat_provider_ref.get()
+
+
+# The ChatRequest of the in-flight chat turn. Builtin tools use it to change
+# the rest of THIS round's thinking (pet_enter_slow upgrades req in place);
+# the provider loop rebuilds chat_kwargs every iteration from req, so the
+# change reaches the model on the next call without a new round.
+_active_chat_req_ref: contextvars.ContextVar = contextvars.ContextVar(
+    "pet_active_chat_req", default=None
+)
+
+
+# Text of the REAL user message in the current turn. The decision tools feed
+# it to Laya as its state, so a silent narrator turn (empty string here)
+# never pretends to be something the user said.
+_active_user_text_ref: contextvars.ContextVar = contextvars.ContextVar(
+    "pet_active_user_text", default=""
+)
+
+# Rolls allowed per turn (pet_decision_roll). A model that keeps re-rolling
+# instead of committing is stalling, not deciding.
+_MAX_DECISION_ROLLS_PER_TURN = 3
+_active_roll_count_ref: contextvars.ContextVar = contextvars.ContextVar(
+    "pet_active_roll_count", default=0
+)
+
+
+def _active_user_text() -> str:
+    """Current turn's user text, or "" outside a real user turn."""
+    return _active_user_text_ref.get() or ""
+
+
+def _screen_tool_can_see_images(server) -> bool:
+    """Vision capability for screen tools.
+
+    Prefer the active chat provider: a cloud provider can see images even
+    when the local llama-server has no mmproj. Outside a chat turn (or when
+    resolution failed) fall back to the local projector check.
+    """
+    try:
+        return provider_can_see_images(_active_chat_provider(), server)
+    except Exception:
+        return bool(getattr(server, "mmproj_path", None))
+
+
+# ── Vision fallback channel ────────────────────────────────────────────
+# The default chat model is a text-only browser bridge, so the model cannot
+# consume an image even though the user wants the pet to "see". Route the
+# screenshot through a separate OpenAI-compatible vision endpoint and hand
+# the model a description. Selection order: PET_VISION_PROVIDER, then
+# "deepseek", then common Chinese vision providers.
+_VISION_PROVIDER_ENV = "PET_VISION_PROVIDER"
+_VISION_PROVIDER_FALLBACKS = ("deepseek", "硅基流动", "siliconflow")
+
+_SCREEN_DESCRIBE_PROMPT = (
+    "这是用户当前屏幕的截图。请用中文客观、详细地描述：应用/窗口、"
+    "画面布局、重要文字、用户在做什么；不要猜测，不要省略重要文字。"
+)
+_SCREEN_DESCRIBE_SYSTEM = (
+    "你是一个屏幕视觉描述器。只根据截图中可见的内容如实描述，"
+    "不要编造看不到的信息；保留重要的界面文字、标题和报错信息。"
+)
+_SCREEN_DESCRIBE_TIMEOUT = 90.0
+
+
+def _select_vision_provider(active, registry, server=None, env=None):
+    """Pick a provider that can actually see images.
+
+    Returns ``active`` when it is vision-capable; otherwise a non-active
+    OpenAI-compatible provider from the registry. ``None`` means there is
+    no vision channel at all (callers must degrade to observe_screen).
+    """
+    try:
+        if active is not None and provider_can_see_images(active, server):
+            return active
+    except Exception:
+        pass
+
+    names: list[str] = []
+    source = env if env is not None else os.environ
+    preferred = str(source.get(_VISION_PROVIDER_ENV) or "").strip() or "deepseek"
+    names.append(preferred)
+    names.extend(_VISION_PROVIDER_FALLBACKS)
+
+    seen: set[str] = set()
+    for name in names:
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        try:
+            candidate = registry.get_or(name)
+        except Exception:
+            candidate = None
+        if candidate is None or candidate is active:
+            continue
+        if not isinstance(candidate, OpenAIProvider):
+            continue
+        try:
+            if provider_can_see_images(candidate, server):
+                return candidate
+        except Exception:
+            continue
+    return None
+
+
+async def _describe_screen_with_provider(provider, b64: str, *, timeout: float = _SCREEN_DESCRIBE_TIMEOUT) -> str:
+    """Ask a vision provider to describe a base64 JPEG screenshot.
+
+    Streaming deltas are joined; ``think`` chunks are ignored. Any transport
+    error, provider error event, timeout or empty answer raises RuntimeError
+    with a user/model-readable message.
+    """
+    messages = [{
+        "role": "user",
+        "content": [
+            {"type": "text", "text": _SCREEN_DESCRIBE_PROMPT},
+            {
+                "type": "image_url",
+                "image_url": {"url": "data:image/jpeg;base64," + b64},
+            },
+        ],
+    }]
+    parts: list[str] = []
+    errors: list[str] = []
+
+    async def _collect() -> None:
+        async for chunk in provider.chat(
+            messages,
+            system=_SCREEN_DESCRIBE_SYSTEM,
+            tools=None,
+            max_tokens=900,
+            temperature=0.2,
+            top_p=0.9,
+            thinking_override=False,
+            reasoning_effort_override=None,
+        ):
+            if not isinstance(chunk, dict):
+                continue
+            kind = chunk.get("type")
+            if kind == "delta":
+                text = chunk.get("content") or ""
+                if text:
+                    parts.append(str(text))
+            elif kind == "error":
+                errors.append(str(chunk.get("message") or "vision provider error"))
+            # "think" and every other event type are intentionally ignored.
+
+    try:
+        await asyncio.wait_for(_collect(), timeout=timeout)
+    except asyncio.TimeoutError:
+        raise RuntimeError(f"视觉通道超时（{timeout:.0f} 秒）") from None
+    except RuntimeError:
+        raise
+    except Exception as exc:
+        raise RuntimeError(f"视觉通道调用失败：{exc}") from exc
+
+    if errors:
+        raise RuntimeError(errors[0])
+    text = "".join(parts).strip()
+    if not text:
+        raise RuntimeError("视觉通道没有返回内容")
+    return text
+
 from .memory.recall import (
     RECALL_TOOL_SCHEMA,
     recall_tool_handler,
@@ -141,6 +330,37 @@ def _schedule_on_main_loop(coro):
 # the renderer is the usual extraction trigger, but the renderer is
 # also the thing most likely to vanish. Signature: fn(reply_text) -> dict.
 _extraction_hook = None
+# Strong references for fire-and-forget extraction retries (loop alone is not
+# enough: Python only keeps weak references to scheduled tasks).
+_fallback_tasks: set[asyncio.Task] = set()
+
+
+def _fallback_task_done(task: asyncio.Task) -> None:
+    _fallback_tasks.discard(task)
+    if task.cancelled():
+        return
+    try:
+        exc = task.exception()
+    except Exception as err:
+        get_logger().warning("memory extraction fallback inspection failed: %s", err)
+        return
+    if exc is not None:
+        telemetry.inc("memory.extraction.fallback_errors")
+        get_logger().warning("memory extraction fallback failed: %s", exc)
+
+
+def _cancel_pending_fallbacks() -> None:
+    """Give a new real user turn priority over background extraction.
+
+    The fallback may be generating on the same single-slot local engine the
+    user is now waiting for. Cancelling is safe: the task checkpoints at its
+    ``await`` points, and ``apply_extraction`` is synchronous once it starts
+    writing.
+    """
+    for task in list(_fallback_tasks):
+        if not task.done():
+            task.cancel()
+
 
 # Consecutive proactive requests immediately preceding the current one
 # (a proactive request = the last user message is the renderer's
@@ -168,12 +388,57 @@ _body_log_ref = None
 _decision_loop_ref = None
 _last_user_msg = ""
 _last_user_ts = 0.0
+# Real user turn only (proactive wake-up prompts are excluded): a voice
+# older than this is stale, so intuition pressure must not shorten gaps.
+_last_real_user_ts = 0.0
 from . import screen_click
 from .screen_capture import capture as screen_capture
-from .think_filter import ThinkBlockFilter, ControlTagFilter, ToolNarrationFilter
+from .think_filter import (
+    ThinkBlockFilter,
+    ControlTagFilter,
+    ToolNarrationFilter,
+    DStateFilter,
+)
 from .updater import DEFAULT_SOURCE as DEFAULT_UPDATE_SOURCE
 from .updater import ModelUpdater
 from .sidecar_updater import SidecarUpdater
+from .decision import cortex as _cortex
+from .decision.laya_router import BudgetDecision
+
+
+# ── D 核心（快直觉）────────────────────────────────────────────────
+# Per-theme DStateStore provider, installed by build_app. Direct generator
+# tests never install one, so their legacy behaviour is untouched.
+_dstate_provider = None
+
+
+def set_dstate_provider(provider) -> None:
+    """Install (or reset, with None) the per-theme D state provider."""
+    global _dstate_provider
+    _dstate_provider = provider
+
+
+# The passive D gate runs before every provider call, including boot. The
+# generic sampler's 0.45s default was too tight for a cold Laya request
+# (observed 452ms fallback to priors), so the gateway gives D a full second.
+CORTEX_DECISION_TIMEOUT = 1.0
+
+
+def _cortex_enabled() -> bool:
+    raw = (os.environ.get("PET_CORTEX_ENABLED") or "").strip().lower()
+    return raw not in ("0", "false", "no", "off", "disabled")
+
+
+def _get_dstate_store():
+    """Current theme's D store, or None outside the app / on any failure."""
+    provider = _dstate_provider
+    if provider is None:
+        return None
+    try:
+        return provider()
+    except Exception as exc:
+        get_logger().debug("cortex: D state provider failed: %s", exc)
+        return None
 
 
 # ── Request / response shapes ────────────────────────────────────────────────
@@ -201,6 +466,9 @@ class ChatRequest(BaseModel):
     stream: bool = True
     system: Optional[str] = None
     thinking: bool = False
+    # Gateway-internal only: Laya fills this per turn. Electron does not need
+    # to send it; OpenAIProvider gets it through reasoning_effort_override.
+    reasoning_effort: Optional[str] = None
     silent: bool = False  # bypass pet state pushes (used by narrator)
     # When true the gateway sends `lora: []` to llama-server for THIS
     # request only, which disables every pre-loaded LoRA adapter for the
@@ -219,6 +487,10 @@ class ChatRequest(BaseModel):
         description="When false, skip MCP tool injection and detection",
     )
     context_window: Optional[int] = None
+    # The browser-web provider pays for the whole system prompt every turn;
+    # its shell sends this to request the compact body block (no window-body
+    # vision-cone prose; screenshots go through capture_screen attachments).
+    compact_prompt: bool = False
 
 
 class PetInteractionRequest(BaseModel):
@@ -249,17 +521,31 @@ def _effective_max_new_tokens(req: ChatRequest) -> int:
     return base
 
 
-def _output_budget(provider, req: ChatRequest) -> int:
+def _output_budget(provider, req: ChatRequest, decision=None) -> int:
     """Output-token budget for one provider.
 
-    Cloud APIs keep a generous 8192 floor (tool-call turns + long replies).
-    Local OpenAI-compatible engines (LM Studio / llama.cpp / Ollama) must
-    NOT get that floor: LM Studio JIT-loads the model with
-    ``prompt_tokens + max_tokens`` of context, so an 8192 output budget on
-    top of a 10k-token pet prompt balloons the KV cache, slows prefill and
-    makes a 2B model look "stuck". The renderer already asks for a sane
-    budget (768, or 1280 with thinking); use it as-is.
+    When Laya produced a ``BudgetDecision`` for this turn, that decision is
+    authoritative: cloud endpoints no longer get an unconditional 8192
+    floor. The absolute cap still applies, and the router has already
+    raised tool turns to at least 1024 tokens.
+
+    Without a decision (silent/proactive turns or a router crash) the old
+    behaviour stands. Cloud APIs keep a generous 8192 floor (tool-call
+    turns + long replies). Local OpenAI-compatible engines (LM Studio /
+    llama.cpp / Ollama) must NOT get that floor: LM Studio JIT-loads the
+    model with ``prompt_tokens + max_tokens`` of context, so an 8192 output
+    budget on top of a 10k-token pet prompt balloons the KV cache, slows
+    prefill and makes a 2B model look "stuck". The renderer already asks for
+    a sane budget (768, or 1280 with thinking); use it as-is.
     """
+    if decision is not None:
+        try:
+            routed = int(decision.max_tokens)
+        except (TypeError, ValueError, AttributeError):
+            routed = 0
+        if routed > 0:
+            return max(1, min(routed, MAX_NEW_TOKENS_CAP))
+
     effective = _effective_max_new_tokens(req)
     if getattr(provider, "is_local", False) or provider.name == "local":
         return effective
@@ -655,6 +941,7 @@ def build_app(
             "the user's real one; check the launcher.",
             memory_dir,
         )
+    telemetry.attach(memory_dir)
     # ── Theme-scoped memory (持续自我存在) ─────────────────────────
     # One MemoryContext holds the soul-layer stores (identity / episodic
     # / mood) and switches them per animation theme. The boot theme comes
@@ -669,6 +956,28 @@ def build_app(
     memory_store = mem_ctx.memory_store
     event_store = mem_ctx.event_store
     mood_store = mem_ctx.mood_store
+
+    # ── D 核心：每个主题一份 <theme_dir>/dstate.json ────────────────
+    # The provider resolves the CURRENT theme lazily (theme switches must
+    # not need a rebuild). Any failure leaves D off; chat continues.
+    _dstate_cache: dict = {}
+
+    def _dstate_for_current_theme():
+        theme = mem_ctx.current_theme
+        store = _dstate_cache.get(theme)
+        if store is None:
+            path = Path(mem_ctx.theme_dir(theme)) / "dstate.json"
+            store = _cortex.DStateStore(path)
+            _dstate_cache[theme] = store
+        return store
+
+    try:
+        set_dstate_provider(_dstate_for_current_theme)
+        _dstate_for_current_theme()  # probe the theme path at boot
+        log.info("cortex: D state per-theme provider installed")
+    except Exception as exc:
+        set_dstate_provider(None)
+        log.warning("cortex: D state provider unavailable (continuing): %s", exc)
 
     # ── Cordis-style plugin container (万物皆插件 → 自进化) ──────────
     # One process-wide container (module scope: the chat stream reads it
@@ -864,7 +1173,12 @@ def build_app(
                         "time_of_day": "深夜" if 0 <= hour < 6 else "",
                     }
                 _decision_loop_ref = DecisionLoop(
-                    _intuition_registry_ref, _ephemeral_ref, _collect_decision_state
+                    _intuition_registry_ref,
+                    _ephemeral_ref,
+                    _collect_decision_state,
+                    # Live clock: pressure() must see the newest real user
+                    # turn immediately, not wait for the next 4s tick.
+                    last_user_ts_fn=lambda: _last_real_user_ts,
                 )
                 _decision_loop_ref.start()
             log.info("decision layer started (ephemeral + intuitions + loop)")
@@ -904,20 +1218,27 @@ def build_app(
         async def _health_loop():
             HEALTH_INTERVAL = 300          # seconds between probes
             SICK_THRESHOLD = 3             # consecutive failures → degraded
-            state = {"llama_fail": 0, "bridge_fail": 0, "degraded": False}
+            state = {"llama_fail": 0, "bridge_fail": 0, "degraded": False,
+                     "llama_was_alive": False}
+            telemetry.gauge("homeostasis.degraded", 0)
             while True:
                 try:
                     await asyncio.sleep(HEALTH_INTERVAL)
-                    # Organ 1: llama-server alive?
+                    # Organ 1: llama-server alive? "Never started" is not a
+                    # sickness: API-only users (LM Studio / DeepSeek) never
+                    # run the local engine, and an absent model used to write
+                    # a false "生病了" memory on every restart. Only a server
+                    # that was alive and then vanished counts as a failure.
                     if getattr(server, "alive", False):
                         state["llama_fail"] = 0
+                        state["llama_was_alive"] = True
+                    elif _engine_enabled() and state["llama_was_alive"]:
+                        state["llama_fail"] = state["llama_fail"] + 1
                     else:
-                        # /api/load-model not yet called is normal (onboarding)
-                        if initial_model or getattr(server, "started_once", False):
-                            state["llama_fail"] = state["llama_fail"] + 1
+                        state["llama_fail"] = 0
                     # Organ 2: bridge to the pet body reachable?
                     try:
-                        bridge_ok = bool(getattr(bridge, "is_reachable", lambda: True)())
+                        bridge_ok = bool(bridge.is_reachable())
                     except Exception:
                         bridge_ok = False
                     state["bridge_fail"] = 0 if bridge_ok else state["bridge_fail"] + 1
@@ -925,6 +1246,8 @@ def build_app(
                     sick = state["llama_fail"] >= SICK_THRESHOLD or state["bridge_fail"] >= SICK_THRESHOLD
                     if sick and not state["degraded"]:
                         state["degraded"] = True
+                        telemetry.inc("homeostasis.sick")
+                        telemetry.gauge("homeostasis.degraded", 1)
                         log.warning("homeostasis: DEGRADED (llama_fail=%d bridge_fail=%d)",
                                     state["llama_fail"], state["bridge_fail"])
                         try:
@@ -946,6 +1269,8 @@ def build_app(
                             log.warning("homeostasis: sick-note write failed: %s", exc)
                     elif not sick and state["degraded"]:
                         state["degraded"] = False
+                        telemetry.inc("homeostasis.recovered")
+                        telemetry.gauge("homeostasis.degraded", 0)
                         log.info("homeostasis: recovered")
                         try:
                             event_store = get_event_store()
@@ -968,6 +1293,7 @@ def build_app(
             yield
         finally:
             bridge.post("sleeping")
+            telemetry.flush()
             # 决策循环停止（"睡觉"时潜意识停工）
             try:
                 if _decision_loop_ref is not None:
@@ -1089,6 +1415,19 @@ def build_app(
                 # more before the first token. A cloud-sized 60 s timeout
                 # turns every cold start into a false "timeout" error.
                 _is_local = is_local_url(base_url)
+                # The DeepSeek web bridge is a text-in/text-out browser
+                # relay, but its extension uploads images through the page's
+                # file input. A screenshot is forwarded as a real attachment;
+                # keep the provider's configured vision capability.
+                _supports_vision = vision_capability_from_config(cfg)
+                # Optional capability override for OpenAI-compatible bridges
+                # that don't implement native tool calling (browser web-chat
+                # bridge). None keeps the historical True default.
+                _function_calling = cfg.get(
+                    "functionCalling", cfg.get("supportsFunctionCalling")
+                )
+                if not isinstance(_function_calling, bool):
+                    _function_calling = None
                 if "anthropic.com" in str(base_url).lower():
                     from .providers.anthropic import AnthropicProvider
                     p = AnthropicProvider(
@@ -1108,6 +1447,11 @@ def build_app(
                         # default for loopback endpoints; opt back in with
                         # "toolsEnabled": true in ~/.pet/providers.json.
                         allow_tools=bool(cfg.get("toolsEnabled", not _is_local)),
+                        supports_function_calling=_function_calling,
+                        # Optional explicit vision override:
+                        # "capabilities": {"images": bool} or "images": bool.
+                        # Absent → model-name heuristic (unchanged).
+                        supports_vision=_supports_vision,
                     )
                 provider_registry.register(p)
                 log.info("Provider loaded: %s (model=%s)", provider_id, model)
@@ -1178,22 +1522,40 @@ def build_app(
         }
 
     # ── Builtin tool: capture_screen (raw vision, no OCR) ──────────────
+    def _vision_provider_for_tools():
+        """Vision channel for this turn: active provider or a fallback.
+
+        The default chat model is text-only (browser bridge); in that case
+        the screenshot is described by a configured vision provider and
+        only the description reaches the chat model.
+        """
+        try:
+            return _select_vision_provider(
+                _active_chat_provider(), provider_registry, server
+            )
+        except Exception as exc:
+            log.warning("vision provider selection failed: %s", exc)
+            return None
+
     async def _handle_capture_screen(args):
         """MCP tool: capture a raw screenshot and return it as an image
-        for the model to see directly. If the local model has no vision
-        capability (no mmproj), tells the model to use observe_screen
-        (OCR) instead."""
+        for the model to see directly. Vision capability follows the
+        ACTIVE chat provider (cloud models included), falling back to the
+        local mmproj only when no provider is in scope. When the active
+        model is text-only, the screenshot is routed through the
+        configured vision channel and returned as a description."""
         nonlocal consent_state, consent_lock
 
-        # Check if the local model can actually see images
-        has_vision = bool(getattr(server, "mmproj_path", None))
-        if not has_vision:
+        active = _active_chat_provider()
+        active_can_see = _screen_tool_can_see_images(server)
+        vision_provider = active if active_can_see else _vision_provider_for_tools()
+        if vision_provider is None and not active_can_see:
             return {
                 "content": [{"type": "text", "text": (
-                    "当前模型没有视觉能力（未加载 mmproj），无法直接看图片。"
-                    "请改用 [MCP:builtin/observe_screen:{}] 获取屏幕文字内容。"
+                    "当前没有可用的视觉通道（当前模型不收图，deepseek 视觉通道也不可用）。"
+                    "可先用 [MCP:builtin/observe_screen:{}] 获取屏幕文字内容。"
                 )}],
-                "summary": "No vision capability — use observe_screen instead.",
+                "summary": "No vision channel available — observe_screen fallback.",
                 "is_error": False,
             }
 
@@ -1203,14 +1565,37 @@ def build_app(
                 if not await _request_screen_permission("截图查看", "截取当前屏幕并查看画面"):
                     return {
                         "content": [{"type": "text", "text": (
-                            "用户拒绝了这次截图。不要继续尝试，除非用户明确要求。"
+                            "用户未授权屏幕查看（这次截图被拒绝）。不要继续尝试；"
+                            "如果用户希望你看屏幕，请让用户在设置里开启屏幕观察权限。"
                         )}],
                         "is_error": True,
-                        "summary": "Screen capture denied by user.",
+                        "summary": (
+                            "User did not authorize screen viewing — ask the user "
+                            "to enable screen observation permission in Settings."
+                        ),
                     }
             if consent_state == "once":
                 consent_state = "always"
+        full = bool((args or {}).get("full"))
         b64 = await asyncio.to_thread(screen_capture)
+
+        # Default view: the pet's own vision cone, not the whole desktop.
+        used_cone = False
+        if not full:
+            view = await _pet_view_for_capture()
+            if view is not None:
+                cropped = await asyncio.to_thread(
+                    crop_to_vision_cone,
+                    b64,
+                    view["pet"],
+                    view["facing"],
+                    view["wa"],
+                )
+                if cropped:
+                    b64 = cropped
+                    used_cone = True
+            if not used_cone:
+                log.warning("capture_screen: cone crop unavailable, using full screen")
 
         # Downscale + recompress to JPEG so the vision encoder processes
         # far fewer tokens. A 1920x1080 PNG (~2MB) → 768px JPEG (~50KB)
@@ -1232,11 +1617,52 @@ def build_app(
         except Exception as exc:
             log.warning("capture_screen image resize failed, using raw: %s", exc)
 
+        if active_can_see:
+            return {
+                "content": [{"type": "text", "text": "截图完成，请直接查看下方的屏幕图片。"}],
+                "summary": (
+                    "Screenshot captured (vision cone)."
+                    if used_cone
+                    else "Screenshot captured (full screen)."
+                ),
+                "screenshot_base64": b64,
+                "screenshot_mime": "image/jpeg",
+                "is_error": False,
+            }
+
+        # Active model is text-only: describe the screenshot through the
+        # vision channel. The image itself never leaves the gateway.
+        provider = vision_provider
+        started = time.perf_counter()
+        try:
+            description = await _describe_screen_with_provider(provider, b64)
+        except Exception as exc:
+            elapsed_ms = int((time.perf_counter() - started) * 1000)
+            log.warning(
+                "vision.describe provider=%s elapsed_ms=%d error=%s",
+                getattr(provider, "name", "?"), elapsed_ms, exc,
+            )
+            return {
+                "content": [{"type": "text", "text": (
+                    f"视觉通道（{getattr(provider, 'name', '?')}）描述屏幕失败：{exc}。"
+                    "可以改用 [MCP:builtin/observe_screen:{}] 获取屏幕文字。"
+                )}],
+                "summary": (
+                    "Vision channel failed to describe the screenshot — "
+                    "use observe_screen for text/OCR instead."
+                ),
+                "is_error": True,
+            }
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+        provider_name = getattr(provider, "name", "?")
+        log.info("vision.describe provider=%s elapsed_ms=%d", provider_name, elapsed_ms)
+        telemetry.inc("vision.describe")
+        telemetry.inc(f"vision.describe.{provider_name}")
         return {
-            "content": [{"type": "text", "text": "截图完成，请直接查看下方的屏幕图片。"}],
-            "summary": "Screenshot captured — see the image below.",
-            "screenshot_base64": b64,
-            "screenshot_mime": "image/jpeg",
+            "content": [{"type": "text", "text": (
+                f"视觉通道（{provider_name}）看到：\n{description}"
+            )}],
+            "summary": f"视觉通道（{provider_name}）看到：\n{description}",
             "is_error": False,
         }
 
@@ -1537,16 +1963,31 @@ def build_app(
     mcp_manager.register_builtin({
         "name": "capture_screen",
         "description": (
-            "Capture a raw screenshot of the user's screen and return it as an "
-            "image for you to see directly with your vision capability. "
-            "USE THIS when the user asks you to look at their screen, see what "
-            "they're doing, or understand the current UI — you SEE the actual "
-            "picture. "
+            "Capture a raw screenshot of the user's screen so you can look at "
+            "it. USE THIS when the user asks you to look at their screen, see "
+            "what they're doing, or understand the current UI. "
+            "By default this is your current vision cone (±30°, 400px), not "
+            "the whole desktop; pass full=true only when the user explicitly "
+            "asks to see the entire screen. "
+            "If the active chat model is text-only, the gateway routes the "
+            "screenshot through the configured vision channel and returns a "
+            "detailed description, so this tool still works for 'looking'. "
             "Unlike observe_screen (which runs OCR for click coordinates), this "
             "is the 'look' tool. "
             "Requires screen consent; if denied, tell the user to enable it in settings."
         ),
-        "input_schema": {"type": "object", "properties": {}},
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "full": {
+                    "type": "boolean",
+                    "description": (
+                        "Only true when the user explicitly asks to see the "
+                        "entire screen; default false (your vision cone)."
+                    ),
+                },
+            },
+        },
         "handler": _handle_capture_screen,
     })
     mcp_router = create_mcp_router(mcp_manager)
@@ -1562,6 +2003,157 @@ def build_app(
         "description": MEMORY_TOOL_SCHEMA["description"],
         "input_schema": MEMORY_TOOL_SCHEMA["input_schema"],
         "handler": memory_tool_handler,
+    })
+
+    # ── Builtin tools: decision roll + override ────────────────────────
+    # The LLM proposes options with gut weights, Laya supplies probabilities,
+    # the sampler rolls from the top-3 posterior. Descriptions must be
+    # self-contained: the renderer only shows description text to most
+    # text-MCP models, so the WHEN/HOW/example all live here.
+    mcp_manager.register_builtin({
+        "name": "pet_decision_roll",
+        "description": (
+            "「掷骰」决策工具：拿不准时让直觉层替你选一次，而不是硬想。\n"
+            "WHEN 用：不确定用户意图、语气、下一步动作、该说多深、要不要开口的时候。\n"
+            "HOW：列出 2-6 个选项，每个给 id（只用字母数字 _-，如 observe/chat）、"
+            "中文 label、直觉权重 0.05-1（越想做越大）；Laya 潜意识层会给出概率并掷一次骰子，"
+            "概率最低的尾巴选项不会被选中。\n"
+            "它很快：直接调用，不要先长篇推理。结果只是一次采样——可以照做，也可以否决；"
+            "如果不照做，用 pet_override_decision 记一笔。\n"
+            '示例：[MCP:builtin/pet_decision_roll:{"question":"接下来做什么",'
+            '"options":[{"id":"observe","label":"看屏幕","weight":0.8},'
+            '{"id":"chat","label":"聊天","weight":0.3}]}]'
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "question": {
+                    "type": "string",
+                    "description": "要决定的简短问题（<=300 字）",
+                },
+                "options": {
+                    "type": "array",
+                    "minItems": 2,
+                    "maxItems": 6,
+                    "description": "2-6 个候选，按直觉给权重",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "id": {
+                                "type": "string",
+                                "description": "ASCII 短 id，只用字母数字 _-，如 observe",
+                            },
+                            "label": {
+                                "type": "string",
+                                "description": "给用户看的中文选项名，如 看屏幕",
+                            },
+                            "weight": {
+                                "type": "number",
+                                "description": "直觉权重 0.05-1，默认 1",
+                            },
+                        },
+                        "required": ["id", "label"],
+                    },
+                },
+                "context": {
+                    "type": "string",
+                    "description": "可选：一两句情境（桌面上开着什么、刚才发生了什么）",
+                },
+                "seed": {
+                    "type": "integer",
+                    "description": "可选：想重掷时换一个整数",
+                },
+            },
+            "required": ["question", "options"],
+        },
+        "handler": _decision_roll_tool,
+    })
+    mcp_manager.register_builtin({
+        "name": "pet_override_decision",
+        "description": (
+            "记录一次否决：当你故意不按 pet_decision_roll 的结果走时调用。"
+            "参数：roll_id（掷骰结果里的 roll_id）、choice（你实际选的那个）、"
+            "reason（一句短原因，比如「用户在哭，先安慰」）。"
+            "它只写日志供日后学习，不会改变这一轮的任何东西。"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "roll_id": {"type": "string", "description": "掷骰结果的 roll_id"},
+                "choice": {"type": "string", "description": "你实际选择的 id 或行为"},
+                "reason": {"type": "string", "description": "一句短原因"},
+            },
+            "required": ["roll_id", "choice", "reason"],
+        },
+        "handler": _decision_override_tool,
+    })
+
+    # ── Builtin tools: slow intuition + active D gut check ─────────────
+    # Descriptions must be self-contained: most text-MCP providers only see
+    # this text, so WHEN / HOW / the round semantics all live here.
+    mcp_manager.register_builtin({
+        "name": "pet_enter_slow",
+        "description": (
+            "进入慢直觉：当你觉得这一轮需要想得更深时调用，把本轮剩下的思考升级。\n"
+            "WHEN：问题复杂、拿不准、需要推理或多步计划，而当前是快速/无思考模式时。\n"
+            "HOW：strength 可选 low（默认）/ high / max，越深越慢。\n"
+            "它只升级这一轮接下来的思考，不是新的一轮；调用一次就够，不要反复调用。\n"
+            '示例：[MCP:builtin/pet_enter_slow:{"strength":"high"}]'
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "strength": {
+                    "type": "string",
+                    "enum": ["low", "high", "max"],
+                    "description": "思考深度，默认 low",
+                },
+            },
+        },
+        "handler": _enter_slow_tool,
+    })
+    mcp_manager.register_builtin({
+        "name": "pet_decision",
+        "description": (
+            "主动问一次 D（底层直觉）：就是每轮开始前替你拿主意的同一套直觉。\n"
+            "WHEN：不确定该想多深、回多长、接下来做什么时，直接问它一次，别硬猜。\n"
+            "返回 thinking（no_thinking/low）、reaction（small/medium/large 及 max_tokens）、"
+            "action（speak/walk/look/quiet/other）、decision_id。\n"
+            "可以给 context（一两句情境）和 action_options（2-8 个 {id,label,weight} 临时选项）。\n"
+            "它只是一次采样：可以照做，也可以改。不会改写你的生命总结。\n"
+            '示例：[MCP:builtin/pet_decision:{"context":"用户在写代码"}]'
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "context": {
+                    "type": "string",
+                    "description": "可选：一两句当前情境",
+                },
+                "action_options": {
+                    "type": "array",
+                    "minItems": 2,
+                    "maxItems": 8,
+                    "description": "可选：临时动作选项",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "id": {
+                                "type": "string",
+                                "description": "ASCII 短 id，只用字母数字 _-",
+                            },
+                            "label": {"type": "string", "description": "中文动作名"},
+                            "weight": {
+                                "type": "number",
+                                "description": "直觉权重 0-1，默认 1",
+                            },
+                        },
+                        "required": ["id", "label"],
+                    },
+                },
+            },
+        },
+        "handler": _decision_tool,
     })
 
     # ── Builtin tool: recall (LingLing model-initiated memory recall) ──
@@ -1640,6 +2232,45 @@ def build_app(
             "root_md": files.read_main(),
             "theme": mem_ctx.current_theme,
         }
+
+    @app.post("/api/memory/search")
+    async def search_memory(payload: dict = None):
+        """Search the current theme's events, memory files, and day logs."""
+        body = payload or {}
+        theme_memory_dir = mem_ctx.theme_dir(mem_ctx.current_theme)
+        return _memory_search.search(
+            str(body.get("query") or ""),
+            event_store,
+            theme_memory_dir,
+            limit=body.get("limit", _memory_search.DEFAULT_LIMIT),
+            scope=str(body.get("scope") or "all"),
+        )
+
+    @app.get("/api/memory/stats")
+    async def get_memory_stats():
+        snapshot = telemetry.snapshot()
+        loop = _decision_loop_ref
+        task = getattr(loop, "_task", None) if loop is not None else None
+        snapshot.update({
+            "memory": {
+                "theme": mem_ctx.current_theme,
+                "event_count": event_store.event_count(),
+                "total_weight": event_store.total_weight(),
+                "core_count": sum(1 for evt in event_store.get_all_events() if evt.get("core")),
+            },
+            "mood": {
+                "current_mood": mood_store.current_mood,
+                "intensity": mood_store.intensity,
+                "emotion_index": mood_store.emotion_index,
+            },
+            "decision": {
+                "initialized": loop is not None,
+                "running": bool(task is not None and not task.done()),
+                "ticks": getattr(loop, "_ticks", 0) if loop is not None else 0,
+                "last_error": getattr(loop, "last_error", "") if loop is not None else "",
+            },
+        })
+        return snapshot
 
     @app.post("/api/memory/switch")
     async def switch_memory(payload: dict):
@@ -1792,10 +2423,14 @@ def build_app(
             and (now_ts - _last_extraction["at"]) < _EXTRACTION_DEDUP_SECONDS
         ):
             result["duplicate"] = True
+            telemetry.inc("memory.extraction.duplicates")
             return result
 
+        telemetry.inc("memory.extraction.turns")
         try:
             data = parse_event_block(text)
+            if data is None:
+                telemetry.inc("memory.extraction.missing_block")
             if data:
                 # Engagement proxy: rough token size of this conversation
                 # turn (chars/4 ≈ tokens, no tokenizer needed). Feeds the
@@ -1803,6 +2438,7 @@ def build_app(
                 # forget; perfunctory → fades).
                 conversation_tokens = len(text) // 4
                 for evt_data in data.get("events", []):
+                    events_before = event_store.event_count()
                     evt = event_store.add_event(
                         title=evt_data.get("title", ""),
                         content=evt_data.get("content", ""),
@@ -1813,6 +2449,8 @@ def build_app(
                         core=bool(evt_data.get("core", False)),
                         conversation_tokens=conversation_tokens,
                     )
+                    if event_store.event_count() > events_before:
+                        telemetry.inc("memory.extraction.events")
                     result["events_added"].append(evt["id"])
                 _organ_service("resonance", _resonance_module).mark_stale()
 
@@ -1910,8 +2548,43 @@ def build_app(
 
     @app.get("/api/mood/context")
     async def get_mood_context():
-        """Return the mood context block for system-prompt injection."""
-        return {"context": mood_store.format_for_system_prompt()}
+        """Legacy endpoint: mood is internal state and has no LLM-facing
+        self-report, so this intentionally returns an empty context."""
+        return {"context": ""}
+
+    @app.get("/api/prompt/system")
+    async def get_system_prompt(provider: Optional[str] = None, compact: bool = False):
+        """Canonical persona + memory contract (B-6, single source of truth).
+
+        Shells fetch this instead of hardcoding the personality; per-turn
+        dynamic blocks are still layered on by the caller.
+
+        ``?provider=<name>`` selects the native-tool wording when that
+        provider supports function calling. ``?compact=1`` selects the short
+        text-MCP contract used by the browser-automation web provider, which
+        re-sends the prompt on every request. Unknown names (and the default)
+        keep the text-MCP contract — a lookup miss must never turn into a 500.
+        """
+        from . import persona
+        native_tools = False
+        name = (provider or "").strip()
+        if name:
+            try:
+                candidate = provider_registry.get(name)
+                native_tools = bool(getattr(candidate, "supports_function_calling", False))
+            except Exception:
+                native_tools = False
+        prompt = (
+            persona.compact_prompt_block(native_tools=native_tools)
+            if compact else persona.base_prompt_block(native_tools=native_tools)
+        )
+        return {
+            "ok": True,
+            "version": persona.PROMPT_VERSION,
+            "native_tools": native_tools,
+            "compact": bool(compact),
+            "prompt": prompt,
+        }
 
     @app.post("/api/events/resonance")
     async def check_resonance(payload: dict):
@@ -1922,7 +2595,7 @@ def build_app(
         Body: { "message": "user's latest message" }
         """
         message = str(payload.get("message") or "")
-        results = _organ_service("resonance", _resonance_module).find_resonance(event_store, message)
+        results = await _organ_service("resonance", _resonance_module).find_resonance(event_store, message)
         return {
             "resonant": [
                 {"id": e["id"], "title": e["title"], "content": e["content"]}
@@ -1930,6 +2603,47 @@ def build_app(
             ],
             "count": len(results),
         }
+
+    @app.get("/api/brain/stream")
+    async def brain_stream():
+        """Structured "brain stream" (rounds, D, tools, inner voice).
+
+        Sends the recent ring buffer on connect, then live publishes. A
+        comment heartbeat keeps idle proxies/renderers from timing out.
+        """
+
+        async def stream():
+            queue = _brain.subscribe()
+            try:
+                snapshot = _brain.snapshot()
+                last_id = snapshot[-1]["id"] if snapshot else 0
+                for event in snapshot:
+                    yield _sse(event)
+                while True:
+                    try:
+                        event = await asyncio.wait_for(queue.get(), timeout=15.0)
+                    except asyncio.TimeoutError:
+                        yield b": ping\n\n"
+                        continue
+                    # Events published between subscribe() and snapshot()
+                    # are already in the snapshot; skip the duplicate.
+                    event_id = event.get("id", 0) if isinstance(event, dict) else 0
+                    if event_id and event_id <= last_id:
+                        continue
+                    if event_id:
+                        last_id = event_id
+                    yield _sse(event)
+            finally:
+                _brain.unsubscribe(queue)
+
+        return StreamingResponse(
+            stream(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+            },
+        )
 
     @app.get("/api/providers")
     async def list_providers():
@@ -2936,14 +3650,128 @@ def _sse(payload: dict) -> bytes:
 
 # ── Phase 2: Provider-based chat ──────────────────────────────────────────
 
-MAX_TOOL_ITERATIONS = 5
+# A tool loop has NO total iteration/duration cap: the pet may keep calling
+# tools for hours as long as it actually SPEAKS between rounds
+# (工具→说话→工具→说话). Only a completely silent tool STREAK is cut off —
+# consecutive tool calls with no user-visible reply text in between.
+# The streak clock starts when the FIRST tool of the streak is about to run,
+# NOT at turn start: slow prefill / long thinking before any tool call is
+# the model working, not the pet silently tool-calling.
+# Thinking (think events), tool status asides (_执行 recall..._), control
+# tags and <<<MEM>>> extraction blocks are pipeline chatter, not speech.
+SILENT_TOOL_TIMEOUT_SECONDS = 600.0
+
+
+def _silent_tool_timeout_seconds() -> float:
+    """Silent tool-loop budget; ``PET_SILENT_TOOL_TIMEOUT`` overrides (s)."""
+    raw = os.environ.get("PET_SILENT_TOOL_TIMEOUT")
+    if raw is None or not str(raw).strip():
+        return SILENT_TOOL_TIMEOUT_SECONDS
+    try:
+        value = float(str(raw).strip())
+    except ValueError:
+        value = 0.0
+    if value <= 0:
+        get_logger().warning(
+            "invalid PET_SILENT_TOOL_TIMEOUT=%r; using default %.0fs",
+            raw,
+            SILENT_TOOL_TIMEOUT_SECONDS,
+        )
+        return SILENT_TOOL_TIMEOUT_SECONDS
+    return value
+
+
+def silent_tool_timed_out(started_at: float, now: float, budget: float) -> bool:
+    """True when the silent tool streak has lasted for the whole budget.
+
+    ``started_at`` is the tool-streak start (first tool about to execute),
+    never the turn start — a model that only thinks/prefills is not a
+    silent tool streak and must not be cut off.
+    """
+    try:
+        return (float(now) - float(started_at)) >= float(budget)
+    except (TypeError, ValueError):
+        return False
+
+
+def _monotonic() -> float:
+    """Indirection so tests can freeze/advance the tool-loop clock."""
+    return time.monotonic()
+
+
+# After this many recall calls in one turn, nudge the model to answer with
+# what it already has. This is a SOFT hint only — it never truncates the
+# loop; the silent-tool timeout above is the only hard stop.
+RECALL_SOFT_LIMIT = 3
+RECALL_LIMIT_NOTICE = (
+    "[系统] 这一轮你已经回忆了 3 次。先基于现在记得的部分回答用户，"
+    "不要再调用 recall 了；想不起来的部分就如实说没想起来。"
+)
+# Last-resort visible text when the loop stopped (silent-tool timeout or a
+# pipeline-chatter-only ending) and even the forced tools=None answer came
+# back empty. The user must never watch the bubble stream tool statuses and
+# then vanish.
+TOOL_LOOP_FALLBACK_TEXT = (
+    "我翻了一会儿记忆，但这次没整理出答案。再问我一次，或者给我一个关键词。"
+)
 
 # Emotion tag the LLM appends to the end of its reply. Parsed by the
 # gateway and pushed to the pet via ClawdBridge so the pet can pick an
 # emotion-tagged animation. Never shown to the user (renderer strips it).
 _EMOTION_RE = re.compile(r"\[EMOTION:\s*([a-z_]+)\]", re.IGNORECASE)
+# A model sometimes echoes its tool call inline before the actual answer
+# ("[MCP:builtin/capture_screen:{}]你屏幕上…"). The line-based narration
+# filter only drops whole marker lines; strip an inline marker here so it
+# never reaches the chat bubble.
+_INLINE_TOOL_MARKER_RE = re.compile(
+    r"\[\s*(?:MCP:[^\]]*|skill:[^\]]*|(?:builtin|pet(?:-world|-intuition)?)/[^\]]*)\]\s*",
+    re.IGNORECASE,
+)
 # Matches the memory block's live now-anchor line ("（现在是2026年…。").
 _NOW_ANCHOR_RE = re.compile(r"（现在是\s*[^）]*。")
+
+
+def _visible_reply_text(text: str) -> str:
+    """Return only the part of a provider reply a user could actually see.
+
+    Tool-loop bookkeeping (MCP markers, ``_执行 recall..._`` asides) and
+    control tags (emotion / next_chat / walk / inner / MEM block) are
+    pipeline chatter. They must not count as a final answer, otherwise the
+    loop thinks the pet already spoke and ends on an empty bubble.
+    """
+    if not text:
+        return ""
+    # The hidden DSTATE block (and an unfinished one) is never visible.
+    text = _cortex.strip_dstate_blocks(text)
+    # An unclosed MEM block still hides everything after its opener.
+    s = re.sub(
+        r"<<<MEM>>>[\s\S]*?(?:<<<MEMEND>>>|$)",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+    # A MEM block split across tool rounds can leave a lone opener/closer.
+    # A tag is control data, never speech, so drop any stray marker.
+    s = re.sub(r"<<<(?:MEM|MEMEND)>>>", "", s, flags=re.IGNORECASE)
+    s = re.sub(
+        r"\[\s*(?:EMOTION|NEXT_CHAT|WALK_DESKTOP|WALK|INNER)\s*[^\]]*\]",
+        "",
+        s,
+        flags=re.IGNORECASE,
+    )
+    kept: list[str] = []
+    for line in s.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith(("[MCP:", "[builtin/", "[skill:")):
+            continue
+        if re.match(
+            r"^_{0,2}\s*执行\s+[A-Za-z_]\w*\s*(?:\.\.\.)?\s*_{0,2}$", stripped
+        ):
+            continue
+        kept.append(stripped)
+    return "\n".join(kept).strip()
 
 
 def _sanitize(s: str) -> str:
@@ -3058,6 +3886,97 @@ def _clawd_headers() -> dict:
     except Exception:
         token = ""
     return {"Content-Type": "application/json", "x-clawd-token": token}
+
+
+async def _pet_view_for_capture() -> Optional[dict]:
+    """Best-effort /world/bodies geometry for a cone-shaped screenshot.
+
+    Returns {"pet", "facing", "wa"} (all DIP) or None. Short timeout: a
+    slow Electron must never stall the screenshot tool.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=1.2) as client:
+            resp = await client.get(
+                "http://127.0.0.1:%d/world/bodies" % _clawd_port(),
+                headers=_clawd_headers(),
+            )
+        data = resp.json()
+        if data.get("status") == "error":
+            return None
+        pet = data.get("pet") or {}
+        wa = data.get("wa") or {}
+        if not pet or not wa:
+            return None
+        return {"pet": pet, "facing": data.get("facing") or "right", "wa": wa}
+    except Exception:
+        return None
+
+
+def crop_to_vision_cone(
+    b64: str, pet: dict, facing: str, wa: dict
+) -> Optional[str]:
+    """Crop a screenshot to the pet's existing vision cone.
+
+    ``pet`` and ``wa`` are DIP geometry from /world/bodies; the screenshot
+    is the primary display, so physical scale = image.width / wa.width.
+    Everything outside the FOV sector is blacked out. Returns base64 JPEG
+    (max side 768) or None when the geometry is unusable — the caller then
+    falls back to the full screen.
+    """
+    from .decision.vision import FOV_HALF_DEG, FOV_RANGE_PX
+
+    try:
+        import io as _io
+        from PIL import Image as _Image, ImageDraw as _ImageDraw
+
+        wa_width = float(wa["width"])
+        pet_x, pet_y = float(pet["x"]), float(pet["y"])
+        pet_w, pet_h = float(pet["width"]), float(pet["height"])
+        if wa_width <= 0 or pet_w <= 0 or pet_h <= 0:
+            return None
+
+        img = _Image.open(_io.BytesIO(base64.b64decode(b64))).convert("RGB")
+        scale = img.width / wa_width
+        if scale <= 0:
+            return None
+        eye_x = (pet_x + pet_w / 2) * scale
+        eye_y = (pet_y + pet_h / 2) * scale
+        if not (0 <= eye_x < img.width and 0 <= eye_y < img.height):
+            return None
+
+        radius = FOV_RANGE_PX * scale
+        center = 180.0 if str(facing or "").lower() == "left" else 0.0
+        points = [(eye_x, eye_y)]
+        for i in range(25):
+            angle = math.radians(center - FOV_HALF_DEG + 2 * FOV_HALF_DEG * i / 24)
+            points.append((
+                round(eye_x + math.cos(angle) * radius, 3),
+                round(eye_y + math.sin(angle) * radius, 3),
+            ))
+
+        left = max(0, int(math.floor(min(p[0] for p in points))))
+        top = max(0, int(math.floor(min(p[1] for p in points))))
+        right = min(img.width, int(math.ceil(max(p[0] for p in points))))
+        bottom = min(img.height, int(math.ceil(max(p[1] for p in points))))
+        if right <= left or bottom <= top:
+            return None
+
+        crop = img.crop((left, top, right, bottom))
+        mask = _Image.new("L", crop.size, 0)
+        _ImageDraw.Draw(mask).polygon(
+            [(x - left, y - top) for x, y in points], fill=255
+        )
+        out = _Image.composite(crop, _Image.new("RGB", crop.size, (0, 0, 0)), mask)
+
+        max_side = 768
+        if max(out.size) > max_side:
+            ratio = max_side / max(out.size)
+            out = out.resize((int(out.size[0] * ratio), int(out.size[1] * ratio)), _Image.LANCZOS)
+        buf = _io.BytesIO()
+        out.save(buf, format="JPEG", quality=70)
+        return base64.b64encode(buf.getvalue()).decode("ascii")
+    except Exception:
+        return None
 
 
 # ── 刚体选择：走到自己选中的刚体旁边 / 站上去 ──────────────────────────
@@ -3446,10 +4365,232 @@ def _intuition_tool(name: str, args: dict) -> str:
     return "[intuition] 未知工具 %s" % name
 
 
-async def _gather_tools(mcp_manager: MCPManager, req: ChatRequest) -> Optional[list[ToolDef]]:
+async def _decision_roll_tool(args: dict) -> dict:
+    """Builtin pet_decision_roll: one Laya-assisted roll over model options.
+
+    The model proposes 2..6 options with gut weights; Laya supplies
+    probabilities; the sampler blends them and draws from the top-3
+    posterior. ``user_text`` comes from the turn ContextVar so the roll sees
+    what the user actually said (never a narration prompt).
+    """
+    args = args if isinstance(args, dict) else {}
+    used = int(_active_roll_count_ref.get() or 0)
+    if used >= _MAX_DECISION_ROLLS_PER_TURN:
+        return {
+            "content": [{"type": "text", "text": (
+                "这一轮已经掷过 3 次骰了。别继续掷——直接选一个，或者直接回答。"
+            )}],
+            "is_error": True,
+            "summary": "Roll limit reached (3/turn); commit to a choice",
+        }
+
+    roll_kwargs: dict = {
+        "context": str(args.get("context") or ""),
+        "user_text": _active_user_text(),
+    }
+    seed = args.get("seed")
+    # bool is an int subclass; a True seed would silently roll with 1.
+    if isinstance(seed, int) and not isinstance(seed, bool):
+        roll_kwargs["seed"] = seed
+
+    try:
+        result = await _decision_sampler.roll_decision(
+            args.get("question"), args.get("options"), **roll_kwargs
+        )
+    except ValueError as exc:
+        return {
+            "content": [{"type": "text", "text": f"掷骰参数有误：{exc}"}],
+            "is_error": True,
+            "summary": f"Invalid roll args: {exc}",
+        }
+    _active_roll_count_ref.set(used + 1)
+
+    choice = str(result.get("choice") or "")
+    confidence = float(result.get("confidence") or 0.0)
+    source = str(result.get("source") or "unknown")
+    summary = f"掷骰 → {choice} ({confidence:.2f}, {source})"
+    laya_choice = (result.get("laya") or {}).get("choice")
+    if laya_choice and laya_choice != choice:
+        summary += f" laya={laya_choice}"
+
+    telemetry.inc("decision.roll.total")
+    telemetry.inc("decision.roll." + source.replace(".", "_"))
+    # Name says ms: observe the sampler's own millisecond budget as-is.
+    telemetry.observe("decision.roll.latency_ms", float(result.get("latency_ms") or 0.0))
+    telemetry.gauge("decision.roll.confidence", confidence)
+
+    return {
+        "content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False)}],
+        "is_error": False,
+        "summary": summary,
+    }
+
+
+async def _decision_override_tool(args: dict) -> dict:
+    """Builtin pet_override_decision: log a deliberate veto of a roll.
+
+    Logging only — it never changes the current turn. The distiller learns
+    from the mismatch between what was rolled and what was actually chosen.
+    """
+    args = args if isinstance(args, dict) else {}
+    try:
+        result = _decision_sampler.record_override(
+            args.get("roll_id"),
+            args.get("choice"),
+            args.get("reason"),
+        )
+    except ValueError as exc:
+        return {
+            "content": [{"type": "text", "text": f"否决记录参数有误：{exc}"}],
+            "is_error": True,
+            "summary": f"Invalid override args: {exc}",
+        }
+
+    telemetry.inc("decision.override")
+    return {
+        "content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False)}],
+        "is_error": False,
+        "summary": f"否决已记录 → {result.get('choice')}",
+    }
+
+
+async def _enter_slow_tool(args: dict) -> dict:
+    """Builtin pet_enter_slow: upgrade the REST of this round's thinking.
+
+    The provider loop rebuilds its chat kwargs from the live ``req`` every
+    iteration, so mutating ``thinking`` / ``reasoning_effort`` here makes the
+    next generation deeper without starting a new round.
+    """
+    req = _active_chat_req_ref.get()
+    if req is None:
+        return {
+            "content": [{"type": "text", "text": "当前没有进行中的对话轮次，无法升级慢直觉。"}],
+            "is_error": True,
+            "summary": "No active chat turn for slow intuition",
+        }
+    args = args if isinstance(args, dict) else {}
+    strength = str(args.get("strength") or "low").strip().lower()
+    if strength not in ("low", "high", "max"):
+        strength = "low"
+    req.thinking = True
+    req.reasoning_effort = strength
+    telemetry.inc("decision.slow.enter")
+    return {
+        "content": [{"type": "text", "text": f"已进入慢直觉（{strength}）。接下来的思考会更深。"}],
+        "is_error": False,
+        "summary": f"slow intuition: {strength}",
+    }
+
+
+async def _decision_tool(args: dict) -> dict:
+    """Builtin pet_decision: ask the same D core once, immediately.
+
+    ``active_decision`` never mutates or saves the store, so an active gut
+    check cannot overwrite the per-theme life state the passive path owns.
+    """
+    store = _get_dstate_store()
+    if store is None:
+        return {
+            "content": [{"type": "text", "text": "D 还不可用。"}],
+            "is_error": True,
+            "summary": "D unavailable",
+        }
+    args = args if isinstance(args, dict) else {}
+    current_state = {
+        "user_text": _active_user_text(),
+        "is_proactive": not _active_user_text(),
+        "last_action": (store.last_decision or {}).get("action", ""),
+    }
+    action_options = args.get("action_options")
+    if not isinstance(action_options, list):
+        action_options = None
+    try:
+        decision = await _cortex.active_decision(
+            store,
+            current_state,
+            action_options=action_options,
+            context=str(args.get("context") or ""),
+            timeout=CORTEX_DECISION_TIMEOUT,
+        )
+        if not isinstance(decision, dict):
+            raise TypeError("cortex decision is not a dict")
+    except ValueError as exc:
+        return {
+            "content": [{"type": "text", "text": f"主动 D 参数有误：{exc}"}],
+            "is_error": True,
+            "summary": f"Invalid pet_decision args: {exc}",
+        }
+    except Exception as exc:
+        telemetry.inc("decision.cortex.errors")
+        return {
+            "content": [{"type": "text", "text": f"主动 D 暂时不可用：{exc}"}],
+            "is_error": True,
+            "summary": f"pet_decision failed: {type(exc).__name__}",
+        }
+    telemetry.inc("decision.cortex.active")
+    summary = "主动 D → %s/%s/%s" % (
+        decision.get("strength"),
+        decision.get("reaction"),
+        decision.get("action"),
+    )
+    return {
+        "content": [{"type": "text", "text": json.dumps(decision, ensure_ascii=False)}],
+        "is_error": False,
+        "summary": summary,
+    }
+
+
+CORE_TOOL_NAMES = {
+    "memory",
+    "recall",
+    "memory_search",
+    # The decision pair is tiny (schemas are short) and is most useful on
+    # exactly the cheap local models that run core-only: no long reasoning,
+    # just "propose options, let Laya roll".
+    "pet_decision_roll",
+    "pet_override_decision",
+    # Slow-intuition upgrade + an immediate active D gut check. Both are
+    # first-class soul tools on every provider tier.
+    "pet_enter_slow",
+    "pet_decision",
+}
+
+
+def _build_tool_map(tools: Optional[list[ToolDef]]) -> dict[str, tuple[str, str]]:
+    """Map the names a model may emit to (server_name, tool_name).
+
+    Prefixed names (``mcp_{server}_{tool}``) are always registered. Models
+    also emit bare names (``pet_world_walk_to``, ``observe_screen``) — register
+    those too when they are unique across the whole tool list. A duplicate
+    bare name keeps only the prefixed form: routing it to an arbitrary server
+    would make "walk" silently hit the wrong tool.
+    """
+    tool_map: dict[str, tuple[str, str]] = {}
+    if not tools:
+        return tool_map
+    for t in tools:
+        prefixed = f"mcp_{_sanitize(t.server_name)}_{_sanitize(t.name)}"
+        tool_map[prefixed] = (t.server_name, t.name)
+    bare_counts = Counter(t.name for t in tools)
+    for t in tools:
+        if bare_counts[t.name] == 1 and t.name not in tool_map:
+            tool_map[t.name] = (t.server_name, t.name)
+    return tool_map
+
+
+async def _gather_tools(
+    mcp_manager: MCPManager,
+    req: ChatRequest,
+    core_only: bool = False,
+) -> Optional[list[ToolDef]]:
     """Gather MCP tool definitions if tools are enabled. Plugin tools
     (petplugins container — the model's self-authored organs) join the
-    same tool list, prefixed pet_ to stay collision-free with MCP."""
+    same tool list, prefixed pet_ to stay collision-free with MCP.
+
+    ``core_only`` keeps only the small soul tools when a provider disables
+    heavy tool schemas. Matching by tool name covers both builtin and pet
+    implementations without exposing world, intuition, or other MCP tools.
+    """
     if not req.tools_enabled:
         return None
     tool_defs: list[ToolDef] = []
@@ -3474,15 +4615,15 @@ async def _gather_tools(mcp_manager: MCPManager, req: ChatRequest) -> Optional[l
     tool_defs.append(ToolDef(
         server_name="pet-world",
         name="pet_world_bodies",
-        description="列出视野内的桌面刚体（窗口/桌面图标，猫可以站在上面）：id、名字、方向和距离。视野外的看不见。",
+        description="看桌面窗口刚体（不是截图；看屏幕画面用 capture_screen）：id、名字、方向和距离。视野外的看不见。",
         input_schema={"type": "object", "properties": {}},
     ))
     tool_defs.append(ToolDef(
         server_name="pet-world",
         name="pet_world_scout",
         description=(
-            "从你自己的视角环顾桌面：看到哪些窗户（方向+距离+标题），"
-            "可以从中挑一扇收养成刚体。"
+            "看桌面窗口刚体（不是截图；看屏幕画面用 capture_screen）。"
+            "从你自己的视角环顾：有哪些窗户（方向+距离+标题），可以收养一扇。"
         ),
         input_schema={"type": "object", "properties": {}},
     ))
@@ -3574,7 +4715,38 @@ async def _gather_tools(mcp_manager: MCPManager, req: ChatRequest) -> Optional[l
                 "required": ["name"],
             },
         ))
+    if core_only:
+        tool_defs = [t for t in tool_defs if t.name in CORE_TOOL_NAMES]
     return tool_defs or None
+
+
+def _real_user_turn_text(req: ChatRequest) -> Optional[str]:
+    """Text of the last message when this is a real user turn, else None.
+
+    Narration (``silent``), empty requests and renderer-synthesised
+    proactive wake-ups (``[系统提示…]``) must not reach the Laya budget
+    router: they are not something the user said, so their budget keeps the
+    legacy provider behaviour.
+    """
+    if getattr(req, "silent", False):
+        return None
+    messages = getattr(req, "messages", None) or []
+    if not messages:
+        return None
+    last = messages[-1]
+    role = last.get("role") if isinstance(last, dict) else getattr(last, "role", None)
+    if role != "user":
+        return None
+    content = last.get("content") if isinstance(last, dict) else getattr(last, "content", None)
+    if isinstance(content, list):
+        content = next(
+            (p.get("text") for p in content if isinstance(p, dict) and p.get("type") == "text"),
+            "",
+        )
+    text = str(content or "")
+    if text.lstrip().startswith(_PROACTIVE_PROMPT_PREFIX):
+        return None
+    return text
 
 
 def _should_log_conversation(req: ChatRequest, conversation_dir: Optional[Path]) -> bool:
@@ -3585,24 +4757,9 @@ def _should_log_conversation(req: ChatRequest, conversation_dir: Optional[Path])
     sleep compression treats that file as *the user's* day, and a narrator
     prompt logged as "user" would poison the memory it is supposed to feed.
     """
-    if conversation_dir is None or getattr(req, "silent", False):
+    if conversation_dir is None:
         return False
-    messages = getattr(req, "messages", None) or []
-    if not messages:
-        return False
-    last = messages[-1]
-    role = last.get("role") if isinstance(last, dict) else getattr(last, "role", None)
-    if role != "user":
-        return False
-    # Proactive wake-ups are renderer-synthesised "[系统提示：…]" user turns,
-    # not something the user said. Logging them would fabricate a day.
-    content = last.get("content") if isinstance(last, dict) else getattr(last, "content", None)
-    if isinstance(content, list):
-        content = next(
-            (p.get("text") for p in content if isinstance(p, dict) and p.get("type") == "text"),
-            "",
-        )
-    return not str(content or "").lstrip().startswith(_PROACTIVE_PROMPT_PREFIX)
+    return _real_user_turn_text(req) is not None
 
 
 async def _stream_chat_provider(
@@ -3617,12 +4774,250 @@ async def _stream_chat_provider(
     conversation_dir: Optional[Path] = None,
 ) -> AsyncGenerator[bytes, None]:
     """Provider-based streaming chat with MCP tool support."""
+    global _last_real_user_ts
     log = get_logger()
+    turn_started = time.perf_counter()
+    first_token_recorded = False
+    telemetry.inc("chat.turns")
+
+    # ── Brain stream (diagnostics / brain window) ─────────────────────
+    # Side channel only: every publish is failure-isolated so a bad event,
+    # a full subscriber queue or a broken UI stream can never break chat.
+    _round_id = "r_" + secrets.token_hex(4)
+    iteration = 0
+    _tool_call_count = 0
+    _inner_chars = 0
+
+    def _emit(kind: str, title: str, text: str = "", **meta) -> None:
+        try:
+            _brain.publish({
+                "round": _round_id,
+                "iteration": iteration,
+                "type": kind,
+                "title": title,
+                "text": text,
+                "meta": meta,
+            })
+        except Exception:
+            pass
+
+    # One definition of "this is not a real user turn" for the whole round.
+    # Proactive wake-ups, silent narration and empty requests are quiet: they
+    # may legitimately end with no visible text.
+    _is_proactive = _real_user_turn_text(req) is None
+    # D may pick "quiet" on a proactive life round: the surface stays silent
+    # while the model still writes an inner voice. Set once the decision is
+    # applied; a real user turn is always forced to speak, so never here.
+    _quiet_life_turn = False
+
+    _round_user_text = ""
+    try:
+        if req.messages:
+            _last_round_content = req.messages[-1].content
+            if isinstance(_last_round_content, list):
+                _last_round_content = next(
+                    (
+                        part.get("text")
+                        for part in _last_round_content
+                        if isinstance(part, dict) and part.get("type") == "text"
+                    ),
+                    "",
+                )
+            _round_user_text = str(_last_round_content or "")[:500]
+    except Exception:
+        _round_user_text = ""
+    _emit(
+        "round_start",
+        "轮开始",
+        proactive=_is_proactive,
+        silent=bool(req.silent),
+        messages=len(req.messages or []),
+        model_provider=req.model_provider or "auto",
+        user_text=_round_user_text,
+    )
+
+    # A real user turn outranks the previous turn's background extraction.
+    # On a single-slot local engine the fallback would otherwise prefill
+    # ahead of the answer the user is waiting for.
+    if _real_user_turn_text(req) is not None:
+        _cancel_pending_fallbacks()
+
+    # ── D 核心（快直觉）：先问 D，再决定 provider 的思考/篇幅/动作 ──
+    # MUST run before _resolve_provider: LocalProvider consumes
+    # enable_thinking at construction time. ``_cortex_store`` doubles as the
+    # "D is active this turn" flag (it also gates the meta seat below and
+    # the DSTATE parse at the end of the round).
+    _cortex_store = None
+    _d_budget = None
+    if not req.silent and _cortex_enabled():
+        _cortex_store = _get_dstate_store()
+    if _cortex_store is not None:
+        _user_turn_text = _real_user_turn_text(req)
+        _cortex_state = {
+            "user_text": _user_turn_text or "",
+            "is_proactive": _is_proactive,
+            "mood_index": mood_store.emotion_index if mood_store is not None else 0,
+            "idle_sec": (
+                max(0, time.time() - _last_real_user_ts)
+                if _last_real_user_ts
+                else 0
+            ),
+            "last_action": (_cortex_store.last_decision or {}).get("action", ""),
+        }
+        _cortex_started = time.perf_counter()
+        try:
+            _decision = await _cortex.passive_decision(
+                _cortex_store, _cortex_state, timeout=CORTEX_DECISION_TIMEOUT
+            )
+            if not isinstance(_decision, dict):
+                raise TypeError("cortex decision is not a dict")
+        except Exception as exc:
+            telemetry.inc("decision.cortex.errors")
+            log.warning("cortex decision failed (safe fallback): %s", exc)
+            _decision = {
+                "thinking": False,
+                "reasoning_effort": None,
+                "strength": "no_thinking",
+                "reaction": "medium",
+                "max_tokens": _cortex.REACTION_MAX_TOKENS["medium"],
+                "action": "quiet" if _is_proactive else "speak",
+                "action_label": "安静" if _is_proactive else "说",
+                "source": "fallback",
+                "confidence": 0.0,
+                "reason": f"fallback:{type(exc).__name__}",
+            }
+        _cortex_latency_ms = (time.perf_counter() - _cortex_started) * 1000.0
+
+        # A real user turn is a hard response obligation: never let the
+        # default action "quiet" swallow the answer.
+        if not _is_proactive and _decision.get("action") == "quiet":
+            _decision["action"] = "speak"
+            _decision["action_label"] = "说"
+            _decision["reason"] = (
+                str(_decision.get("reason") or "") + "|forced_speak:user_turn"
+            )
+
+        # Quiet life round: proactive + D chose "quiet". Filters still run
+        # (INNER / DSTATE / control tags) and full_text still accumulates,
+        # but no visible delta reaches the surface.
+        _quiet_life_turn = bool(
+            _is_proactive and (_decision.get("action") == "quiet")
+        )
+
+        _decision["thinking"] = bool(_decision.get("thinking"))
+        _decision["reasoning_effort"] = (
+            "low" if _decision["thinking"] else None
+        )
+        if _decision.get("reaction") not in _cortex.REACTION_MAX_TOKENS:
+            _decision["reaction"] = "medium"
+        try:
+            _max_tokens = int(_decision.get("max_tokens") or 0)
+        except (TypeError, ValueError):
+            _max_tokens = 0
+        if _max_tokens <= 0:
+            _max_tokens = _cortex.REACTION_MAX_TOKENS[_decision["reaction"]]
+        _decision["max_tokens"] = _max_tokens
+
+        req.thinking = _decision["thinking"]
+        req.reasoning_effort = (
+            _decision["reasoning_effort"] if req.thinking else None
+        )
+        req.max_new_tokens = _max_tokens
+        try:
+            _d_confidence = float(_decision.get("confidence") or 0.0)
+        except (TypeError, ValueError):
+            _d_confidence = 0.0
+        _d_budget = BudgetDecision(
+            tier="cortex",
+            thinking=req.thinking,
+            reasoning_effort=req.reasoning_effort or "low",
+            max_tokens=req.max_new_tokens,
+            source="cortex",
+            confidence=_d_confidence,
+            reason=str(_decision.get("reason") or ""),
+        )
+        log.info(
+            "cortex.decision source=%s strength=%s reaction=%s action=%s "
+            "max_tokens=%d latency_ms=%.1f",
+            _decision.get("source"),
+            _decision.get("strength"),
+            _decision.get("reaction"),
+            _decision.get("action"),
+            _max_tokens,
+            _cortex_latency_ms,
+        )
+        try:
+            telemetry.inc("decision.cortex.total")
+            telemetry.inc(
+                "decision.cortex.source." + str(_decision.get("source") or "unknown")
+            )
+            telemetry.gauge("decision.cortex.latency_ms", _cortex_latency_ms)
+            telemetry.gauge("decision.cortex.max_tokens", _max_tokens)
+            telemetry.gauge(
+                "decision.cortex.strength",
+                1.0 if _decision.get("strength") == "low" else 0.0,
+            )
+            telemetry.gauge(
+                "decision.cortex.reaction",
+                {"small": 0.0, "medium": 1.0, "large": 2.0}.get(
+                    str(_decision.get("reaction")), 1.0
+                ),
+            )
+            telemetry.gauge(
+                "decision.cortex.action",
+                {
+                    "speak": 0.0,
+                    "walk": 1.0,
+                    "look": 2.0,
+                    "quiet": 3.0,
+                    "other": 4.0,
+                }.get(str(_decision.get("action")), 4.0),
+            )
+        except Exception:
+            pass
+
+        # D-only context for the author of the rolling summary. The summary
+        # is intuition state, NOT memory, and never shown to the user.
+        try:
+            _d_summary = str(_cortex_store.summary or "（还没有）")
+            _d_decision_text = _cortex.decision_to_prompt(_decision)
+            _emit(
+                "summary",
+                "D 读到的生命总结",
+                _d_summary,
+                chars=len(_d_summary),
+            )
+            _emit(
+                "d_decision",
+                "D 决策",
+                _d_decision_text,
+                strength=_decision.get("strength"),
+                reaction=_decision.get("reaction"),
+                action=_decision.get("action"),
+                action_label=_decision.get("action_label"),
+                max_tokens=_decision.get("max_tokens"),
+                source=_decision.get("source"),
+                confidence=_decision.get("confidence"),
+                latency_ms=_cortex_latency_ms,
+                summary_chars=len(_d_summary),
+                decision_id=_decision.get("decision_id"),
+            )
+            _d_block = (
+                "\n\n【你的底层直觉状态（只用于行动，不要在回复里复述）】\n"
+                "上一轮生命总结（只给你的直觉，不是记忆；用它更新本轮 DSTATE）：\n"
+                f"{_d_summary}\n"
+                f"{_d_decision_text}\n"
+                "用户直接说话时必须回应；默认动作只是默认，你可以改。"
+            )
+            req.system = (req.system or "") + _d_block
+        except Exception as exc:
+            _note_failure("cortex_prompt_injection", exc)
 
     # 元直觉的第二座位：thinking 降级。必须在 _resolve_provider 之前——
     # LocalProvider 在构造时就吃 enable_thinking，晚了就改不动了。
+    # D 在场时它只会覆盖 D 的判断，因此让位。
     _thinking_decision = None
-    if not req.silent and req.thinking and req.messages:
+    if _cortex_store is None and not req.silent and req.thinking and req.messages:
         try:
             from .decision.meta import decide_thinking
             _last = req.messages[-1]
@@ -3644,38 +5039,85 @@ async def _stream_chat_provider(
         bridge.post("thinking")
 
     provider = _resolve_provider(registry, req, server, server_state, log, lora_arr)
+    _provider_model = ""
+    try:
+        _provider_model = str(
+            getattr(provider, "model", "")
+            or getattr(provider, "_model", "")
+            or getattr(
+                getattr(getattr(provider, "_server", None), "model_path", None),
+                "name",
+                "",
+            )
+            or ""
+        )
+        _provider_context = getattr(provider, "_context_window", None)
+        if _provider_context is None:
+            _provider_context = req.context_window
+        _emit(
+            "provider",
+            "模型",
+            name=provider.name,
+            model=_provider_model,
+            is_local=bool(getattr(provider, "is_local", provider.name == "local")),
+            allow_tools=bool(getattr(provider, "allow_tools", True)),
+            context_window=_provider_context,
+        )
+    except Exception:
+        pass
+    # Expose the resolved provider to builtin tool handlers (capture_screen)
+    # inside this turn. ContextVar is per-task, so concurrent turns are safe.
+    # The token is released on every exit path we control; a cancelled
+    # generator can only leak into its own (soon-to-die) request task.
+    _provider_token = _active_chat_provider_ref.set(provider)
+    # Same turn scope for everything a builtin tool needs to know about this
+    # turn: the live request (slow-intuition upgrade), the real user text
+    # (never narration) and the roll budget.
+    _req_token = _active_chat_req_ref.set(req)
+    _user_text_token = _active_user_text_ref.set(_real_user_turn_text(req) or "")
+    _roll_count_token = _active_roll_count_ref.set(0)
 
-    # Tools are the single biggest optional block in a local-model prompt:
-    # 30+ JSON schemas, plus an extra model round-trip whenever the model
-    # decides to call one. A 2B model calls pet_mood_now on "你好" — that
-    # doubles cold prefill. Local endpoints default to tool-free chat;
-    # "toolsEnabled": true in providers.json restores them.
+    def _release_active_provider() -> None:
+        nonlocal _provider_token, _req_token, _user_text_token, _roll_count_token
+        # LIFO reset: the roll counter was set last, so it goes first.
+        if _roll_count_token is not None:
+            _active_roll_count_ref.reset(_roll_count_token)
+            _roll_count_token = None
+        if _user_text_token is not None:
+            _active_user_text_ref.reset(_user_text_token)
+            _user_text_token = None
+        if _req_token is not None:
+            _active_chat_req_ref.reset(_req_token)
+            _req_token = None
+        if _provider_token is not None:
+            _active_chat_provider_ref.reset(_provider_token)
+            _provider_token = None
+
+    # ``allow_tools`` is the provider-level budget switch: loopback engines
+    # disable the 30+ heavy schemas, but memory is the pet's soul, not an
+    # optional organ. Keep "tools are allowed at all" separate from "only
+    # the core ones fit this provider".
     _tools_allowed = bool(getattr(provider, "allow_tools", True))
-    if req.tools_enabled and not _tools_allowed:
-        log.info("provider %s: tools disabled for this local endpoint (toolsEnabled=false)", provider.name)
-    tools_list = await _gather_tools(mcp_manager, req) if (req.tools_enabled and _tools_allowed) else []
+    _core_only = bool(req.tools_enabled and not _tools_allowed)
+    if _core_only:
+        log.info("provider %s: heavy tools disabled; core soul tools only", provider.name)
+        tools_list = await _gather_tools(mcp_manager, req, core_only=True)
+    elif req.tools_enabled:
+        tools_list = await _gather_tools(mcp_manager, req)
+    else:
+        tools_list = []
 
-    # Build reverse mapping: prefixed_name → (server_name, tool_name)
-    _tool_map: dict[str, tuple[str, str]] = {}
-    if tools_list:
-        for t in tools_list:
-            prefixed = f"mcp_{_sanitize(t.server_name)}_{_sanitize(t.name)}"
-            _tool_map[prefixed] = (t.server_name, t.name)
+    # Reverse mapping: prefixed name → (server_name, tool_name), plus a bare
+    # alias when the bare name is unambiguous (see _build_tool_map).
+    _tool_map = _build_tool_map(tools_list)
 
-    # Helper: check whether the current provider+model can process image inputs.
+    # Helper: check whether the current provider+model can process image
+    # inputs. Must match capture_screen's own capability check — same
+    # shared function, so the tool and the result-attachment path cannot
+    # disagree (a cloud provider seeing images while the tool refuses, or
+    # vice versa).
     def _can_see_images() -> bool:
-        from .providers.anthropic import AnthropicProvider
-        if isinstance(provider, AnthropicProvider):
-            return True  # all Claude models since 3.0 support vision
-        from .providers.openai import OpenAIProvider
-        if isinstance(provider, OpenAIProvider):
-            model = (getattr(provider, "model", "") or "").lower()
-            no_vision = ["gpt-3.5", "text-", "embedding", "davinci", "babbage"]
-            return not any(nv in model for nv in no_vision)
-        # Local / llama.cpp: vision needs --mmproj
-        if getattr(server, "mmproj_path", None):
-            return True
-        return False
+        return provider_can_see_images(provider, server)
 
     yield _sse({"event": "start"})
 
@@ -3711,6 +5153,11 @@ async def _stream_chat_provider(
     if _user_text_for_log:
         _last_user_msg = _user_text_for_log
         _last_user_ts = __import__("time").time()
+        # Proactive wake-ups and silent narrator calls are not user
+        # replies: only a real user turn invalidates the decision loop's
+        # intuition pressure.
+        if not req.silent and not _user_text_for_log.startswith(_PROACTIVE_PROMPT_PREFIX):
+            _last_real_user_ts = _last_user_ts
 
     # 关键词闪现（第三层，最低概率）：在瞬忆注入之前写入，本轮就能看见。
     if _user_text_for_log and _ephemeral_ref is not None:
@@ -3774,11 +5221,6 @@ async def _stream_chat_provider(
             if renote:
                 system = (system or "") + "\n\n" + renote
 
-        # 2. Mood context
-        mood_ctx = mood_store.format_for_system_prompt()
-        if mood_ctx:
-            system = (system or "") + "\n\n" + mood_ctx
-
         # 2.6 Somatic sense (身体感受): the body just reported touch —
         #     being dragged across the screen, being poked. Inject while
         #     fresh so the pet can react to what physically happened to
@@ -3814,7 +5256,8 @@ async def _stream_chat_provider(
                 + (", ".join(p["name"] for p in plugins_desc) or "（只有内置 forge）")
             )
             body_lines.append(
-                "【你的世界】桌面上有「刚体」——窗户和桌面图标变成的、你可以站在上面的东西。"
+                "【你的世界】这些是桌面窗口刚体，不是屏幕截图；要“看屏幕”请用 [MCP:builtin/capture_screen:{}]，不要用 pet_world_scout 代替。"
+                "桌面上有「刚体」——窗户和桌面图标变成的、你可以站在上面的东西。"
                 "现在没人添加也没关系，你可以自己动手：pet_world_scout 从你自己的视角环顾四周"
                 "看看有哪些窗户（带方向和距离），pet_world_adopt 把你选中的一扇收养成刚体，"
                 "pet_world_walk_to 走到你选中的刚体旁边（stand=true 站上去），"
@@ -3825,6 +5268,21 @@ async def _stream_chat_provider(
                 "收养要节制：挑你真想互动的那扇就好，别把用户的每扇窗户都变成"
                 "刚体；推拉要有分寸，别把窗口推到用户找不到的地方；用户没说想玩的时候，看着就好。"
             )
+        if req.compact_prompt:
+            # Browser-web prompt: keep body movement + the screen-vision
+            # contract, drop the window-rigid-body / vision-cone prose that
+            # made the model call pet_world_scout when the user said
+            # "look at my screen".
+            body_lines = [
+                "【身体】可输出 [WALK:dx,dy] 移动、[WALK_DESKTOP] 换桌面、"
+                "[INNER:...] 心声；这些标签不会显示给用户。",
+                "【看屏幕】要“看屏幕/截图/看我在干嘛”用 "
+                "[MCP:builtin/capture_screen:{}]；截图会作为图片附件上传到网页。"
+                "需要点击坐标用 [MCP:builtin/observe_screen:{}]；"
+                "不要用 pet_world_scout 代替截图。",
+            ]
+            if req.tools_enabled and _tools_allowed:
+                body_lines.append("【工具】用 [MCP:server/name:{...}] 调用；pet_list_plugins 查看器官，pet_forge_plugin 可造新插件。")
         system = (system or "") + "\n\n" + "\n".join(body_lines)
         if not _tools_allowed and not tools_list:
             # No tool definitions survived (including core tools): the
@@ -3859,8 +5317,29 @@ async def _stream_chat_provider(
         estimated = sum(len(json.dumps(m)) for m in messages) // 3
         system = (system or "") + f"\n\nThis model has a context window of {cw} tokens. Current conversation uses approximately {estimated} tokens."
 
-    iteration = 0
     tool_occurred = False
+    tool_used_this_turn = False
+    last_round_had_tools = False
+    recall_calls_this_turn = 0
+    recall_limit_notified = False
+    # Tool-silence clock. The streak starts ONLY when the first tool of a
+    # silent run is about to execute — not at turn start — so a long
+    # prefill/thinking round that never calls a tool can never time out.
+    # It stays armed across consecutive tool calls and is disarmed ONLY by
+    # a genuinely visible reply delta yielded to the renderer; tool calls /
+    # status lines, think events and hidden MEM/control-tag text never
+    # touch it. ``last_visible_speech_at`` is diagnostics only.
+    _silent_tool_budget = _silent_tool_timeout_seconds()
+    last_visible_speech_at = _monotonic()
+    tool_streak_started_at: float | None = None
+    _silent_timeout_hit = False
+    # Cumulative narration-filtered stream text. _visible_reply_text() over
+    # this buffer is the single definition of "the user can see words"; its
+    # growing length tells us a visible delta was really yielded. Because
+    # ToolNarrationFilter only emits complete lines, partial [MCP:] markers
+    # and <<<MEM>>> openers cannot masquerade as speech.
+    _speech_probe = ""
+    _speech_probe_visible_len = 0
     think_filter = ThinkBlockFilter(expose=req.thinking, start_inside=False)
     # B-1: strip [EMOTION:…]/[NEXT_CHAT:…] control tags mid-stream so the
     # renderer's typewriter never flashes them. The renderer keeps its own
@@ -3892,10 +5371,13 @@ async def _stream_chat_provider(
     _inner_queue: list[dict] = []
 
     def _on_inner(content: str) -> None:
+        nonlocal _inner_chars
         content = (content or "").strip()
         if not content:
             return
         _inner_queue.append({"event": "inner"})
+        _inner_chars += len(content)
+        _emit("inner", "心声", content, chars=len(content))
         try:
             if _ephemeral_ref is not None:
                 _ephemeral_ref.add_thought(f"（心声）{content}", source="inner")
@@ -3905,8 +5387,49 @@ async def _stream_chat_provider(
 
     tag_filter = ControlTagFilter(on_control=_on_walk_control, on_inner=_on_inner)
     narration_filter = ToolNarrationFilter()
+    # Hidden DSTATE block: swallow it mid-stream so it never flashes on
+    # screen while the main LLM writes the next rolling summary.
+    dstate_filter = DStateFilter()
     accumulated_full_text: list[str] = []
     full_text = ""
+
+    def _note_visible_delta(clean: str) -> None:
+        """A real reply delta ends the silent tool streak.
+
+        Only visible words count: the streak is disarmed here and re-armed
+        by the next tool that actually runs.
+        """
+        nonlocal last_visible_speech_at, tool_streak_started_at
+        nonlocal _speech_probe, _speech_probe_visible_len
+        if not clean:
+            return
+        _speech_probe += clean
+        visible = _visible_reply_text(_speech_probe)
+        if len(visible) > _speech_probe_visible_len:
+            _speech_probe_visible_len = len(visible)
+            last_visible_speech_at = _monotonic()
+            tool_streak_started_at = None
+
+    def _note_silent_timeout(stage: str, now: float) -> None:
+        """Record the only hard tool-loop stop: a long silent tool streak."""
+        nonlocal _silent_timeout_hit
+        _silent_timeout_hit = True
+        telemetry.inc("chat.silent_tool_timeout")
+        streak_seconds = (
+            now - tool_streak_started_at
+            if tool_streak_started_at is not None
+            else 0.0
+        )
+        log.warning(
+            "chat.silent_tool_timeout: %.0fs of consecutive tool calls with "
+            "no visible reply (%.0fs since last visible speech; stage=%s, "
+            "iteration=%d, recalls=%d); stopping tool calls",
+            streak_seconds,
+            now - last_visible_speech_at,
+            stage,
+            iteration,
+            recall_calls_this_turn,
+        )
 
     # The now-anchor must stay LIVE — the model sees "现在是…" refreshed to
     # THIS moment every time it is about to speak, including after long
@@ -3924,7 +5447,19 @@ async def _stream_chat_provider(
         _ctx_window = getattr(provider, "_context_window", None) or req.context_window
         _msg_chars = sum(len(json.dumps(m, ensure_ascii=False)) for m in messages)
         _msg_tokens = sum(_estimate_tokens(str(m.get("content", ""))) for m in messages)
+        _prompt_tokens = _estimate_tokens(system or "") + _msg_tokens
         _tool_chars = sum(len(str(getattr(t, "description", "") or "")) for t in (tools_list or []))
+        telemetry.gauge("chat.prompt_tokens", _prompt_tokens)
+        telemetry.gauge("chat.tools", len(tools_list or []))
+        _emit(
+            "prompt",
+            "上下文",
+            tokens=_prompt_tokens,
+            system_chars=len(system or ""),
+            tools=len(tools_list or []),
+            max_tokens=_output_budget(provider, req, _d_budget),
+            provider=provider.name,
+        )
         log.info(
             "prompt budget | provider=%s local=%s system_chars=%d message_count=%d chars_total=%d "
             "~tokens=%d max_tokens=%d tools=%d tool_chars=%d ctx=%s",
@@ -3933,8 +5468,8 @@ async def _stream_chat_provider(
             len(system or ""),
             len(messages),
             len(system or "") + _msg_chars,
-            _estimate_tokens(system or "") + _msg_tokens,
-            _effective_max_new_tokens(req),
+            _prompt_tokens,
+            _output_budget(provider, req, _d_budget),
             len(tools_list or []),
             _tool_chars,
             _ctx_window or "auto",
@@ -3946,9 +5481,18 @@ async def _stream_chat_provider(
     # tool-call syntax (dropped "MCP:" prefix, quotes instead of {}).
     _tool_syntax_retry_done = False
 
-    while iteration < MAX_TOOL_ITERATIONS:
+    # Reasoning text streamed in the CURRENT iteration. Native tool calls
+    # carry their own reasoning_content (set by the provider); text [MCP:]
+    # calls are reconstructed here, so they need this round's think text
+    # attached to the assistant tool_calls message (DeepSeek thinking mode
+    # rejects the follow-up round otherwise).
+    round_reasoning = ""
+
+    while True:
         iteration += 1
         tool_occurred = False
+        last_round_had_tools = False
+        round_reasoning = ""
 
         if not req.silent:
             bridge.post("working")
@@ -3960,7 +5504,7 @@ async def _stream_chat_provider(
         pending_tool_calls: list[dict] = []
 
         # Determine parameters based on provider type
-        effective_max = _output_budget(provider, req)
+        effective_max = _output_budget(provider, req, _d_budget)
         # Live now-anchor: refreshed right before the model speaks (every
         # iteration), so after long reasoning / tool calls the model still
         # knows what time it is right now.
@@ -3983,59 +5527,129 @@ async def _stream_chat_provider(
         if provider.name == "local":
             chat_kwargs["top_k"] = req.top_k
             chat_kwargs["repetition_penalty"] = req.repetition_penalty
+        # Per-request thinking/effort only for the OpenAI-compatible provider
+        # (providers.json defaults are static and would otherwise force max
+        # thinking on every cloud call). Local/Anthropic must not receive
+        # unknown kwargs.
+        if isinstance(provider, OpenAIProvider):
+            chat_kwargs["thinking_override"] = bool(req.thinking)
+            chat_kwargs["reasoning_effort_override"] = (
+                req.reasoning_effort if req.thinking else None
+            )
+
+        # A mid-round pet_enter_slow upgrade must expose reasoning events
+        # from the next generation on (the filter was built at round start).
+        if hasattr(think_filter, "expose"):
+            think_filter.expose = bool(req.thinking)
 
         try:
             async for event in provider.chat(**chat_kwargs):
+                if event["type"] in ("delta", "think") and not first_token_recorded:
+                    first_token_recorded = True
+                    telemetry.observe(
+                        "chat.first_token_seconds", time.perf_counter() - turn_started
+                    )
+                    _emit(
+                        "first_token",
+                        "首 token",
+                        elapsed_ms=(time.perf_counter() - turn_started) * 1000.0,
+                        max_tokens=effective_max,
+                    )
                 if event["type"] == "delta":
                     full_text += event["content"]
                     for ev in think_filter.feed(event["content"]):
                         if ev.get("event") == "delta":
-                            clean = narration_filter.feed(tag_filter.feed(ev["content"]))
+                            clean = dstate_filter.feed(
+                                narration_filter.feed(tag_filter.feed(ev["content"]))
+                            )
+                            clean = _INLINE_TOOL_MARKER_RE.sub("", clean)
                             while _walk_queue:
                                 yield _sse(_walk_queue.pop(0))
                             while _inner_queue:
                                 yield _sse(_inner_queue.pop(0))
+                            if clean and _quiet_life_turn:
+                                # Quiet life round: the filters still ran
+                                # (INNER/control/DSTATE captured, full_text
+                                # accumulated) but the surface stays silent.
+                                clean = ""
                             if clean:
+                                _note_visible_delta(clean)
                                 yield _sse({"event": "delta", "content": clean})
                         else:
                             yield _sse(ev)
                 elif event["type"] == "think":
+                    round_reasoning += event.get("content", "")
+                    _emit(
+                        "think",
+                        "思考",
+                        event.get("content", ""),
+                        provider=provider.name,
+                    )
                     yield _sse({"event": "think", "content": event["content"]})
                 elif event["type"] == "tool_call":
+                    if not _tools_allowed:
+                        event_name = event.get("name", "")
+                        resolved_name = _tool_map.get(event_name, ("", event_name))[1]
+                        core_names = {t.name for t in (tools_list or [])}
+                        if resolved_name not in core_names:
+                            log.warning("Ignoring non-core tool call from %s: %s", provider.name, event_name)
+                            continue
+                    event["source"] = "native"
                     pending_tool_calls.append(event)
                     tool_occurred = True
+                    tool_used_this_turn = True
                 elif event["type"] == "error":
+                    telemetry.inc("chat.errors")
                     log.warning("provider %s error: %s", provider.name, event["message"])
+                    _emit("error", "错误", event["message"])
                     yield _sse({"event": "error", "message": event["message"]})
                     if not req.silent:
                         bridge.post("error")
+                    _release_active_provider()
                     return
                 elif event["type"] == "end":
                     break
         except Exception as exc:
+            telemetry.inc("chat.errors")
             log.exception("provider chat error: %s", exc)
+            _emit("error", "错误", str(exc))
             yield _sse({"event": "error", "message": str(exc)})
             if not req.silent:
                 bridge.post("error")
+            _release_active_provider()
             return
 
         # Check for [MCP:] markers in text output. This runs for ALL
         # providers as a fallback — cloud models (DeepSeek, Qwen API)
         # often output tool calls as text instead of using the API's
-        # native function-calling mechanism.
-        if not pending_tool_calls and _tools_allowed:
-            mcp_calls = parse_mcp_calls(full_text)
+        # native function-calling mechanism. The legacy allow-tools path
+        # keeps its unconditional behaviour; core-only parsing is enabled
+        # by the (non-empty) core tool list and filtered below.
+        if not pending_tool_calls and (_tools_allowed or tools_list):
+            raw_mcp_calls = parse_mcp_calls(full_text)
+            mcp_calls = raw_mcp_calls
+            if _core_only:
+                core_names = {t.name for t in (tools_list or [])}
+                mcp_calls = [mc for mc in mcp_calls if mc.get("name") in core_names]
             if mcp_calls and mcp_manager:
                 tool_occurred = True
+                tool_used_this_turn = True
                 for mc in mcp_calls:
-                    pending_tool_calls.append({
+                    pending = {
                         "type": "tool_call",
                         "id": f"mcp_{mc['server_name']}_{mc['name']}",
                         "server_name": mc["server_name"],
                         "name": mc["name"],
                         "arguments": mc["arguments"],
-                    })
-            elif "[builtin/" in full_text or "[MCP:" in full_text:
+                        "source": "text",
+                    }
+                    # The text path is a reconstructed assistant turn: the
+                    # visible text is the [MCP:] marker, the reasoning came
+                    # from this round's think events. Both must round-trip.
+                    if round_reasoning:
+                        pending["reasoning_content"] = round_reasoning
+                    pending_tool_calls.append(pending)
+            elif not raw_mcp_calls and ("[builtin/" in full_text or "[MCP:" in full_text):
                 # A marker is present but nothing parsed. Never end the turn
                 # silently — that reads as "the pet froze".
                 log.warning(
@@ -4046,139 +5660,497 @@ async def _stream_chat_provider(
                 # spelled out, instead of dropping the turn.
                 if not _tool_syntax_retry_done:
                     _tool_syntax_retry_done = True
+                    # The example must be a tool this provider can actually
+                    # run: in core-only mode capture_screen is filtered out,
+                    # so "fixing" the format would still get the call ignored.
+                    if _core_only:
+                        _correction_example = '[MCP:builtin/memory:{"action":"list"}]'
+                    else:
+                        _correction_example = "[MCP:builtin/capture_screen:{}]"
                     messages.append({
                         "role": "user",
                         "content": (
                             "[系统] 你刚才的工具调用格式有误，没有被识别。"
                             "正确格式是：方括号 + MCP: 前缀 + server/工具名 + 冒号 + 花括号 JSON（参数为空就写 {}，"
                             "不要用引号、不要省略 MCP:）。例如：\n"
-                            "[MCP:builtin/capture_screen:{}]\n"
+                            f"{_correction_example}\n"
                             "请只重新输出这一行，不要解释。"
                         ),
                     })
                     tool_occurred = True
+                    tool_used_this_turn = True
                     continue
 
         if not tool_occurred:
             break
 
-        # Execute pending tool calls
-        for tc in pending_tool_calls:
-            tn = tc.get("name", "")
-            if not tn:
-                continue
-            # Resolve server name from tool name map
-            sn = tc.get("server_name", "default")
-            if tn in _tool_map:
-                sn, tn = _tool_map[tn]
-            elif sn == "default":
-                # Try to find matching tool across all servers
-                log.warning("Unresolved tool call: %s, trying call_tool_by_name", tn)
-            args = tc.get("arguments", {})
-            tc_id = tc.get("id", "")
+        last_round_had_tools = True
 
-            log.info("MCP tool call: %s/%s args=%s", sn, tn, args)
+        # Execute pending tool calls. Arm the silent streak only HERE, when
+        # the first tool of a run is about to execute; long prefill or
+        # thinking before the first tool is not silent tool activity. From
+        # then on the clock stays armed across consecutive calls until the
+        # model says something the user can actually see. It is checked
+        # before EVERY tool: a tool that just took ages must not be
+        # followed by a second one while the user still has not heard a
+        # word.
+        if pending_tool_calls:
+            if tool_streak_started_at is None:
+                tool_streak_started_at = _monotonic()
+            for tc in pending_tool_calls:
+                _now = _monotonic()
+                if silent_tool_timed_out(
+                    tool_streak_started_at, _now, _silent_tool_budget
+                ):
+                    _note_silent_timeout("before_tool", _now)
+                    break
+                tn = tc.get("name", "")
+                if not tn:
+                    continue
+                # Resolve server name from tool name map
+                sn = tc.get("server_name", "default")
+                if tn in _tool_map:
+                    sn, tn = _tool_map[tn]
+                elif sn == "default":
+                    # Try to find matching tool across all servers
+                    log.warning("Unresolved tool call: %s, trying call_tool_by_name", tn)
+                args = tc.get("arguments", {})
+                tc_id = tc.get("id", "")
 
-            # Plugin tools (自进化器官) don't produce the multimodal dict
-            # the screenshot extraction below expects — default to None so
-            # a pet/recall turn doesn't die on UnboundLocalError after the
-            # model already answered.
-            result = None
-            _mgr = _kernel()
-            if sn == "pet-intuition":
-                # 自创直觉（内置工具；代码走 plugin_policy 策略闸）
-                result_text = _intuition_tool(tn, args)
-                summary = result_text or f"[Tool {tn} completed]"
-            elif sn == "pet-world":
-                # 桌面刚体工具（内置，不受插件沙箱限制）
-                result_text = await _world_tool(tn, args)
-                summary = result_text or f"[Tool {tn} completed]"
-            elif _mgr is not None and (sn == "pet" or tn in _mgr.all_tools()):
-                # plugin tool (自进化器官) — executed by the container
-                result_text = await _mgr.call_tool(tn, args)
-                summary = result_text or f"[Tool {tn} completed]"
-            else:
-                result = await mcp_manager.call_tool(sn, tn, args)
-                summary = result.get("summary", f"[Tool {tn} completed]")
+                if tn == "recall":
+                    recall_calls_this_turn += 1
 
-            # Add to message context for next iteration
-            if provider.supports_function_calling and tc_id:
-                is_anthropic = isinstance(provider, AnthropicProvider)
-                if is_anthropic:
-                    prefixed = f"mcp_{_sanitize(sn)}_{_sanitize(tn)}"
-                    messages.append({
-                        "role": "assistant",
-                        "content": [{
-                            "type": "tool_use",
-                            "id": tc_id,
-                            "name": prefixed,
-                            "input": args,
-                        }],
+                try:
+                    _tool_args_text = json.dumps(
+                        args, ensure_ascii=False, default=str
+                    )
+                except Exception:
+                    _tool_args_text = str(args)
+                _tool_started = time.perf_counter()
+                _emit(
+                    "tool_call",
+                    f"工具 · {tn}",
+                    _tool_args_text,
+                    tool=tn,
+                    server=sn,
+                    iteration=iteration,
+                )
+
+                log.info(
+                    "MCP tool call: source=%s name=%s/%s reasoning_chars=%d args=%s",
+                    tc.get("source", "native"),
+                    sn,
+                    tn,
+                    len(tc.get("reasoning_content") or ""),
+                    args,
+                )
+
+                # Tell the chat surface BEFORE running the tool. A tool can
+                # take tens of seconds (screenshot upload, OCR cold start,
+                # plugin compile); without this the bubble stays empty until
+                # the follow-up model turn and reads as "the pet froze".
+                if not _quiet_life_turn:
+                    yield _sse({
+                        "event": "delta",
+                        "content": f"\n_执行 {tn}..._\n",
                     })
+
+                # Plugin tools (自进化器官) don't produce the multimodal dict
+                # the screenshot extraction below expects — default to None so
+                # a pet/recall turn doesn't die on UnboundLocalError after the
+                # model already answered.
+                result = None
+                _mgr = _kernel()
+                if tn == "pet_enter_slow":
+                    # Slow-intuition upgrade (same round). Handled by bare
+                    # name too, even when the builtin lookup is ambiguous.
+                    result = await _enter_slow_tool(args)
+                    summary = result.get("summary") or f"[Tool {tn} completed]"
+                    _slow_strength = str(args.get("strength") or "low").strip().lower()
+                    if _slow_strength not in ("low", "high", "max"):
+                        _slow_strength = "low"
+                    _emit(
+                        "slow",
+                        "慢直觉",
+                        _slow_strength,
+                        strength=_slow_strength,
+                    )
+                elif tn == "pet_decision":
+                    # Active D gut check; never mutates/saves the store.
+                    result = await _decision_tool(args)
+                    summary = result.get("summary") or f"[Tool {tn} completed]"
+                elif sn == "pet-intuition":
+                    # 自创直觉（内置工具；代码走 plugin_policy 策略闸）
+                    result_text = _intuition_tool(tn, args)
+                    summary = result_text or f"[Tool {tn} completed]"
+                elif sn == "pet-world":
+                    # 桌面刚体工具（内置，不受插件沙箱限制）
+                    result_text = await _world_tool(tn, args)
+                    summary = result_text or f"[Tool {tn} completed]"
+                elif _mgr is not None and (sn == "pet" or tn in _mgr.all_tools()):
+                    # plugin tool (自进化器官) — executed by the container
+                    result_text = await _mgr.call_tool(tn, args)
+                    summary = result_text or f"[Tool {tn} completed]"
                 else:
-                    messages.append({
-                        "role": "assistant",
-                        "content": None,
-                        "tool_calls": [{
-                            "id": tc_id,
-                            "type": "function",
-                            "function": {"name": tn, "arguments": json.dumps(args)},
-                        }],
-                    })
-            else:
-                messages.append({"role": "assistant", "content": f"[{tn}]"})
-            # Build tool result content — multimodal if provider can see images
-            screenshot_b64 = result.get("screenshot_base64") if isinstance(result, dict) else None
-            if screenshot_b64 and _can_see_images():
-                # For local providers (no function calling), use 'user' role
-                # because llama-server doesn't process images in 'tool' role
-                # messages. Anthropic/OpenAI handle tool role images natively.
-                if provider.supports_function_calling:
-                    tool_content = [
-                        {"type": "text", "text": summary},
-                        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{screenshot_b64}"}},
-                    ]
+                    result = await mcp_manager.call_tool(sn, tn, args)
+                    summary = result.get("summary", f"[Tool {tn} completed]")
+
+                _tool_elapsed_ms = (time.perf_counter() - _tool_started) * 1000.0
+                _tool_error = (
+                    bool(result.get("is_error"))
+                    if isinstance(result, dict)
+                    else False
+                )
+                _tool_call_count += 1
+                _emit(
+                    "tool_result",
+                    f"结果 · {tn}",
+                    summary,
+                    tool=tn,
+                    is_error=_tool_error,
+                    elapsed_ms=_tool_elapsed_ms,
+                    iteration=iteration,
+                )
+
+                # Add to message context for next iteration
+                if provider.supports_function_calling and tc_id:
+                    is_anthropic = isinstance(provider, AnthropicProvider)
+                    if is_anthropic:
+                        prefixed = f"mcp_{_sanitize(sn)}_{_sanitize(tn)}"
+                        messages.append({
+                            "role": "assistant",
+                            "content": [{
+                                "type": "tool_use",
+                                "id": tc_id,
+                                "name": prefixed,
+                                "input": args,
+                            }],
+                        })
+                    else:
+                        assistant_msg = {
+                            "role": "assistant",
+                            "content": None,
+                            "tool_calls": [{
+                                "id": tc_id,
+                                "type": "function",
+                                "function": {"name": tn, "arguments": json.dumps(args)},
+                            }],
+                        }
+                        # DeepSeek thinking mode requires the exact reasoning
+                        # text next to the tool_calls; omitting it makes the
+                        # follow-up round fail with HTTP 400.
+                        reasoning_content = tc.get("reasoning_content")
+                        if reasoning_content:
+                            assistant_msg["reasoning_content"] = reasoning_content
+                        messages.append(assistant_msg)
+                else:
+                    messages.append({"role": "assistant", "content": f"[{tn}]"})
+                # Build tool result content — multimodal if provider can see images
+                screenshot_b64 = result.get("screenshot_base64") if isinstance(result, dict) else None
+                screenshot_mime = (
+                    (result.get("screenshot_mime") if isinstance(result, dict) else None)
+                    or "image/png"
+                )
+                if screenshot_b64 and _can_see_images():
+                    # For local providers (no function calling), use 'user' role
+                    # because llama-server doesn't process images in 'tool' role
+                    # messages. Anthropic/OpenAI handle tool role images natively.
+                    if provider.supports_function_calling:
+                        tool_content = [
+                            {"type": "text", "text": summary},
+                            {"type": "image_url", "image_url": {"url": f"data:{screenshot_mime};base64,{screenshot_b64}"}},
+                        ]
+                        messages.append({
+                            "role": "tool",
+                            "content": tool_content,
+                            "tool_call_id": tc_id or f"call_{tn}",
+                            "name": tn,
+                        })
+                    else:
+                        # Local model: inject as a user message with image content
+                        messages.append({
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": f"[{tn} 结果]\n{summary}"},
+                                {"type": "image_url", "image_url": {"url": f"data:{screenshot_mime};base64,{screenshot_b64}"}},
+                            ],
+                        })
+                elif provider.supports_function_calling:
                     messages.append({
                         "role": "tool",
-                        "content": tool_content,
+                        "content": summary,
                         "tool_call_id": tc_id or f"call_{tn}",
                         "name": tn,
                     })
                 else:
-                    # Local model: inject as a user message with image content
+                    # Local / non-function-calling models: llama-server does
+                    # not understand role:"tool" here. The result never lands
+                    # in the prompt, the follow-up generation comes back
+                    # empty, `tool_occurred` stays false and the turn dies
+                    # after exactly one iteration — the model appears to
+                    # "call a tool and stop", which reads as the pet having
+                    # no autonomy at all. Feed it back as a user turn with an
+                    # explicit marker instead.
                     messages.append({
                         "role": "user",
-                        "content": [
-                            {"type": "text", "text": f"[{tn} 结果]\n{summary}"},
-                            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{screenshot_b64}"}},
-                        ],
+                        "content": f"[{tn} 结果]\n{summary}",
                     })
-            elif provider.supports_function_calling:
-                messages.append({
-                    "role": "tool",
-                    "content": summary,
-                    "tool_call_id": tc_id or f"call_{tn}",
-                    "name": tn,
-                })
-            else:
-                # Local / non-function-calling models: llama-server does
-                # not understand role:"tool" here. The result never lands
-                # in the prompt, the follow-up generation comes back
-                # empty, `tool_occurred` stays false and the turn dies
-                # after exactly one iteration — the model appears to
-                # "call a tool and stop", which reads as the pet having
-                # no autonomy at all. Feed it back as a user turn with an
-                # explicit marker instead.
-                messages.append({
-                    "role": "user",
-                    "content": f"[{tn} 结果]\n{summary}",
-                })
 
-            # Brief notification to client
-            yield _sse({
-                "event": "delta",
-                "content": f"\n_执行 {tn}..._\n",
-            })
+                # Recall loop guard: past the soft limit, pin an explicit
+                # instruction into the context. The model kept retrying because
+                # a probabilistic miss literally says "you almost got it", so
+                # the nudge must name the tool and forbid another attempt.
+                if (
+                    tn == "recall"
+                    and recall_calls_this_turn >= RECALL_SOFT_LIMIT
+                    and not recall_limit_notified
+                ):
+                    recall_limit_notified = True
+                    messages.append({"role": "user", "content": RECALL_LIMIT_NOTICE})
+
+                # Brief notification to client. Tool execution itself is
+                # never suppressed; only its visible narration is.
+                # (The "执行 …" line is already yielded before execution;
+                # repeating it here would append a second status line.)
+
+        if _silent_timeout_hit:
+            break
+
+        # End-of-round check: tool execution itself may have consumed the
+        # whole silent budget. Do not start another (possibly slow) model
+        # round before forcing the answer. No streak (no tool ran) means
+        # this round was just model thinking — never a timeout.
+        _now = _monotonic()
+        if tool_streak_started_at is not None and silent_tool_timed_out(
+            tool_streak_started_at, _now, _silent_tool_budget
+        ):
+            _note_silent_timeout("round_end", _now)
+            break
+
+        # This round's reasoning was consumed while building the assistant
+        # tool_calls messages; never carry it into the next round.
+        round_reasoning = ""
+
+    # ── Forced final answer when the tool loop must stop ────────────────
+    # Two ways in: (1) the only hard rule — a fully silent tool streak
+    # (SILENT_TOOL_TIMEOUT_SECONDS with no visible reply between calls);
+    # (2) the model called tools but its last round produced only pipeline
+    # chatter (MEM block / control tags) and no visible body. Either way the
+    # renderer would otherwise receive only "_执行 …_" status lines and
+    # collapse the bubble — to the user the pet "disappeared mid-task".
+    # Ask once more with tools=None so it must answer from results it has.
+    _final_is_inner = bool(
+        re.search(r"\[\s*INNER\s*:", full_text or "", re.IGNORECASE)
+    )
+    _force_final = _silent_timeout_hit or (
+        tool_used_this_turn
+        and not _final_is_inner
+        and (last_round_had_tools or not _visible_reply_text(full_text))
+    )
+    if _force_final:
+        if _silent_timeout_hit:
+            log.warning(
+                "chat.silent_tool_timeout: forcing a tools=None final answer "
+                "(iterations=%d, recalls=%d)",
+                iteration,
+                recall_calls_this_turn,
+            )
+        else:
+            telemetry.inc("chat.tool_loop_cap")
+            log.warning(
+                "tool loop ended without a visible final answer "
+                "(iterations=%d, recalls=%d); forcing a tools=None reply",
+                iteration,
+                recall_calls_this_turn,
+            )
+        _final_notice = (
+            "[系统] 你已经连续调用工具 %.0f 分钟没有回答用户，"
+            "请基于现有结果直接回答，不要继续调用工具。"
+            % max(1.0, _silent_tool_budget / 60.0)
+            if _silent_timeout_hit
+            else (
+                "[系统] 请基于上面的工具结果，"
+                "直接用一两句话回答用户；不要再调用工具。"
+            )
+        )
+        messages.append({"role": "user", "content": _final_notice})
+        _catchup_temperature = modulate_temperature(
+            req.temperature,
+            mood_store.emotion_index if mood_store is not None else 0.0,
+        )
+        _catchup_kwargs = {
+            "messages": messages,
+            "system": _refresh_now_anchor(system or ""),
+            "tools": None,
+            "max_tokens": 768,
+            "temperature": _catchup_temperature,
+            "top_p": req.top_p,
+        }
+        if provider.name == "local":
+            _catchup_kwargs["top_k"] = req.top_k
+            _catchup_kwargs["repetition_penalty"] = req.repetition_penalty
+        if isinstance(provider, OpenAIProvider):
+            _catchup_kwargs["thinking_override"] = bool(req.thinking)
+            _catchup_kwargs["reasoning_effort_override"] = (
+                req.reasoning_effort if req.thinking else None
+            )
+        _catchup_text = ""
+        if hasattr(think_filter, "expose"):
+            think_filter.expose = bool(req.thinking)
+        try:
+            async for event in provider.chat(**_catchup_kwargs):
+                if event["type"] in ("delta", "think") and not first_token_recorded:
+                    first_token_recorded = True
+                    telemetry.observe(
+                        "chat.first_token_seconds", time.perf_counter() - turn_started
+                    )
+                    _emit(
+                        "first_token",
+                        "首 token",
+                        elapsed_ms=(time.perf_counter() - turn_started) * 1000.0,
+                        max_tokens=768,
+                    )
+                if event["type"] == "delta":
+                    _catchup_text += event["content"]
+                    for ev in think_filter.feed(event["content"]):
+                        if ev.get("event") == "delta":
+                            clean = dstate_filter.feed(
+                                narration_filter.feed(tag_filter.feed(ev["content"]))
+                            )
+                            clean = _INLINE_TOOL_MARKER_RE.sub("", clean)
+                            while _walk_queue:
+                                yield _sse(_walk_queue.pop(0))
+                            if clean and _quiet_life_turn:
+                                # Quiet life round stays silent here too.
+                                clean = ""
+                            if clean:
+                                yield _sse({"event": "delta", "content": clean})
+                        else:
+                            yield _sse(ev)
+                elif event["type"] == "think":
+                    _emit(
+                        "think",
+                        "思考",
+                        event.get("content", ""),
+                        provider=provider.name,
+                    )
+                    yield _sse({"event": "think", "content": event["content"]})
+                elif event["type"] == "tool_call":
+                    # tools=None: a stray call means the model ignored the
+                    # instruction. Never execute it — that would restart
+                    # the very loop this catch-up exists to end.
+                    log.warning(
+                        "ignoring tool call during forced final answer: %s",
+                        event.get("name", "?"),
+                    )
+                elif event["type"] == "error":
+                    raise RuntimeError(event.get("message") or "provider error")
+                elif event["type"] == "end":
+                    break
+        except Exception as exc:
+            log.warning("forced final answer failed: %s", exc)
+            _emit("error", "错误", str(exc))
+
+        if _catchup_text.strip():
+            full_text += _catchup_text
+        if not _visible_reply_text(_catchup_text):
+            if _is_proactive:
+                # A quiet proactive/continuous round is allowed to end with
+                # no visible text. DSTATE / next_chat processing still runs.
+                log.info("proactive round ended silently")
+            else:
+                log.warning("forced final answer was empty; emitting visible fallback")
+                yield _sse({"event": "delta", "content": TOOL_LOOP_FALLBACK_TEXT})
+                full_text += TOOL_LOOP_FALLBACK_TEXT
+        # A silent [INNER:…] produced during the catch-up must not tell the
+        # renderer to hide the bubble that now carries a real answer. On a
+        # quiet life round there is no answer to protect: the inner event is
+        # the only signal that lets the renderer hide the bubble, so keep it.
+        if not _quiet_life_turn:
+            _inner_queue.clear()
+
+    # The tool loop is over: no builtin handler can run for this turn
+    # anymore, so release the provider reference now (also covers the
+    # normal-completion path, not just the error returns above).
+    _release_active_provider()
+
+    # ── DSTATE：更新 D 的滚动总结，并从所有下游文本里剥掉隐藏块 ──
+    # The streamed block was already hidden by DStateFilter; the raw text
+    # is kept only long enough to update/save the per-theme store, then
+    # every visible/persisted copy below uses the cleaned text. The
+    # summary itself lives ONLY in the D store (never in memory/history).
+    try:
+        _d_updated = False
+        if _cortex_store is not None:
+            _d_updated, full_text = _cortex.update_from_round_text(
+                _cortex_store, full_text
+            )
+            if _d_updated:
+                log.info(
+                    "cortex: DSTATE applied (summary_chars=%d)",
+                    len(_cortex_store.summary),
+                )
+        else:
+            full_text = _cortex.strip_dstate_blocks(full_text)
+    except Exception as exc:
+        _note_failure("cortex_dstate_update", exc)
+        full_text = _cortex.strip_dstate_blocks(full_text)
+    if _cortex_store is not None:
+        _d_state_text = str(getattr(_cortex_store, "summary", "") or "")
+        _emit(
+            "dstate",
+            "DSTATE 更新",
+            _d_state_text,
+            updated=bool(_d_updated),
+            chars=len(_d_state_text),
+        )
+    # Earlier tool rounds must never carry a hidden block downstream either
+    # (MEM extraction, NEXT_CHAT, chat history, final answer).
+    if accumulated_full_text:
+        accumulated_full_text = [
+            _cortex.strip_dstate_blocks(part) for part in accumulated_full_text
+        ]
+
+    # ── Quiet life round: the surface was silent, the mind was not ──
+    # D chose "quiet" on a proactive round, so no visible delta was yielded.
+    # Anything the model nevertheless wrote as visible body is folded into
+    # the hidden inner-voice store, so a model that forgot [INNER:] still
+    # leaves a thought. Pure [INNER:…] content was already stored by
+    # _on_inner, and _visible_reply_text() strips it, so it is never
+    # double-stored here.
+    if _quiet_life_turn:
+        _hidden = _visible_reply_text(full_text)
+        if _hidden:
+            try:
+                if _ephemeral_ref is not None:
+                    _ephemeral_ref.add_thought(
+                        "（心声）" + _hidden, source="quiet_life"
+                    )
+            except Exception as exc:
+                _note_failure("quiet_life_thought", exc)
+        log.info("quiet life round: inner voice hidden (%d chars)", len(_hidden))
+        try:
+            telemetry.inc("decision.quiet.life")
+        except Exception:
+            pass
+
+    # ── Brain stream: did anything visible reach the surface? ─────────
+    _brain_parts = list(accumulated_full_text)
+    if full_text.strip():
+        _brain_parts.append(full_text)
+    _brain_visible = _visible_reply_text(" ".join(_brain_parts))
+    if _quiet_life_turn or (_is_proactive and not _brain_visible):
+        _hidden_chars = _inner_chars
+        if _quiet_life_turn:
+            _hidden_chars += len(_brain_visible)
+        _emit(
+            "quiet",
+            "安静 · 心声藏起来",
+            hidden_chars=_hidden_chars,
+            reason="quiet_decision" if _quiet_life_turn else "proactive_no_text",
+        )
+    else:
+        _emit("speak", "说出来", _brain_visible, chars=len(_brain_visible))
 
     # ── Death note: gateway-side memory extraction (死亡遗嘱) ────────
     # Placed before ANY further yield: if the client died mid-stream the
@@ -4196,6 +6168,26 @@ async def _stream_chat_provider(
                 _extraction_hook(_combined)
         except Exception as exc:
             log.warning("gateway-side extraction failed: %s", exc)
+
+    # Missing MEM block: ask the same provider for JSON only, off the SSE
+    # critical path. The primary hook above has already preserved any block
+    # that did exist; run_fallback independently refuses short/proactive turns.
+    if (
+        _extraction_hook is not None
+        and _should_log_conversation(req, conversation_dir)
+        and os.environ.get("PET_EXTRACT_FALLBACK", "1") != "0"
+    ):
+        try:
+            task = asyncio.create_task(_extract_fallback.run_fallback(
+                provider,
+                _user_text_for_log,
+                _combined,
+                _extraction_hook,
+            ))
+            _fallback_tasks.add(task)
+            task.add_done_callback(_fallback_task_done)
+        except Exception as exc:
+            _note_failure("memory_extraction_fallback_schedule", exc)
 
     # ── 对话日志：睡眠压缩的原始输入（2026-10-19）──
     # Independent of extraction: a failing MEM hook must not drop the raw
@@ -4230,7 +6222,9 @@ async def _stream_chat_provider(
     # in its buffer — flush it unconditionally, think_filter.flush() may
     # legitimately have nothing left to say.
     _clean_tail = narration_filter.feed(_tail_from_think) + narration_filter.flush()
-    if _clean_tail:
+    # An unterminated DSTATE tail is dropped here (never shown to the user).
+    _clean_tail = dstate_filter.feed(_clean_tail) + dstate_filter.flush()
+    if _clean_tail and not _quiet_life_turn:
         yield _sse({"event": "delta", "content": _clean_tail})
 
     # ── Emotion tag extraction ──
@@ -4260,7 +6254,8 @@ async def _stream_chat_provider(
     _nc_match = _next_chat_re.search(combined_text)
     if _nc_match:
         _nc_seconds = max(0, int(_nc_match.group(1)))
-        yield _sse({"event": "next_chat", "seconds": _nc_seconds})
+        # explicit=True: the model itself chose this gap.
+        yield _sse({"event": "next_chat", "seconds": _nc_seconds, "explicit": True})
     elif not req.silent:
         # ── 说话冲动：潜意识兜底 ──
         # The model forgot to decide when to speak next. The subconscious
@@ -4271,13 +6266,49 @@ async def _stream_chat_provider(
         # 服务（它的 config 暴露了基准/上下限/心情系数/退避倍率，模型和
         # 用户都能调）。器官被停用时自动降级回内置实现，聊天不会崩。
         _impulse_svc = _organ_service("impulse", _impulse_module)
-        _impulse_gap = _impulse_svc.compute_gap(
-            emotion_index=mood_store.emotion_index if mood_store is not None else 0.0,
-            proactive_streak=_proactive_streak,
-            recall_count=_organ_service("recall", _recall_module).get_session_recall_count(),
+        # 直觉压力：决策循环最近一条强心声（已按半衰期衰减，用户回应后
+        # 为 0）。它只能让下一次开口稍微提前——动作与措辞仍由模型决定。
+        # 读一次即 consume，防止同一条闪念反复缩短后续每个间隙。
+        _loop = _decision_loop_ref
+        _intuition_pressure = 0.0
+        if _loop is not None:
+            try:
+                _intuition_pressure = _loop.pressure()
+            except Exception as exc:
+                _note_failure("intuition_pressure", exc)
+        _intuition_pressure = max(0.0, min(1.0, float(_intuition_pressure or 0.0)))
+        _impulse_kwargs = {
+            "emotion_index": mood_store.emotion_index if mood_store is not None else 0.0,
+            "proactive_streak": _proactive_streak,
+            "recall_count": _organ_service("recall", _recall_module).get_session_recall_count(),
+        }
+        try:
+            try:
+                _impulse_gap = _impulse_svc.compute_gap(
+                    **_impulse_kwargs, intuition_pressure=_intuition_pressure,
+                )
+            except TypeError as exc:
+                # organ_impulse lives in the user's plugins dir and is never
+                # overwritten, so an old seed may predate the pressure
+                # argument. Degrade to the legacy gap instead of breaking
+                # every "forgot [NEXT_CHAT]" turn.
+                _note_failure("impulse_pressure_unsupported", exc)
+                _impulse_gap = _impulse_svc.compute_gap(**_impulse_kwargs)
+        finally:
+            # The hunch was spent on this gap, whether or not the organ
+            # accepted it. One button, one press.
+            if _loop is not None:
+                try:
+                    _loop.consume_pressure()
+                except Exception as exc:
+                    _note_failure("intuition_pressure_consume", exc)
+        log.info(
+            "speech impulse: no [NEXT_CHAT] tag, subconscious gap=%ds "
+            "(streak=%d, pressure=%.2f)",
+            _impulse_gap, _proactive_streak, _intuition_pressure,
         )
-        log.info("speech impulse: no [NEXT_CHAT] tag, subconscious gap=%ds (streak=%d)", _impulse_gap, _proactive_streak)
-        yield _sse({"event": "next_chat", "seconds": _impulse_gap})
+        # explicit=False: subconscious default, not the model's own choice.
+        yield _sse({"event": "next_chat", "seconds": _impulse_gap, "explicit": False})
 
     if not req.silent:
         bridge.post("attention", emotion=_emotion)
@@ -4286,6 +6317,15 @@ async def _stream_chat_provider(
         # temperature. Silent requests (narrator / classifier) never move it.
         if mood_store is not None:
             mood_store.apply_emotion_tag(_emotion)
+    telemetry.observe("chat.turn_seconds", time.perf_counter() - turn_started)
+    _emit(
+        "round_end",
+        "本轮结束",
+        elapsed_ms=(time.perf_counter() - turn_started) * 1000.0,
+        iterations=iteration,
+        tools=_tool_call_count,
+        provider=provider.name,
+    )
     yield _sse({"event": "end"})
 
 
