@@ -332,6 +332,34 @@ def test_quiet_life_turn_emits_inner_and_quiet_without_speech(monkeypatch, tmp_p
     assert events[-1]["type"] == "round_end"
 
 
+def test_tag_only_proactive_round_is_quiet_not_speak(monkeypatch, tmp_path):
+    _use_store(monkeypatch, tmp_path)
+
+    async def _passive(_store, state=None, **_kw):
+        return _decision(action="speak", action_label="说")
+
+    # The model split its MEM block across tool rounds and this final round
+    # contains only the closing marker.
+    provider = _RecordingOpenAI(
+        [[{"type": "delta", "content": "<<<MEMEND>>>"}, {"type": "end"}]]
+    )
+    _install(monkeypatch, provider, passive=_passive)
+
+    frames, events = _run(provider, _req(messages=_PROACTIVE))
+
+    types = _types(events)
+    assert "speak" not in types
+    assert "quiet" in types
+    quiet = next(event for event in events if event["type"] == "quiet")
+    assert quiet["meta"]["reason"] == "proactive_no_text"
+    assert quiet["meta"]["hidden_chars"] == 0
+    assert server_mod._visible_reply_text("".join(
+        frame.get("content", "")
+        for frame in frames
+        if frame.get("event") == "delta"
+    )) == ""
+
+
 def test_brain_publish_exception_does_not_break_chat(monkeypatch):
     def _boom(_event):
         raise RuntimeError("brain bus is down")
