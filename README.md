@@ -234,4 +234,5 @@ License: [AGPL-3.0-only](./LICENSE); third-party attributions in [NOTICE.md](./N
 
 ---
 
-如果觉得这个项目有点意思，欢迎 star、提 issue 或 PR。
+如果您觉得这个项目“有点意思”。欢迎 star，提 issue 或 PR。
+您的每一次star都是激励我们开发优化的星星之火。
