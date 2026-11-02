@@ -136,3 +136,25 @@ test("both shells carry the same memory contract — they must not drift", () =>
     }
   }
 });
+
+test("both shells' 记忆 settings pages render the folder, not the retired files", () => {
+  // The Tauri settings page was a stale copy of the old Electron one: it
+  // painted "MEMORY.md / USER.md" headings and read ident.memory/ident.user,
+  // which the API stopped returning — so it showed two empty boxes.
+  const pages = {
+    electron: path.join(__dirname, "..", "src", "settings-tab-memory.js"),
+    tauri: path.join(__dirname, "..", "..", "deskpt-tauri", "ui", "settings-tab-memory.js"),
+  };
+  for (const [name, file] of Object.entries(pages)) {
+    const code = read(file);
+    const body = code.split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter((l) => !l.startsWith("//") && !l.startsWith("*")).join("\n");
+    assert.match(body, /ident\.tree/, `${name}: settings page does not render the tree`);
+    assert.match(body, /ident\.root_md/, `${name}: settings page does not render 记忆.md`);
+    assert.doesNotMatch(body, /ident\.memory\b|ident\.user\b/,
+      `${name}: settings page still reads the retired fields`);
+    assert.doesNotMatch(body, /"MEMORY\.md"|"USER\.md"/,
+      `${name}: settings page still labels the retired files`);
+  }
+});
